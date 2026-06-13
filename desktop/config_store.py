@@ -59,10 +59,10 @@ CONFIG_FIELDS = [
     # server's .env (DESKTOP_BRANCH_TOKEN); fill it in the panel or bake it here.
     ('SYNC_ENABLED', 'True'),
     ('CLOUD_SYNC_URL', 'https://pos.94.141.97.228.nip.io/api/sync'),
-    ('CLOUD_SYNC_TOKEN', 'yucTaCucvUTUknFa9EFvR0L0_BLkKStFW5Kyk1mDc8w'),
+    ('CLOUD_SYNC_TOKEN', ''),  # per-branch token from the server .env; set via the panel
     # Telegram (token + chat ids drive real message delivery)
-    ('TELEGRAM_BOT_TOKEN', '8809919796:AAF03pZ-IJpl-Ov4R74gs1ld7EYNtLs7T-k'),
-    ('TELEGRAM_CHAT_IDS', '134385193,6589960007,493544586,1023732044'),
+    ('TELEGRAM_BOT_TOKEN', ''),   # staff/internal bot token — set via the desktop panel
+    ('TELEGRAM_CHAT_IDS', ''),    # staff chat ids — set via the desktop panel
     ('TELEGRAM_WEBHOOK_SECRET', ''),
     # AI (stock assistant + demand forecast). Pick a provider, fill its key.
     ('AI_PROVIDER', 'claude'),  # 'claude' or 'gemini'
