@@ -1,13 +1,21 @@
-"""ASGI entrypoint — local edition.
-
-Phase 0: a plain Django ASGI app (served by embedded uvicorn in place of waitress).
-The websocket phase wraps this in a channels ProtocolTypeRouter so the LAN order
-queue / KDS / cashier-control sockets run in-process (InMemoryChannelLayer).
-"""
+"""ASGI entrypoint — local edition. Serves HTTP (Django) + websockets (channels,
+InMemoryChannelLayer) through one ProtocolTypeRouter. Run with embedded uvicorn
+inside the desktop build."""
 import os
-
-from django.core.asgi import get_asgi_application
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
 
-application = get_asgi_application()
+from django.core.asgi import get_asgi_application
+
+# Initialise Django (populate the app registry) BEFORE importing consumers.
+django_asgi_app = get_asgi_application()
+
+from channels.auth import AuthMiddlewareStack
+from channels.routing import ProtocolTypeRouter, URLRouter
+
+from core.realtime.routing import websocket_urlpatterns
+
+application = ProtocolTypeRouter({
+    'http': django_asgi_app,
+    'websocket': AuthMiddlewareStack(URLRouter(websocket_urlpatterns)),
+})
