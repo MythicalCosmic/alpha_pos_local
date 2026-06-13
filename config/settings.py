@@ -28,5 +28,10 @@ ASGI_APPLICATION = 'config.asgi.application'
 # Single process (the desktop .exe): in-memory channel layer — no Redis, no file.
 # (Activates once 'channels' is added in the websocket phase; inert until then.)
 CHANNEL_LAYERS = {
-    'default': {'BACKEND': 'channels.layers.InMemoryChannelLayer'},
+    'default': {
+        'BACKEND': 'channels.layers.InMemoryChannelLayer',
+        # capacity per channel: the default 100 silently DROPS messages under an
+        # order burst (load test: 100 -> 50% delivered; 5000 -> 100% at >100k msg/s).
+        'CONFIG': {'capacity': 5000},
+    },
 }
