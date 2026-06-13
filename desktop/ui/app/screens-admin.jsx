@@ -70,11 +70,12 @@ function NotificationsScreen() {
   const [brand, setBrand] = React.useState("Alpha POS");
   const [token, setToken] = React.useState("");
   const [botSet, setBotSet] = React.useState(false);
+  const [enabled, setEnabled] = React.useState(true);
   const loaded = React.useRef(false);
 
   React.useEffect(() => {
     api.notif_settings().then((r) => {
-      if (r && r.ok) { setBrand(r.brand_name || "Alpha POS"); setBotSet(!!r.bot_token_set); }
+      if (r && r.ok) { setBrand(r.brand_name || "Alpha POS"); setBotSet(!!r.bot_token_set); setEnabled(r.is_enabled !== false); }
     });
     api.notif_routing().then((r) => {
       if (r && r.ok) {
@@ -114,6 +115,15 @@ function NotificationsScreen() {
     });
   };
 
+  // Master ON/OFF for the staff notifications bot (NotificationSettings.is_enabled).
+  const toggleEnabled = (on) => {
+    setEnabled(on);
+    api.set_notif_enabled(on).then((r) => {
+      if (!(r && r.ok)) { setEnabled(!on); app.toast((r && r.error) || "Failed"); return; }
+      app.toast(on ? t("common.on") : t("common.off"));
+    });
+  };
+
   return (
     <div className="page" data-screen-label="Notifications">
       <header className="page-head">
@@ -123,6 +133,13 @@ function NotificationsScreen() {
 
       <div className="stack">
         <Card title={t("ntf.telegram")} action={<Badge tone={botSet ? "ok" : "muted"}>{botSet ? t("ntf.tokenSet") : t("common.no")}</Badge>}>
+          <div className="hstack" style={{ justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 14 }}>{t("ntf.enable")}</div>
+              <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 2 }}>{t("ntf.enableHint")}</div>
+            </div>
+            <Switch on={enabled} onChange={toggleEnabled} />
+          </div>
           <div className="g2">
             <Field l={t("ntf.botToken")} hint={t("ntf.botTokenHint")}>
               <input className="inp mono" type="password" placeholder={botSet ? "•••••••• (set — blank keeps it)" : "paste bot token"} value={token} onChange={(e) => setToken(e.target.value)}></input>

@@ -11,7 +11,7 @@ from django.http import HttpResponse
 from django.urls import path, include
 
 from base.services.sync.views import get_sync_urls
-from notifications.views import telegram_views, qr_order_views
+from notifications.views import qr_order_views
 
 
 def healthz(_request):
@@ -26,8 +26,9 @@ urlpatterns = [
     path('api/sync/', include(get_sync_urls())),
     path('api/licensing/', include('licensing.urls')),
     path('api/fiscalization/', include('fiscalization.urls')),
-    # Telegram webhook + public QR self-order — order-taking surfaces, terminal-side.
-    path('api/telegram/webhook/', telegram_views.webhook, name='telegram-webhook'),
+    # Public QR self-order — terminal-side. (The customer-facing Telegram bot moved
+    # to the SERVER edition, stripped to greet + open the web app — see the server's
+    # config/urls.py `api/customer-bot/webhook/` and notifications/services/customer_bot.py.)
     path('api/qr/menu/<str:token>/', qr_order_views.menu_view, name='qr-menu'),
     path('api/qr/order/<str:token>/', qr_order_views.order_view, name='qr-order'),
     path('', include('customers.urls')),

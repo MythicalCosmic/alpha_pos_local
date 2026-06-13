@@ -543,7 +543,8 @@ class Api:
         from notifications.models import NotificationSettings
         ns = NotificationSettings.load()
         return {'ok': True, 'bot_token_set': bool(ns.bot_token),
-                'chat_ids': ns.chat_ids, 'brand_name': getattr(ns, 'brand_name', '')}
+                'chat_ids': ns.chat_ids, 'brand_name': getattr(ns, 'brand_name', ''),
+                'is_enabled': bool(ns.is_enabled)}
 
     @_safe
     def save_notif_settings(self, bot_token=None, chat_ids=None, brand_name=None):
@@ -565,6 +566,21 @@ class Api:
         except Exception:
             pass
         return {'ok': True}
+
+    @_safe
+    def set_notif_enabled(self, on):
+        """Master ON/OFF for the staff notifications Telegram bot (NotificationSettings.is_enabled)."""
+        self.server.ensure_django()
+        from django.core.cache import cache
+        from notifications.models import NotificationSettings
+        ns = NotificationSettings.load()
+        ns.is_enabled = bool(on)
+        ns.save(update_fields=['is_enabled', 'updated_at'])
+        try:
+            cache.delete(getattr(NotificationSettings, '_CACHE_KEY', 'notif:settings:v1'))
+        except Exception:
+            pass
+        return {'ok': True, 'is_enabled': ns.is_enabled}
 
     @_safe
     def list_templates(self):
