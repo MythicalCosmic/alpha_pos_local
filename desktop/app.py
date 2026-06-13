@@ -11,6 +11,7 @@ always appears. Closing the window stops the POS server and exits.
 """
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import subprocess
@@ -139,6 +140,15 @@ def _autostart_backend():
 
 def main():
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
+
+    # Embedded Postgres (packaged build): bring the private DB up before anything
+    # connects. No-op for a dev run against an external / workspace Postgres.
+    try:
+        from desktop import pg_embedded
+        pg_embedded.start()
+        atexit.register(pg_embedded.stop)
+    except Exception:  # noqa: BLE001
+        logger.exception('embedded Postgres bootstrap failed; continuing')
 
     if '--selftest' in sys.argv:
         return _selftest()

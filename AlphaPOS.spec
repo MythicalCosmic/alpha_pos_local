@@ -18,26 +18,42 @@ sys.path.insert(0, SPECPATH)
 # app package (their __init__ chains touch settings/models). Without this,
 # PyInstaller silently skips most app submodules and the exe ModuleNotFounds at
 # runtime. Dummy secrets — build-time only.
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'alpha_pos.settings')
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
 os.environ.setdefault('SECRET_KEY', 'build-time-secret')
 os.environ.setdefault('DEBUG', 'True')
 os.environ.setdefault('LICENSE_FERNET_KEY', '')
 import django  # noqa: E402
 django.setup()
 
-APPS = ['base', 'admins', 'customers', 'waiters', 'stock', 'hr', 'discounts',
-        'notifications', 'licensing', 'fiscalization', 'cashbox', 'alpha_pos']
+# Local-edition apps come from the LIVE INSTALLED_APPS (base/stock/hr/discounts/
+# notifications/fiscalization/cashbox/licensing from core + customers/waiters +
+# core.realtime) — so this tracks the edition split automatically (no admins, no
+# old 'alpha_pos' project package).
+from django.conf import settings as _dj
+APPS = [a for a in _dj.INSTALLED_APPS
+        if not a.startswith('django.') and a not in ('corsheaders', 'channels')]
 
 hiddenimports = []
 for app in APPS:
     hiddenimports += collect_submodules(app)
+# The edition's config package (settings/urls/asgi/wsgi), the shared settings base,
+# and the desktop launcher package (incl. the lazily-imported pg_embedded).
+for pkg in ('config', 'alpha_pos_core', 'desktop'):
+    hiddenimports += collect_submodules(pkg)
 # Django + libs imported by string/lazily (middleware paths, etc.). These need
 # their SUBMODULES collected, not just the top package, or import_string() fails
 # at runtime (e.g. whitenoise.middleware, corsheaders.middleware).
 hiddenimports += collect_submodules('django')
-for lib in ('waitress', 'whitenoise', 'corsheaders', 'cryptography',
+# ASGI stack: uvicorn + channels replace waitress (so the frozen app serves HTTP
+# *and* websockets). Collect their submodules + the async/ws deps uvicorn lazily
+# imports, or the exe ModuleNotFounds at serve time.
+for lib in ('uvicorn', 'channels', 'asgiref', 'websockets', 'h11', 'httptools',
+            'python_multipart', 'whitenoise', 'corsheaders', 'cryptography',
             'dateutil', 'requests', 'anthropic'):
-    hiddenimports += collect_submodules(lib)
+    try:
+        hiddenimports += collect_submodules(lib)
+    except Exception:
+        print(f'AlphaPOS.spec: {lib} not collectable — skipped')
 # Gemini SDK is lazy-imported in base/services/llm.py — collect it explicitly.
 hiddenimports += collect_submodules('google.genai')
 # Self-update stack: tufup + its deps (tuf, securesystemslib, bsdiff4, pynacl).
@@ -80,6 +96,26 @@ datas += collect_data_files('webview')  # WebView2 assemblies in webview/lib
 # Ship each app's migrations + templates + static.
 for app in APPS:
     datas += collect_data_files(app, include_py_files=True)
+
+# Embedded Postgres: bundle the portable binaries so desktop/pg_embedded.py can run
+# a private DB (install needs no separate Postgres). Looks for _pg/pgsql in the repo
+# or the parent workspace. LARGE (~hundreds of MB); the build still succeeds without
+# it (the app then expects an external/dev Postgres).
+_pg_candidates = [os.path.join(SPECPATH, '_pg', 'pgsql'),
+                  os.path.join(SPECPATH, '..', '_pg', 'pgsql')]
+_pgsql = next((c for c in _pg_candidates if os.path.isdir(c)), None)
+if _pgsql:
+    _pgroot = os.path.dirname(os.path.abspath(_pgsql))
+    _pg_count = 0
+    for _root, _dirs, _files in os.walk(_pgsql):
+        _rel = os.path.relpath(_root, _pgroot)  # -> pgsql/bin, pgsql/lib, ...
+        for _fn in _files:
+            datas.append((os.path.join(_root, _fn), _rel))
+            _pg_count += 1
+    print(f'AlphaPOS.spec: bundling embedded Postgres ({_pg_count} files).')
+else:
+    print('AlphaPOS.spec: _pg/pgsql not found — embedded Postgres NOT bundled. '
+          'Place a portable Postgres at _pg/pgsql/ to ship a self-contained DB.')
 
 block_cipher = None
 
