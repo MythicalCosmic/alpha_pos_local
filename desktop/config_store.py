@@ -198,7 +198,7 @@ def apply_env_to_process() -> None:
     django.setup() so settings.py sees them."""
     # Finish any armed factory reset first — before secrets are regenerated.
     consume_reset_pending()
-    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'alpha_pos.settings')
+    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
     # Tell settings.py where to keep the DB / logs / media (persistent).
     os.environ.setdefault('ALPHA_POS_DATA_DIR', str(DATA_DIR))
     os.environ.setdefault('SECRET_KEY', load_or_generate_secret())

@@ -138,7 +138,7 @@ def _autostart_backend():
 
 
 def main():
-    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'alpha_pos.settings')
+    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
 
     if '--selftest' in sys.argv:
         return _selftest()

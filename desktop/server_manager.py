@@ -166,12 +166,20 @@ class ServerManager:
             return {'running': True, 'message': 'Server already running'}
         try:
             self.ensure_django()
-            from waitress import create_server
-            from alpha_pos.wsgi import application
+            import uvicorn
 
-            self._server = create_server(application, host=self.host, port=self.port)
+            # ASGI server (uvicorn) so the POS serves HTTP *and* websockets
+            # (channels) from one in-process server — replaces waitress (WSGI,
+            # no websockets). Runs in a daemon thread; signal handlers are
+            # disabled because they can only be installed on the main thread.
+            cfg = uvicorn.Config(
+                'config.asgi:application', host=self.host, port=int(self.port),
+                log_level='info', lifespan='off', access_log=False,
+            )
+            self._server = uvicorn.Server(cfg)
+            self._server.install_signal_handlers = lambda: None
             self._thread = threading.Thread(
-                target=self._server.run, name='waitress', daemon=True,
+                target=self._server.run, name='uvicorn', daemon=True,
             )
             self._thread.start()
             self._ensure_sync_worker()  # auto-push/pull when sync is enabled
@@ -190,7 +198,8 @@ class ServerManager:
     def stop(self):
         if self._server is not None:
             try:
-                self._server.close()
+                # uvicorn graceful stop: flip should_exit so the run loop ends.
+                self._server.should_exit = True
             except Exception:  # noqa: BLE001
                 logger.exception('server close failed')
         self._server = None
