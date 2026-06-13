@@ -17,7 +17,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 
 from base.security.auth import login_required, role_required
-from admins.services.shift_service import ShiftService
+from core.shifts.service import ShiftService
 
 STAFF_ROLES = ('ADMIN', 'CASHIER', 'MANAGER', 'WAITER')
 

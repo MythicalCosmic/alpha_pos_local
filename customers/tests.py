@@ -360,7 +360,7 @@ class TestCashierShiftSelfService:
     shift API, login doesn't auto-open one, and logout leaves an open shift open."""
 
     def test_start_current_end_lifecycle(self, cashier_user):
-        from admins.services.shift_service import ShiftService
+        from core.shifts.service import ShiftService
 
         res, st = ShiftService.start_shift(cashier_user.id)
         assert st == 201
@@ -381,7 +381,7 @@ class TestCashierShiftSelfService:
         assert res['data'] is None
 
     def test_double_start_conflicts(self, cashier_user):
-        from admins.services.shift_service import ShiftService
+        from core.shifts.service import ShiftService
 
         _, st = ShiftService.start_shift(cashier_user.id)
         assert st == 201
@@ -389,7 +389,7 @@ class TestCashierShiftSelfService:
         assert st >= 400  # already has an active shift
 
     def test_end_without_active_is_404(self, cashier_user):
-        from admins.services.shift_service import ShiftService
+        from core.shifts.service import ShiftService
 
         _, st = ShiftService.end_active_for_user(cashier_user.id)
         assert st == 404
@@ -399,7 +399,7 @@ class TestCashierShiftSelfService:
         explicitly via POST /shifts/start (ShiftService.start_shift)."""
         from customers.services.auth_service import AuthService
         from base.repositories.shift import ShiftRepository
-        from admins.services.shift_service import ShiftService
+        from core.shifts.service import ShiftService
         from base.models import Shift
 
         res, st = AuthService.login(
@@ -417,7 +417,7 @@ class TestCashierShiftSelfService:
 
     def test_logout_leaves_shift_open(self, cashier_user):
         from customers.services.auth_service import AuthService
-        from admins.services.shift_service import ShiftService
+        from core.shifts.service import ShiftService
         from base.repositories.shift import ShiftRepository
 
         res, st = AuthService.login(
