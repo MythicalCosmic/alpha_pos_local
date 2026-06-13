@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# Virtualenvs
+.venv/
+.venv-build/
+venv/
+env/
+
+# Desktop build artifacts
+/build/
+/dist/
+/installer/Output/
+*.exe
+*.spec.bak
+
+# TUF self-update — NEVER commit signing keys or the published repo
+/update_keys/
+/update_repo/
+.tufup-repo-config
+
+# Desktop runtime
+desktop/edge-profile/
+desktop/admin_credentials.json
+db.sqlite3
+*.log
+/staticfiles/
+/media/
+
+# Secrets
+.env
+*.pem
+
+# Embedded Postgres data (local PG lives under %LOCALAPPDATA% at runtime, but ignore any here)
+/pgdata/
+
+# Tests / tooling
+.pytest_cache/
+.coverage
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
