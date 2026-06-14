@@ -54,12 +54,16 @@ next to the exe.
 Set on each POS (desktop Configuration tab / env), e.g.:
 
 ```
-ALPHA_POS_UPDATE_URL = https://pos.<server-ip>.nip.io/updates
+ALPHA_POS_UPDATE_URL = https://control.<server-ip>.nip.io/updates
 ```
 
-The server must serve `update_repo/` at that URL, i.e.
-`…/updates/metadata/…` and `…/updates/targets/…`. With the existing Caddy
-setup, add a static file server (or an Nginx/`alias`) for the repo directory.
+The update repo is hosted on the **POS Control Center** (`pos_control`), NOT on
+the POS app server (`pos.<ip>`). Its Caddy maps `/updates/*` to the uploaded repo
+(`handle_path /updates/* { root * /srv/updates; file_server }`, bind-mounted from
+`/srv/alpha_pos_updates`), so it answers `…/updates/metadata/…` and
+`…/updates/targets/…`. See `pos_control/deploy.sh`. (If you run pos_control on the
+SAME host as alpha_pos, see RELEASES.md — one Caddy must serve both `pos.` and
+`control.`; two Caddy stacks can't both bind :80/:443.)
 
 ---
 
@@ -77,7 +81,8 @@ pyinstaller AlphaPOS.spec        # produces dist/AlphaPOS/
 python tools/release.py --publish --bundle dist/AlphaPOS
 
 # 4. Push the repo to the server path behind ALPHA_POS_UPDATE_URL
-rsync -a update_repo/ <server>:/srv/alpha_pos/updates/
+#    (the control center host; that dir is what Caddy serves at /updates)
+rsync -a update_repo/ <control-server>:/srv/alpha_pos_updates/
 ```
 
 Next time each POS launches it sees the new signed version, downloads the delta,

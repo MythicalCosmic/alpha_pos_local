@@ -12,7 +12,7 @@ Usage:
     python tools/release.py --publish --bundle dist/AlphaPOS
 
 Then sync the repo dir to the server path your ALPHA_POS_UPDATE_URL points at
-(e.g. rsync update_repo/ server:/srv/alpha_pos/updates/), and ship
+(e.g. rsync update_repo/ control-server:/srv/alpha_pos_updates/), and ship
 update_repo/metadata/root.json inside the next installer as tuf_root/root.json
 so clients can bootstrap trust.
 
@@ -90,8 +90,8 @@ def publish(bundle: Path):
     repo.publish_changes(private_key_dirs=[str(KEYS_DIR)])
     print(
         f"Published {APP_NAME} {__version__}.\n"
-        f"Now sync {REPO_DIR}/ to the server path behind ALPHA_POS_UPDATE_URL,\n"
-        f"e.g.:  rsync -a {REPO_DIR}/ <server>:/srv/alpha_pos/updates/"
+        f"Now sync {REPO_DIR}/ to the control-center host behind ALPHA_POS_UPDATE_URL,\n"
+        f"e.g.:  rsync -a {REPO_DIR}/ <control-server>:/srv/alpha_pos_updates/"
     )
     return 0
 
