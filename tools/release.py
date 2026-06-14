@@ -86,7 +86,12 @@ def publish(bundle: Path):
         print(f"removing leftover archive: {stale}")
         stale.unlink()
     # Register the new bundle for the current version and re-sign the metadata.
-    repo.add_bundle(new_bundle_dir=str(bundle), new_version=__version__)
+    # skip_patch=True: tufup's default delta-patch step runs bsdiff, which builds a
+    # suffix array over the PREVIOUS archive in RAM (~17x its size). For a 100MB+
+    # app that's ~8GB and effectively never finishes, so we ship FULL bundles —
+    # each till downloads the whole (~110MB) once per update. Fine over a normal
+    # link, and it keeps publishing fast + low-memory.
+    repo.add_bundle(new_bundle_dir=str(bundle), new_version=__version__, skip_patch=True)
     repo.publish_changes(private_key_dirs=[str(KEYS_DIR)])
     print(
         f"Published {APP_NAME} {__version__}.\n"
