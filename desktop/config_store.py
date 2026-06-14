@@ -48,18 +48,18 @@ CONFIG_FIELDS = [
     ('DEPLOYMENT_MODE', 'local'),
     ('PORT', '8000'),
     # Licensing / control center
-    ('LICENSE_CONTROL_CENTER_URL', 'https://control.94.141.97.228.nip.io/'),
+    ('LICENSE_CONTROL_CENTER_URL', 'https://control.78.111.90.65.nip.io/'),
     # Self-update: base URL the signed tufup repo is served from (…/updates/metadata/
     # + …/updates/targets/). Read by desktop/updater.py; blank disables updates.
     # Points at the CONTROL CENTER (pos_control serves /updates) — publish a release
     # there once and every till pulls it on next launch. See RELEASES.md.
-    ('ALPHA_POS_UPDATE_URL', 'https://control.94.141.97.228.nip.io/updates'),
+    ('ALPHA_POS_UPDATE_URL', 'https://control.78.111.90.65.nip.io/updates'),
     # Sync (cloud) — baked defaults point at the production hub so a fresh
     # install is pre-wired. CLOUD_SYNC_TOKEN is the per-branch token from the
     # server's .env (DESKTOP_BRANCH_TOKEN); fill it in the panel or bake it here.
     ('SYNC_ENABLED', 'True'),
-    ('CLOUD_SYNC_URL', 'https://pos.94.141.97.228.nip.io/api/sync'),
-    ('CLOUD_SYNC_TOKEN', ''),  # per-branch token from the server .env; set via the panel
+    ('CLOUD_SYNC_URL', 'https://pos.78.111.90.65.nip.io/api/sync'),
+    ('CLOUD_SYNC_TOKEN', '0Ha1ZESmkBSSjMGDNjLNiW6PDCfpbHP3xjD1GAyTLyI'),  # baked from the server deploy; override via the panel
     # Telegram (token + chat ids drive real message delivery)
     ('TELEGRAM_BOT_TOKEN', ''),   # staff/internal bot token — set via the desktop panel
     ('TELEGRAM_CHAT_IDS', ''),    # staff chat ids — set via the desktop panel

@@ -5,6 +5,13 @@
 const DIRECTIONS = ["Porcelain", "Noir", "Atelier"];
 const ACCENTS = ["#1e6b4c", "#27486e", "#8a4a2c", "#5b4a7a"];
 
+// Live cloud-sync pill labels (self-contained, trilingual — no i18n.js surgery).
+const SYNC_L = {
+  en: { live: "Sync live", off: "Sync off", down: "Not connected", busy: "Syncing…", pending: "queued" },
+  uz: { live: "Sinx faol", off: "Sinx o‘chiq", down: "Ulanmagan", busy: "Sinxlash…", pending: "navbatda" },
+  ru: { live: "Синхр. активна", off: "Синхр. выкл", down: "Нет связи", busy: "Синхр…", pending: "в очереди" },
+};
+
 const NAV = [
   { id: "dashboard", icon: "dashboard", l: "nav.dashboard", screen: () => <DashboardScreen /> },
   { id: "license", icon: "license", l: "nav.license", screen: () => <LicenseScreen /> },
@@ -54,6 +61,7 @@ function App() {
   const setLang = (v) => { const l = v.toLowerCase(); setLangRaw(l); persist({ lang: l }); };
 
   const t = React.useCallback((k) => window.tr(lang, k), [lang]);
+  const sl = SYNC_L[lang] || SYNC_L.en;
 
   React.useEffect(() => { document.documentElement.setAttribute("data-dir", dir); }, [dir]);
   React.useEffect(() => {
@@ -85,6 +93,7 @@ function App() {
   const [creds, setCreds] = React.useState({ email: "", password: "" });
   const [upd, setUpd] = React.useState({ version: "1.0.0", update_url: "", pending: false, frozen: false });
   const [sync, setSync] = React.useState({ enabled: false, pending_count: 0 });
+  const [syncBusy, setSyncBusy] = React.useState(false);
   const onSinceRef = React.useRef(null);
 
   const refreshServer = React.useCallback(() => {
@@ -109,7 +118,7 @@ function App() {
   // Poll the server status often (drives the power button); the rest slowly.
   React.useEffect(() => {
     if (tick > 0 && tick % 4 === 0) refreshServer();
-    if (tick > 0 && tick % 12 === 0) refreshSync();
+    if (tick > 0 && tick % 5 === 0) refreshSync();   // ~5s for a "live" sync pill
     if (tick > 0 && tick % 20 === 0) { refreshLicense(); refreshUpdates(); }
   }, [tick, refreshServer, refreshLicense, refreshUpdates, refreshSync]);
 
@@ -128,6 +137,16 @@ function App() {
       else { setPhase("off"); toast((r && r.error) || "Start failed"); }
       refreshAll();
     }
+  };
+
+  // Manual cloud sync (the "try again" when the live pill shows not-connected).
+  const cloudSyncNow = async () => {
+    if (syncBusy) return;
+    setSyncBusy(true);
+    const r = await api.cloud_sync_now();
+    setSyncBusy(false);
+    refreshSync();
+    toast((r && r.ok) ? sl.live + " ✓" : (sl.down + (r && r.error ? ": " + r.error : "")));
   };
 
   const uptime = onSinceRef.current ? Math.floor((Date.now() - onSinceRef.current) / 1000) : 0;
@@ -227,6 +246,7 @@ function App() {
         <div className="titlebar">
           <div className="tb-app"><span className="tb-glyph">α</span>Alpha POS Backend</div>
           <div className="tb-spacer"></div>
+          <SyncPill sync={sync} busy={syncBusy} onSync={cloudSyncNow} sl={sl}></SyncPill>
         </div>
 
         <div className="frame">
@@ -289,6 +309,34 @@ function ThemeSwitch({ dir, setDir, accent, setAccent, t }) {
         </div>
       )}
     </div>
+  );
+}
+
+/* Live cloud-sync indicator in the titlebar. Green dot = sync enabled + online;
+   red = enabled but not reaching the cloud (click to retry); grey = sync off.
+   Clicking always runs a manual push+pull (cloud_sync_now). */
+function SyncPill({ sync, busy, onSync, sl }) {
+  const enabled = !!sync.enabled;
+  const online = enabled && !!sync.is_online;
+  const color = !enabled ? "var(--ink-3)" : (online ? "var(--ok)" : "#d23b3b");
+  const label = busy ? sl.busy : (!enabled ? sl.off : (online ? sl.live : sl.down));
+  const pending = sync.pending_count || 0;
+  const title = [label, pending ? (pending + " " + sl.pending) : "", sync.last_error || ""]
+    .filter(Boolean).join("   ·   ");
+  return (
+    <button title={title} onClick={onSync} disabled={busy}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 7,
+        background: "transparent", border: "1px solid rgba(127,127,127,.28)",
+        borderRadius: 999, padding: "4px 11px", marginRight: 4,
+        cursor: busy ? "default" : "pointer", font: "inherit", fontSize: 12,
+        color: "var(--ink-2, inherit)", opacity: busy ? 0.7 : 1,
+      }}>
+      <span style={{ width: 8, height: 8, borderRadius: "50%", background: color, transition: "background .3s" }}></span>
+      <Icon name="refresh"></Icon>
+      <span>{label}</span>
+      {pending ? <span className="mono" style={{ opacity: 0.65 }}>· {pending}</span> : null}
+    </button>
   );
 }
 
