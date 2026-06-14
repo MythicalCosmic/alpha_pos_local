@@ -141,6 +141,17 @@ def _autostart_backend():
 def main():
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
 
+    # Finish any armed factory reset FIRST — before embedded Postgres opens the
+    # cluster. apply_env_to_process() also calls this, but that runs after the DB
+    # is up; if a reset left the cluster locked, the next launch would otherwise
+    # start the OLD database (re-locking it) and the wipe would silently fail,
+    # leaving the prior owner's data live. Here nothing holds the cluster yet.
+    try:
+        from desktop import config_store
+        config_store.consume_reset_pending()
+    except Exception:  # noqa: BLE001
+        logger.exception('factory-reset consume failed; continuing')
+
     # Embedded Postgres (packaged build): bring the private DB up before anything
     # connects. No-op for a dev run against an external / workspace Postgres.
     try:

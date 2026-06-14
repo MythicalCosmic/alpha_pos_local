@@ -97,6 +97,16 @@ datas += collect_data_files('webview')  # WebView2 assemblies in webview/lib
 for app in APPS:
     datas += collect_data_files(app, include_py_files=True)
 
+# Core's NON-app packages from the (editable / submodule) core: the shared config
+# base (`alpha_pos_core` = settings_base/urls/asgi) and the shims (`core` =
+# shifts/attendance/realtime/sync_ws). PyInstaller's module graph misses editable-
+# install packages, so collect their .py as data (same way the apps above are
+# bundled) — otherwise the frozen app ModuleNotFounds on `config.settings`'
+# `from alpha_pos_core.settings_base import *` and on `core.shifts`.
+for _pkg in ('core', 'alpha_pos_core'):
+    datas += collect_data_files(_pkg, include_py_files=True)
+    hiddenimports += collect_submodules(_pkg)
+
 # Embedded Postgres: bundle the portable binaries so desktop/pg_embedded.py can run
 # a private DB (install needs no separate Postgres). Looks for _pg/pgsql in the repo
 # or the parent workspace. LARGE (~hundreds of MB); the build still succeeds without
@@ -104,15 +114,22 @@ for app in APPS:
 _pg_candidates = [os.path.join(SPECPATH, '_pg', 'pgsql'),
                   os.path.join(SPECPATH, '..', '_pg', 'pgsql')]
 _pgsql = next((c for c in _pg_candidates if os.path.isdir(c)), None)
+# Skip subtrees the embedded server never runs. pgAdmin 4 alone is hundreds of MB
+# of a web GUI we never launch, and its very deep template paths blow past Windows'
+# 260-char MAX_PATH during Inno Setup compression -> "cannot find the path / Setup.exe
+# MISSING". pg_embedded.py only calls bin/lib/share (initdb, pg_ctl, postgres, psql).
+_PG_SKIP = {'pgAdmin 4', 'StackBuilder', 'doc', 'include', 'symbols'}
 if _pgsql:
     _pgroot = os.path.dirname(os.path.abspath(_pgsql))
     _pg_count = 0
     for _root, _dirs, _files in os.walk(_pgsql):
+        _dirs[:] = [d for d in _dirs if d not in _PG_SKIP]  # prune before descending
         _rel = os.path.relpath(_root, _pgroot)  # -> pgsql/bin, pgsql/lib, ...
         for _fn in _files:
             datas.append((os.path.join(_root, _fn), _rel))
             _pg_count += 1
-    print(f'AlphaPOS.spec: bundling embedded Postgres ({_pg_count} files).')
+    print(f'AlphaPOS.spec: bundling embedded Postgres ({_pg_count} files, '
+          f'pgAdmin/docs pruned).')
 else:
     print('AlphaPOS.spec: _pg/pgsql not found — embedded Postgres NOT bundled. '
           'Place a portable Postgres at _pg/pgsql/ to ship a self-contained DB.')

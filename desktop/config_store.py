@@ -151,8 +151,18 @@ def _wipe_data() -> list:
     is skipped here and finished by consume_reset_pending() on the next launch.
     """
     import shutil
+    # The local edition runs embedded Postgres, not SQLite — stop it so its data
+    # cluster can be removed, then wipe the cluster. Otherwise a "factory reset"
+    # leaves every order / product / user + the prior admin's creds intact (a
+    # resale data leak) while .env/secrets DO get deleted -> half-wiped install.
+    try:
+        from desktop import pg_embedded
+        pg_embedded.stop()
+    except Exception:
+        pass
     targets = [
         DATA_DIR / 'db.sqlite3', DATA_DIR / 'db.sqlite3-wal', DATA_DIR / 'db.sqlite3-shm',
+        DATA_DIR / 'pgdata',  # embedded Postgres cluster — re-initialised fresh next launch
         ENV_FILE, SECRET_FILE, FERNET_FILE, STATE_FILE, CREDS_FILE,
         DATA_DIR / 'logs', DATA_DIR / 'staticfiles', DATA_DIR / 'private_media',
     ]
