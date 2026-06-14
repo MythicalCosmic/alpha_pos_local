@@ -284,15 +284,30 @@ class Api:
             connections.close_all()
         except Exception:  # noqa: BLE001
             pass
-        # Delete only the DB files — keep .env / secrets / logs / media so the
-        # install stays configured. The schema is rebuilt by first_time_install.
+        # Wipe the DATA but KEEP config: stop embedded Postgres, delete its data
+        # cluster (+ any legacy sqlite), then bring a fresh EMPTY cluster back up.
+        # The old code deleted only db.sqlite3 — a no-op on the Postgres build, so it
+        # wiped NOTHING while reporting success (orders/products/users/admin creds all
+        # survived). .env / secrets / logs / media are kept so the install stays
+        # configured; the schema is rebuilt by first_time_install below.
+        import shutil
+        try:
+            from desktop import pg_embedded
+            pg_embedded.stop()
+        except Exception:  # noqa: BLE001
+            logger.exception('embedded Postgres stop during flush failed')
         for _name in ('db.sqlite3', 'db.sqlite3-wal', 'db.sqlite3-shm'):
-            _p = config_store.DATA_DIR / _name
             try:
-                if _p.exists():
-                    _p.unlink()
+                (config_store.DATA_DIR / _name).unlink(missing_ok=True)
             except OSError:
                 pass
+        shutil.rmtree(config_store.DATA_DIR / 'pgdata', ignore_errors=True)
+        try:
+            from desktop import pg_embedded
+            if not pg_embedded.start():   # re-initialises a fresh empty cluster
+                logger.warning('embedded Postgres did not restart after flush')
+        except Exception:  # noqa: BLE001
+            logger.exception('embedded Postgres restart during flush failed')
         # Rebuild empty schema + reseed (payment methods, templates) + admin.
         try:
             self.server.first_time_install()
