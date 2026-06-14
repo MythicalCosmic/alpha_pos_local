@@ -48,12 +48,12 @@ CONFIG_FIELDS = [
     ('DEPLOYMENT_MODE', 'local'),
     ('PORT', '8000'),
     # Licensing / control center
-    ('LICENSE_CONTROL_CENTER_URL', 'https://control.78.111.90.65.nip.io/'),
+    ('LICENSE_CONTROL_CENTER_URL', 'https://control.78.111.91.113.nip.io/'),
     # Self-update: base URL the signed tufup repo is served from (…/updates/metadata/
     # + …/updates/targets/). Read by desktop/updater.py; blank disables updates.
     # Points at the CONTROL CENTER (pos_control serves /updates) — publish a release
     # there once and every till pulls it on next launch. See RELEASES.md.
-    ('ALPHA_POS_UPDATE_URL', 'https://control.78.111.90.65.nip.io/updates'),
+    ('ALPHA_POS_UPDATE_URL', 'https://control.78.111.91.113.nip.io/updates'),
     # Sync (cloud) — baked defaults point at the production hub so a fresh
     # install is pre-wired. CLOUD_SYNC_TOKEN is the per-branch token from the
     # server's .env (DESKTOP_BRANCH_TOKEN); fill it in the panel or bake it here.
