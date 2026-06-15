@@ -11,7 +11,7 @@
 ; logs) lives per-user under %LOCALAPPDATA%\AlphaPOS and survives upgrades.
 
 #define AppName "Alpha POS"
-#define AppVersion "1.0.0"
+#define AppVersion "1.0.2"
 #define AppPublisher "Alpha POS"
 #define AppExeName "AlphaPOS.exe"
 #define AppId "{{8F3A1C2E-7B44-4E2D-9A1F-1A2B3C4D5E6F}"
