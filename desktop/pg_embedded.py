@@ -63,6 +63,31 @@ def _run(bin_dir: Path, exe: str, *args, **kw) -> subprocess.CompletedProcess:
                           text=True, **kw)
 
 
+def _wait_ready(bin_dir: Path, timeout: float = 60.0) -> bool:
+    """Poll until the embedded server actually ACCEPTS connections.
+
+    `pg_ctl -w start` is unreliable on Windows, so we confirm readiness with a
+    real `SELECT 1` before creating the role/db. Creating them too early used to
+    fail silently and leave Django with 'role alpha_pos does not exist' on a
+    fresh install."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        r = _run(bin_dir, 'psql.exe', '-p', PG_PORT, '-U', 'postgres',
+                 '-d', 'postgres', '-tAc', 'SELECT 1')
+        if r.returncode == 0 and '1' in (r.stdout or ''):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def _ensure_role_db(bin_dir: Path) -> None:
+    """Create the app role + database, idempotently. Ignores 'already exists'."""
+    _run(bin_dir, 'psql.exe', '-p', PG_PORT, '-U', 'postgres', '-d', 'postgres',
+         '-c', f"CREATE ROLE {PG_USER} LOGIN PASSWORD '{PG_PASSWORD}' SUPERUSER")
+    _run(bin_dir, 'psql.exe', '-p', PG_PORT, '-U', 'postgres', '-d', 'postgres',
+         '-c', f"CREATE DATABASE {PG_DB} OWNER {PG_USER}")
+
+
 def start() -> bool:
     """Bring the embedded Postgres up + ensure the role/db. Sets DB_* env so the
     Django settings connect to it. Returns True if this module now owns a running
@@ -84,17 +109,32 @@ def start() -> bool:
                  '-A', 'trust', '-E', 'UTF8')
             with open(data / 'postgresql.conf', 'a', encoding='utf-8') as f:
                 f.write(f'\nport = {PG_PORT}\nlisten_addresses = \'127.0.0.1\'\n')
-        # start if not already running
+        # start if not already running. IMPORTANT: do NOT capture pg_ctl's
+        # stdout/stderr here — on Windows the daemonized postgres can inherit the
+        # pipe and block subprocess.run forever (the app hangs on launch).
+        # postgres's own output already goes to -l pg.log; send pg_ctl's to NUL.
         st = _run(bin_dir, 'pg_ctl.exe', '-D', str(data), 'status')
         if st.returncode != 0:
             logger.info('starting embedded Postgres')
-            _run(bin_dir, 'pg_ctl.exe', '-D', str(data),
-                 '-l', str(data / 'pg.log'), '-w', 'start')
-        # ensure role + database (ignore "already exists")
-        _run(bin_dir, 'psql.exe', '-p', PG_PORT, '-U', 'postgres', '-c',
-             f"CREATE ROLE {PG_USER} LOGIN PASSWORD '{PG_PASSWORD}' SUPERUSER")
-        _run(bin_dir, 'psql.exe', '-p', PG_PORT, '-U', 'postgres', '-c',
-             f"CREATE DATABASE {PG_DB} OWNER {PG_USER}")
+            subprocess.run(
+                [str(bin_dir / 'pg_ctl.exe'), '-D', str(data),
+                 '-l', str(data / 'pg.log'), '-w', 'start'],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        # Confirm the server actually accepts connections BEFORE creating the
+        # role — otherwise the CREATE ROLE races the startup, fails silently, and
+        # Django dies with 'role alpha_pos does not exist' on a fresh install.
+        if not _wait_ready(bin_dir):
+            logger.error('embedded Postgres did not become ready in time')
+            return False
+        _ensure_role_db(bin_dir)
+        # Verify the role landed; retry once if the first attempt was lost.
+        chk = _run(bin_dir, 'psql.exe', '-p', PG_PORT, '-U', 'postgres', '-d', 'postgres',
+                   '-tAc', f"SELECT 1 FROM pg_roles WHERE rolname='{PG_USER}'")
+        if '1' not in (chk.stdout or ''):
+            logger.warning('app role missing after first attempt — retrying')
+            _ensure_role_db(bin_dir)
         # point Django at it
         os.environ.setdefault('DB_ENGINE', 'django.db.backends.postgresql')
         os.environ['DB_NAME'] = PG_DB
