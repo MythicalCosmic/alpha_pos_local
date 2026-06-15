@@ -64,12 +64,9 @@ CONFIG_FIELDS = [
     ('TELEGRAM_BOT_TOKEN', ''),   # staff/internal bot token — set via the desktop panel
     ('TELEGRAM_CHAT_IDS', ''),    # staff chat ids — set via the desktop panel
     ('TELEGRAM_WEBHOOK_SECRET', ''),
-    # AI (stock assistant + demand forecast). Pick a provider, fill its key.
-    ('AI_PROVIDER', 'claude'),  # 'claude' or 'gemini'
-    ('ANTHROPIC_API_KEY', ''),
-    ('ANTHROPIC_MODEL', 'claude-sonnet-4-6'),
-    ('GEMINI_API_KEY', ''),
-    ('GEMINI_MODEL', 'gemini-2.5-flash'),
+    # AI lives on the SERVER edition only (centralized Gemini calls against the
+    # cloud's sales/stock data). The desktop/local edition ships NO AI — no keys
+    # and no provider config here, so a till never makes its own LLM calls.
     # Fiscalization (this business's OWN identity)
     ('FISCALIZATION_MODE', 'off'),
     ('FISCAL_PROVIDER', 'mock'),
@@ -82,7 +79,7 @@ CONFIG_FIELDS = [
 ]
 
 SECRET_KEYS = {'FISCAL_SECRET', 'CLOUD_SYNC_TOKEN', 'TELEGRAM_BOT_TOKEN',
-               'TELEGRAM_WEBHOOK_SECRET', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY'}
+               'TELEGRAM_WEBHOOK_SECRET'}
 
 
 def _write_protected(path: Path, contents: str) -> None:
