@@ -40,6 +40,7 @@ urlpatterns = [
     path('orders/<int:order_id>', order_views.get_order),
     path('orders/<int:order_id>/add-item', order_views.add_item),
     path('orders/<int:order_id>/status', order_views.update_status),
+    path('orders/<int:order_id>/type', order_views.update_order_type),
     path('orders/<int:order_id>/pay', order_views.pay_order),
     path('orders/<int:order_id>/ready', order_views.mark_ready),
     path('orders/<int:order_id>/cancel', order_views.cancel_order),

@@ -175,6 +175,32 @@ def update_status(request, order_id):
 
 
 @csrf_exempt
+@require_http_methods(["PATCH"])
+@login_required
+@role_required(*STAFF_ROLES)
+def update_order_type(request, order_id):
+    """Change an existing order's type (HALL / DELIVERY / PICKUP)."""
+    data, error = parse_json_body(request)
+    if error:
+        return json_response(error)
+
+    order_type = data.get('order_type')
+    if not order_type:
+        return json_response(({
+            "success": False,
+            "message": "Missing order_type",
+            "errors": {"order_type": "order_type is required"}
+        }, 422))
+
+    cashier_id = request.user.id if request.user.role in ('CASHIER', 'MANAGER') else None
+    result, status_code = CustomerOrderService.update_order_type(
+        order_id, order_type, cashier_id,
+        user_id=request.user.id, user_role=request.user.role,
+    )
+    return JsonResponse(result, status=status_code)
+
+
+@csrf_exempt
 @require_POST
 @login_required
 @role_required(*STAFF_ROLES)

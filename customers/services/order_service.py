@@ -712,6 +712,49 @@ class CustomerOrderService:
 
     @staticmethod
     @transaction.atomic
+    def update_order_type(order_id, order_type, cashier_id=None, user_id=None, user_role=None):
+        """Change an order's type (HALL/DELIVERY/PICKUP) after creation.
+
+        Categorical only — it does not move money, so it is allowed even on a
+        paid order; a CANCELLED order is terminal and rejected. order_type is a
+        normally-synced field (NOT in Order.SYNC_WRITE_DENYLIST), so the change
+        propagates to the cloud / other tills on the next sync via save()."""
+        order = OrderRepository.get_for_update(order_id)
+        if not order:
+            return ServiceResponse.not_found('Order not found')
+
+        ownership = _check_cashier_ownership(order, cashier_id, user_id=user_id, user_role=user_role)
+        if ownership:
+            return ownership
+
+        if order_type not in ('HALL', 'DELIVERY', 'PICKUP'):
+            return ServiceResponse.validation_error(
+                errors={'order_type': 'Must be HALL, DELIVERY, or PICKUP'},
+                message='Invalid order type',
+            )
+
+        if order.status == 'CANCELED':
+            return ServiceResponse.validation_error(
+                errors={'order_type': 'A cancelled order cannot change type'},
+                message='Illegal change',
+            )
+
+        if order.order_type != order_type:
+            order.order_type = order_type
+            order.save(update_fields=['order_type'])
+
+        # Return the full updated order (same contract as update_order_status).
+        fresh = OrderRepository.get_by_id_with_relations(order_id)
+        return ServiceResponse.success(
+            data={
+                'order_type': order_type,
+                'order': _serialize_order_detail(fresh) if fresh else None,
+            },
+            message=f'Order type updated to {order_type}',
+        )
+
+    @staticmethod
+    @transaction.atomic
     def mark_item_ready(order_id, item_id, cashier_id=None, user_id=None, user_role=None):
         order = OrderRepository.get_by_id_with_relations(order_id)
         if not order:
