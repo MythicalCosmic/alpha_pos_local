@@ -28,6 +28,12 @@ def _serialize_order_list(order):
             'id': order.table.id,
             'number': order.table.number,
         } if order.table else None,
+        'customer': {
+            'id': order.customer.id,
+            'name': order.customer.name,
+            'phone': order.customer.phone_number,
+            'is_staff': order.customer.is_staff,
+        } if order.customer_id else None,
         'status': order.status,
         'is_paid': order.is_paid,
         'total_amount': str(order.total_amount or 0),
@@ -93,6 +99,12 @@ def _serialize_order_detail(order):
             'id': order.cashier.id,
             'name': f"{order.cashier.first_name} {order.cashier.last_name}"
         } if order.cashier else None,
+        'customer': {
+            'id': order.customer.id,
+            'name': order.customer.name,
+            'phone': order.customer.phone_number,
+            'is_staff': order.customer.is_staff,
+        } if order.customer_id else None,
         'status': order.status,
         'is_paid': order.is_paid,
         'total_amount': str(order.total_amount),
