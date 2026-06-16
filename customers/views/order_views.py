@@ -68,6 +68,25 @@ def create_order(request):
     user = request.user
     cashier_id = user.id if user.role in ('CASHIER', 'MANAGER') else None
 
+    # Attach a client to the order when the request carries one: an explicit
+    # customer_id, or a {name, phone} object (get-or-create base.Customer by
+    # phone). Walk-in orders send neither and stay customer-less.
+    customer_id = data.get('customer_id')
+    if not customer_id and isinstance(data.get('customer'), dict):
+        from base.models import Customer
+        c = data['customer']
+        phone = (c.get('phone') or c.get('phone_number') or '').strip()
+        name = (c.get('name') or '').strip()
+        if phone:
+            obj, _ = Customer.objects.get_or_create(
+                phone_number=phone, defaults={'name': name})
+            if name and not obj.name:
+                obj.name = name
+                obj.save(update_fields=['name'])
+            customer_id = obj.id
+        elif name:
+            customer_id = Customer.objects.create(name=name).id
+
     result, status_code = CustomerOrderService.create_order(
         user_id=user.id,
         items=data['items'],
@@ -76,6 +95,7 @@ def create_order(request):
         description=data.get('description'),
         cashier_id=cashier_id,
         delivery_person_id=data.get('delivery_person_id'),
+        customer_id=customer_id,
     )
     return JsonResponse(result, status=status_code)
 

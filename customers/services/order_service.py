@@ -333,7 +333,7 @@ class CustomerOrderService:
     @transaction.atomic
     def create_order(user_id, items, order_type='HALL', phone_number=None,
                      description=None, cashier_id=None, delivery_person_id=None,
-                     place_id=None, table_id=None):
+                     place_id=None, table_id=None, customer_id=None):
         if not UserRepository.exists(id=user_id):
             return ServiceResponse.not_found('User not found')
 
@@ -416,6 +416,7 @@ class CustomerOrderService:
             delivery_person=delivery_person,
             place=place,
             table=table,
+            customer_id=customer_id,   # client this order is for (optional)
         )
 
         from base.models import OrderItem
