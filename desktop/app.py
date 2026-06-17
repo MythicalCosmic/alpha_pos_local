@@ -191,16 +191,20 @@ def main():
         except Exception:  # noqa: BLE001 — never let updating block startup
             logger.exception('self-update check failed; continuing')
 
-    url = f'http://{control_server.CONTROL_HOST}:{control_server.CONTROL_PORT}/'
-
-    # Single-instance: if the control port is already bound, another copy is
-    # running — just surface its window and exit instead of crashing on bind.
+    # Single-instance: if ANOTHER AlphaPOS panel already holds the port, surface
+    # its window and exit. serve() auto-falls-back to a free port when some
+    # UNRELATED app squats on 8765, so we never load the wrong server (which
+    # showed up to the operator as "forbidden").
     try:
         httpd = control_server.serve()
-    except OSError:
+    except control_server.AlreadyRunning:
+        url = f'http://{control_server.CONTROL_HOST}:{control_server.CONTROL_PORT}/'
         if not _run_pywebview(url) and not _run_edge(url):
             webbrowser.open(url)
         return
+
+    # Build the URL from the port actually bound (may be a free fallback port).
+    url = f'http://{control_server.CONTROL_HOST}:{control_server.CONTROL_PORT}/'
 
     threading.Thread(target=httpd.serve_forever, name='control', daemon=True).start()
     time.sleep(0.4)  # let the socket bind

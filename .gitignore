@@ -46,3 +46,6 @@ db.sqlite3
 Thumbs.db
 .idea/
 .vscode/
+
+# Desktop panel per-install API token (generated)
+.control_token
