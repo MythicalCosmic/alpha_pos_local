@@ -11,7 +11,10 @@
 ; logs) lives per-user under %LOCALAPPDATA%\AlphaPOS and survives upgrades.
 
 #define AppName "Alpha POS"
-#define AppVersion "1.0.3"
+; Override at build time with ISCC /DAppVersion=x.y.z; keep in step with desktop/version.py.
+#ifndef AppVersion
+  #define AppVersion "1.0.7"
+#endif
 #define AppPublisher "Alpha POS"
 #define AppExeName "AlphaPOS.exe"
 #define AppId "{{8F3A1C2E-7B44-4E2D-9A1F-1A2B3C4D5E6F}"
@@ -35,7 +38,7 @@ DisableWelcomePage=no
 AllowNoIcons=yes
 LicenseFile=..\desktop\tos.txt
 OutputDir=Output
-OutputBaseFilename=AlphaPOS-Setup
+OutputBaseFilename=AlphaPOS-{#AppVersion}-Setup
 SetupIconFile=..\desktop\AlphaPOS.ico
 UninstallDisplayIcon={app}\{#AppExeName}
 UninstallDisplayName={#AppName}
