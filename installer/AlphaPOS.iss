@@ -13,7 +13,7 @@
 #define AppName "Alpha POS"
 ; Override at build time with ISCC /DAppVersion=x.y.z; keep in step with desktop/version.py.
 #ifndef AppVersion
-  #define AppVersion "1.0.7"
+  #define AppVersion "1.0.8"
 #endif
 #define AppPublisher "Alpha POS"
 #define AppExeName "AlphaPOS.exe"
