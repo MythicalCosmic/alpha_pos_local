@@ -31,9 +31,10 @@ def list_orders(request):
     cashier_id = request.GET.get('cashier_id')
     order_by = request.GET.get('order_by', '-created_at')
 
-    # Only staff (ADMIN/CASHIER/MANAGER/WAITER) can pull other users' orders;
-    # everyone else is pinned to their own. Without this, a USER token could
-    # pass ?user_id=N to enumerate any other customer's orders.
+    # Only staff (ADMIN/CASHIER/MANAGER/WAITER) can pull other users' orders or
+    # scope by client; everyone else is pinned to their own. Without this, a USER
+    # token could pass ?user_id=N / ?customer_id=N to enumerate others' orders.
+    customer_id = request.GET.get('customer_id') if request.user.role in STAFF_ROLES else None
     if request.user.role not in STAFF_ROLES:
         user_id = str(request.user.id)
         cashier_id = None
@@ -41,7 +42,7 @@ def list_orders(request):
     result, status_code = CustomerOrderService.get_all_orders(
         page=page, per_page=per_page, payment_status=payment_status,
         statuses=statuses, category_ids=category_ids, user_id=user_id,
-        cashier_id=cashier_id, order_by=order_by,
+        cashier_id=cashier_id, order_by=order_by, customer_id=customer_id,
     )
     return JsonResponse(result, status=status_code)
 
@@ -68,24 +69,21 @@ def create_order(request):
     user = request.user
     cashier_id = user.id if user.role in ('CASHIER', 'MANAGER') else None
 
-    # Attach a client to the order when the request carries one: an explicit
-    # customer_id, or a {name, phone} object (get-or-create base.Customer by
-    # phone). Walk-in orders send neither and stay customer-less.
+    # Attach a client to the order. An explicit customer_id wins; otherwise build
+    # the unified client from a {name, phone} object OR the order's own
+    # phone_number field. Customer.resolve converges by phone (so a returning
+    # client is the same row across desktop + Telegram) and creates one even when
+    # only a phone — no name — is given. Walk-ins with neither stay client-less.
     customer_id = data.get('customer_id')
-    if not customer_id and isinstance(data.get('customer'), dict):
-        from base.models import Customer
-        c = data['customer']
-        phone = (c.get('phone') or c.get('phone_number') or '').strip()
-        name = (c.get('name') or '').strip()
-        if phone:
-            obj, _ = Customer.objects.get_or_create(
-                phone_number=phone, defaults={'name': name})
-            if name and not obj.name:
-                obj.name = name
-                obj.save(update_fields=['name'])
-            customer_id = obj.id
-        elif name:
-            customer_id = Customer.objects.create(name=name).id
+    if not customer_id:
+        cdict = data.get('customer') if isinstance(data.get('customer'), dict) else {}
+        phone = (cdict.get('phone') or cdict.get('phone_number')
+                 or data.get('phone_number') or '').strip()
+        name = (cdict.get('name') or '').strip()
+        if phone or name:
+            from base.models import Customer
+            client, _ = Customer.resolve(phone=phone or None, name=name or None)
+            customer_id = client.id
 
     result, status_code = CustomerOrderService.create_order(
         user_id=user.id,

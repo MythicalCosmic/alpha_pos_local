@@ -292,7 +292,7 @@ class CustomerOrderService:
     @staticmethod
     def get_all_orders(page=1, per_page=20, statuses=None, payment_status=None,
                        category_ids=None, user_id=None, cashier_id=None,
-                       order_by='-created_at'):
+                       order_by='-created_at', customer_id=None):
         statuses_list = _parse_statuses(statuses)
         category_ids_list = _parse_int_list(category_ids)
 
@@ -306,6 +306,7 @@ class CustomerOrderService:
             user_id=user_id,
             cashier_id=cashier_id,
             order_by=order_by,
+            customer_id=customer_id,
         )
 
         page_obj, paginator = OrderRepository.paginate(qs, page, per_page)

@@ -1,6 +1,7 @@
 from django.urls import path
 from customers.views import (auth_views, category_views, product_views,
-                            order_views, staff_views, payment_views, shift_views)
+                            order_views, staff_views, payment_views, shift_views,
+                            client_views)
 
 urlpatterns = [
     # Pre-login cashier picker for the monoblock. Public (no session): the
@@ -32,6 +33,11 @@ urlpatterns = [
     path('products', product_views.list_products),
     path('products/category/<int:category_id>', product_views.products_by_category),
     path('products/<int:product_id>', product_views.get_product),
+
+    # Client base (returning-customer lookup by phone -> history + frequent foods).
+    path('clients', client_views.client_lookup),            # ?phone= | ?q=
+    path('clients/lookup', client_views.client_lookup),     # ?phone=
+    path('clients/<int:customer_id>', client_views.client_detail),
 
     path('orders', order_views.list_orders),
     path('orders/create', order_views.create_order),
