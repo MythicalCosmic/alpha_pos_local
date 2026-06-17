@@ -25,6 +25,9 @@ from desktop import control_server
 
 logger = logging.getLogger('desktop.app')
 
+# Windowless GUI build: spawn children without allocating a console window.
+_NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+
 
 def _find_edge() -> str | None:
     candidates = [
@@ -95,7 +98,7 @@ def _run_edge(url: str) -> bool:
     proc = subprocess.Popen([
         edge, f'--app={url}', f'--user-data-dir={_profile_dir()}',
         '--no-first-run', '--no-default-browser-check', '--window-size=1040,740',
-    ])
+    ], creationflags=_NO_WINDOW)
     try:
         proc.wait()
     except KeyboardInterrupt:

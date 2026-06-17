@@ -32,6 +32,13 @@ PG_PASSWORD = 'alpha_pos'
 
 _started = False
 
+# The packaged app is a windowless GUI build (console=False), so every console
+# child spawned here (postgres, pg_ctl, initdb, psql) would otherwise pop its OWN
+# terminal window — and the long-running postgres daemon's window stays open and
+# UNCLOSEABLE, while _wait_ready's psql poll flashes a console twice a second.
+# CREATE_NO_WINDOW runs them all headless. (Attr exists only on Windows; 0 else.)
+_NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+
 
 def _binaries_dir() -> Path | None:
     """Locate the bundled `pgsql/bin` (initdb/pg_ctl/postgres/psql). PyInstaller
@@ -59,6 +66,7 @@ def _data_dir() -> Path:
 
 
 def _run(bin_dir: Path, exe: str, *args, **kw) -> subprocess.CompletedProcess:
+    kw.setdefault('creationflags', _NO_WINDOW)   # no console window for the child
     return subprocess.run([str(bin_dir / exe), *args], capture_output=True,
                           text=True, **kw)
 
@@ -120,7 +128,7 @@ def start() -> bool:
                 [str(bin_dir / 'pg_ctl.exe'), '-D', str(data),
                  '-l', str(data / 'pg.log'), '-w', 'start'],
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, creationflags=_NO_WINDOW,
             )
         # Confirm the server actually accepts connections BEFORE creating the
         # role — otherwise the CREATE ROLE races the startup, fails silently, and
