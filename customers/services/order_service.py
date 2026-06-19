@@ -451,6 +451,15 @@ class CustomerOrderService:
                 price=d['price'],
                 ready_at=now if instant else None,
             ))
+        # bulk_create bypasses Model.save(), which is what stamps branch_id and
+        # marks a row pending for the cloud push. Without it these line items keep
+        # branch_id='' and the sync sweep (it only sends THIS branch's rows) skips
+        # them forever — so the cloud received order headers + payments but never
+        # the items. Stamp branch_id so they sync like every individually-saved row.
+        from django.conf import settings as _settings
+        _bid = getattr(_settings, 'BRANCH_ID', '') or ''
+        for _it in new_items:
+            _it.branch_id = _bid
         OrderItem.objects.bulk_create(new_items)
 
         # An order made up entirely of instant items has nothing to cook —
