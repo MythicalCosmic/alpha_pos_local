@@ -9,6 +9,7 @@ from base.repositories import (
     UserRepository, PlaceRepository, TableRepository,
 )
 from base.helpers.response import ServiceResponse
+from base.helpers.request import coerce_quantity
 from notifications.handlers.order import OrderNotification
 from base.models import Table
 
@@ -36,6 +37,9 @@ def _serialize_order_list(order):
         } if order.customer_id else None,
         'status': order.status,
         'is_paid': order.is_paid,
+        'payment_requested_at': (
+            order.payment_requested_at.isoformat() if order.payment_requested_at else None
+        ),
         'total_amount': str(order.total_amount or 0),
         # The list queryset is prefetched with `items__product__category`
         # (OrderRepository.get_with_relations) — iterate the cached items
@@ -107,6 +111,9 @@ def _serialize_order_detail(order):
         } if order.customer_id else None,
         'status': order.status,
         'is_paid': order.is_paid,
+        'payment_requested_at': (
+            order.payment_requested_at.isoformat() if order.payment_requested_at else None
+        ),
         'total_amount': str(order.total_amount),
         'items': items,
         'items_ready_count': sum(1 for i in items if i['is_ready']),
@@ -155,6 +162,21 @@ def _recalculate_total(order):
 class WaiterOrderService:
 
     @staticmethod
+    def get_owned_order(order_id, waiter_user_id):
+        """Load an order and enforce the waiter-ownership gate. Used by the
+        discount / secret-word views, which call DiscountService directly and
+        would otherwise skip the per-order ownership check every other waiter
+        mutation enforces. Returns (order, None) on success, or
+        (None, (body, status)) when missing / not owned."""
+        order = OrderRepository.get_by_id(order_id)
+        if not order:
+            return None, ServiceResponse.not_found('Order not found')
+        denied = _check_waiter_ownership(order, waiter_user_id)
+        if denied:
+            return None, denied
+        return order, None
+
+    @staticmethod
     def list_my_orders(waiter_user_id, page=1, per_page=20, status=None):
         qs = OrderRepository.build_filtered_queryset(
             cashier_id=waiter_user_id,
@@ -196,15 +218,65 @@ class WaiterOrderService:
                 message='Invalid order type',
             )
 
+        # Validate the items payload shape BEFORE touching the DB so malformed
+        # input (non-list, non-dict element, non-int product_id, bad quantity)
+        # returns a clean 422 instead of crashing deep in the loop (-> HTTP 500).
+        if not isinstance(items, list):
+            return ServiceResponse.validation_error(
+                errors={'items': 'Must be a list of {product_id, quantity}'},
+                message='Invalid items',
+            )
+        cleaned_items = []
+        for raw in items:
+            if not isinstance(raw, dict):
+                return ServiceResponse.validation_error(
+                    errors={'items': 'Each item must be an object'},
+                    message='Invalid item',
+                )
+            try:
+                cleaned_product_id = int(raw.get('product_id'))
+            except (TypeError, ValueError):
+                return ServiceResponse.validation_error(
+                    errors={'product_id': 'must be an integer'},
+                    message='Invalid product_id',
+                )
+            cleaned_quantity = coerce_quantity(raw.get('quantity', 1))
+            if cleaned_quantity is None:
+                return ServiceResponse.validation_error(
+                    errors={'quantity': 'must be a positive integer'},
+                    message='Quantity must be greater than 0',
+                )
+            cleaned_items.append({
+                'product_id': cleaned_product_id,
+                'quantity': cleaned_quantity,
+                'detail': raw.get('detail'),
+            })
+
         place = None
         table = None
 
-        if place_id:
+        # Coerce optional place_id/table_id so a non-numeric body value returns a
+        # clean 422 rather than a 500 from the ORM PK lookup.
+        if place_id is not None and place_id != '':
+            try:
+                place_id = int(place_id)
+            except (TypeError, ValueError):
+                return ServiceResponse.validation_error(
+                    errors={'place_id': 'must be an integer'},
+                    message='Invalid place_id',
+                )
             place = PlaceRepository.get_by_id(place_id)
             if not place:
                 return ServiceResponse.not_found('Place not found')
 
-        if table_id:
+        if table_id is not None and table_id != '':
+            try:
+                table_id = int(table_id)
+            except (TypeError, ValueError):
+                return ServiceResponse.validation_error(
+                    errors={'table_id': 'must be an integer'},
+                    message='Invalid table_id',
+                )
             table = TableRepository.get_by_id(table_id)
             if not table:
                 return ServiceResponse.not_found('Table not found')
@@ -216,33 +288,25 @@ class WaiterOrderService:
         display_id = OrderRepository.next_display_id()
         chef_queue_number = OrderRepository.next_chef_queue_number()
 
-        product_ids = [item.get('product_id') for item in items]
+        product_ids = [it['product_id'] for it in cleaned_items]
         products = {p.id: p for p in ProductRepository.filter(id__in=product_ids)}
 
         total_amount = Decimal('0.00')
         order_items_data = []
 
-        for item_data in items:
-            product_id = item_data.get('product_id')
-            quantity = item_data.get('quantity', 1)
-
-            if quantity <= 0:
-                return ServiceResponse.validation_error(
-                    errors={'quantity': 'Must be greater than 0'},
-                    message='Quantity must be greater than 0',
-                )
-
-            product = products.get(product_id)
+        for item_data in cleaned_items:
+            product = products.get(item_data['product_id'])
             if not product:
-                return ServiceResponse.not_found(f'Product with id {product_id} not found')
+                return ServiceResponse.not_found(
+                    f"Product with id {item_data['product_id']} not found")
 
             order_items_data.append({
                 'product': product,
-                'detail': item_data.get('detail'),
-                'quantity': quantity,
+                'detail': item_data['detail'],
+                'quantity': item_data['quantity'],
                 'price': product.price,
             })
-            total_amount += product.price * quantity
+            total_amount += product.price * item_data['quantity']
 
         order = OrderRepository.create(
             user_id=user_id,
@@ -478,7 +542,16 @@ class WaiterOrderService:
             return ServiceResponse.error('Cannot mark cancelled order as ready')
 
         if order.status == 'READY':
-            return ServiceResponse.error('Order is already ready')
+            # Idempotent: a flaky-LAN retry of an order that's already ready gets
+            # a benign 200 (not a 4xx) and we skip re-stamping ready_at /
+            # re-notifying. Mirrors CustomerOrderService.mark_order_ready.
+            return ServiceResponse.success(
+                data={
+                    'status': order.status,
+                    'ready_at': order.ready_at.isoformat() if order.ready_at else None,
+                },
+                message='Order is already ready',
+            )
 
         now = timezone.now()
         order.status = 'READY'
@@ -491,6 +564,41 @@ class WaiterOrderService:
         return ServiceResponse.success(
             data={'status': order.status, 'ready_at': order.ready_at.isoformat()},
             message='Order marked as ready',
+        )
+
+    @staticmethod
+    @transaction.atomic
+    def request_payment(order_id, waiter_user_id):
+        """Waiter "send to cashier": flag the order so the cashier screen knows
+        the waiter wants payment collected. Stamps payment_requested_at once
+        (idempotent — repeat calls don't move the timestamp). Advisory only: it
+        does NOT take payment, change status, or touch the cash register — the
+        cashier still rings it up on the till."""
+        order = OrderRepository.get_for_update(order_id)
+        if not order:
+            return ServiceResponse.not_found('Order not found')
+
+        ownership = _check_waiter_ownership(order, waiter_user_id)
+        if ownership:
+            return ownership
+
+        if order.is_paid:
+            return ServiceResponse.error('Order is already paid')
+
+        if order.status == 'CANCELED':
+            return ServiceResponse.error('Cannot request payment for a cancelled order')
+
+        if order.payment_requested_at is None:
+            order.payment_requested_at = timezone.now()
+            order.save(update_fields=['payment_requested_at'])
+
+        return ServiceResponse.success(
+            data={
+                'order_id': order.id,
+                'display_id': order.display_id,
+                'payment_requested_at': order.payment_requested_at.isoformat(),
+            },
+            message='Payment requested from cashier',
         )
 
     @staticmethod

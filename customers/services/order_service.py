@@ -72,6 +72,11 @@ def _serialize_order_list(order):
         } if order.customer_id else None,
         'status': _to_api_status(order.status),
         'is_paid': order.is_paid,
+        # Set when a waiter pressed "send to cashier" — the till highlights these
+        # unpaid orders as awaiting collection (see waiters request_payment).
+        'payment_requested_at': (
+            order.payment_requested_at.isoformat() if order.payment_requested_at else None
+        ),
         'total_amount': str(order.total_amount or 0),
         'discount_percent': str(order.discount_percent or 0),
         'payments': [{'method': p.method, 'amount': str(p.amount)}
@@ -154,6 +159,10 @@ def _serialize_order_detail(order):
         'status': _to_api_status(order.status),
         'is_paid': order.is_paid,
         'paid_at': order.paid_at.isoformat() if order.paid_at else None,
+        # Waiter "send to cashier" signal (see waiters request_payment).
+        'payment_requested_at': (
+            order.payment_requested_at.isoformat() if order.payment_requested_at else None
+        ),
         'total_amount': str(order.total_amount),
         'discount_percent': str(order.discount_percent or 0),
         'payments': [{'method': p.method, 'amount': str(p.amount)}

@@ -6,6 +6,7 @@ from base.helpers.response import json_response
 from base.security.auth import login_required, role_required
 from base.security.audit import audit
 from base.security.idempotency import idempotent
+from base.security.rate_limit import rate_limit, rate_limit_by
 from base.models import AuditLog
 from waiters.services.order_service import WaiterOrderService
 
@@ -92,6 +93,17 @@ def add_item(request, order_id):
             "errors": {"product_id": "product_id is required"}
         }, 422))
 
+    # Coerce so a non-numeric product_id returns a clean 422 instead of a 500
+    # from the ORM PK lookup deep in the service.
+    try:
+        product_id = int(product_id)
+    except (TypeError, ValueError):
+        return json_response(({
+            "success": False,
+            "message": "Invalid product_id",
+            "errors": {"product_id": "product_id must be an integer"}
+        }, 422))
+
     if quantity is None:
         return json_response(({
             "success": False,
@@ -145,6 +157,17 @@ def remove_item(request, order_id, item_id):
 @role_required(*WAITER_ROLES)
 def mark_ready(request, order_id):
     result, status_code = WaiterOrderService.mark_ready(order_id, waiter_user_id=request.user.id)
+    return JsonResponse(result, status=status_code)
+
+
+@csrf_exempt
+@require_POST
+@login_required
+@role_required(*WAITER_ROLES)
+def request_payment(request, order_id):
+    result, status_code = WaiterOrderService.request_payment(
+        order_id, waiter_user_id=request.user.id,
+    )
     return JsonResponse(result, status=status_code)
 
 
@@ -226,6 +249,13 @@ def apply_discount(request, order_id):
     data, error = parse_json_body(request)
     if error:
         return json_response(error)
+    # The discount views call DiscountService directly (it has no ownership
+    # concept — it's the shared cashier surface), so we must enforce the same
+    # per-order ownership gate every other waiter mutation uses. Without it a
+    # waiter could lower/raise another waiter's bill (total_amount tampering).
+    _order, denied = WaiterOrderService.get_owned_order(order_id, request.user.id)
+    if denied:
+        return json_response(denied)
     from discounts.services import DiscountService
     result, status = DiscountService.apply_to_order(order_id, data.get('code', ''), request.user.id)
     return JsonResponse(result, status=status)
@@ -239,8 +269,22 @@ def remove_discount(request, order_id):
     data, error = parse_json_body(request)
     if error:
         return json_response(error)
+    _order, denied = WaiterOrderService.get_owned_order(order_id, request.user.id)
+    if denied:
+        return json_response(denied)
+    order_discount_id = data.get('order_discount_id')
+    if order_discount_id is not None:
+        # Coerce so a non-numeric id returns 422 instead of a 500 from the PK lookup.
+        try:
+            order_discount_id = int(order_discount_id)
+        except (TypeError, ValueError):
+            return json_response(({
+                "success": False,
+                "message": "Invalid order_discount_id",
+                "errors": {"order_discount_id": "must be an integer"}
+            }, 422))
     from discounts.services import DiscountService
-    result, status = DiscountService.remove_from_order(order_id, data.get('order_discount_id'), request.user.id)
+    result, status = DiscountService.remove_from_order(order_id, order_discount_id, request.user.id)
     return JsonResponse(result, status=status)
 
 
@@ -248,10 +292,21 @@ def remove_discount(request, order_id):
 @require_POST
 @login_required
 @role_required(*WAITER_ROLES)
+# Throttle so a stolen/compromised waiter session can't brute-force the secret
+# word at request-loop speed — matches the cashier surface's protection. Per-IP
+# plus a per-order axis so one attacker can't burn the budget across targets.
+@rate_limit('discount_secret_word', 5, 60)
+@rate_limit_by(
+    'discount_secret_word_order', 5, 300,
+    lambda r: r.resolver_match.kwargs.get('order_id') if r.resolver_match else None,
+)
 def check_secret_word(request, order_id):
     data, error = parse_json_body(request)
     if error:
         return json_response(error)
+    _order, denied = WaiterOrderService.get_owned_order(order_id, request.user.id)
+    if denied:
+        return json_response(denied)
     from discounts.services import DiscountService
     result, status = DiscountService.validate_secret_word(data.get('word', ''), order_id, request.user.id)
     return JsonResponse(result, status=status)
