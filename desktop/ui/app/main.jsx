@@ -15,7 +15,8 @@ const SYNC_L = {
 const NAV = [
   { id: "dashboard", icon: "dashboard", l: "nav.dashboard", screen: () => <DashboardScreen /> },
   { id: "license", icon: "license", l: "nav.license", screen: () => <LicenseScreen /> },
-  { id: "notifications", icon: "bell", l: "nav.notifications", screen: () => <NotificationsScreen /> },
+  // Telegram notifications are now configured + edited on the SERVER (admin
+  // panel) — the bot runs server-side, so this per-till page was removed.
   { id: "config", icon: "sliders", l: "nav.config", screen: () => <ConfigScreen /> },
   { id: "tests", icon: "flask", l: "nav.tests", screen: () => <TestsScreen /> },
   { id: "fiscal", icon: "receipt", l: "nav.fiscal", screen: () => <FiscalScreen /> },
