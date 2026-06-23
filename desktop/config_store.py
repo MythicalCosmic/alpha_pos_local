@@ -34,6 +34,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 ENV_FILE = DATA_DIR / '.env'
 SECRET_FILE = DATA_DIR / '.secret_key'
 FERNET_FILE = DATA_DIR / '.license_fernet_key'
+DEVICE_FILE = DATA_DIR / '.device_id'
 STATE_FILE = DATA_DIR / 'desktop_state.json'
 CREDS_FILE = DATA_DIR / 'admin_credentials.json'
 # Marker written by a factory reset so a leftover (locked) DB is wiped on the
@@ -105,6 +106,20 @@ def load_or_generate_fernet() -> str:
     key = Fernet.generate_key().decode('ascii')
     _write_protected(FERNET_FILE, key + '\n')
     return key
+
+
+def load_or_generate_device_id() -> str:
+    """Stable per-install till id (not a secret) — identifies THIS terminal to the
+    cloud presence registry so a delivery order can be auto-dispatched to the
+    active cashier on a connected POS. Survives restarts; regenerated only on a
+    factory reset (the data dir is wiped)."""
+    if DEVICE_FILE.exists():
+        existing = DEVICE_FILE.read_text(encoding='utf-8').strip()
+        if existing:
+            return existing
+    device_id = secrets.token_hex(16)
+    _write_protected(DEVICE_FILE, device_id + '\n')
+    return device_id
 
 
 def parse_env_file() -> dict:
@@ -210,6 +225,8 @@ def apply_env_to_process() -> None:
     os.environ.setdefault('ALPHA_POS_DATA_DIR', str(DATA_DIR))
     os.environ.setdefault('SECRET_KEY', load_or_generate_secret())
     os.environ.setdefault('LICENSE_FERNET_KEY', load_or_generate_fernet())
+    # Per-install till id for the cloud presence registry (auto-dispatch).
+    os.environ.setdefault('DEVICE_ID', load_or_generate_device_id())
     os.environ.setdefault('DEBUG', 'False')
     os.environ.setdefault('ALLOWED_HOSTS', 'localhost,127.0.0.1')
     # Trusted-LAN appliance: the POS is exposed to the whole network, so open
