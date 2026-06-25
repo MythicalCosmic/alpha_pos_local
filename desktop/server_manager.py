@@ -121,8 +121,32 @@ class ServerManager:
 
     def first_time_install(self, log=lambda m: None):
         """Run migrations, bootstrap the admin, and collect static — the
-        'install everything on first run' step. Safe to re-run."""
+        'install everything on first run' step. Gated by a setup signature
+        (app version + a hash of the on-disk migration graph) persisted in
+        desktop_state.json, so a warm launch with nothing new SKIPS the
+        multi-second migrate / seed_templates / collectstatic entirely. The
+        signature changes whenever a migration is added (any release), so a
+        post-update launch always re-runs migrate — it can never be skipped
+        when the schema actually changed. Safe to re-run."""
         self.ensure_django()
+        from desktop import config_store
+        import hashlib
+        try:
+            from desktop.version import __version__ as _ver
+        except Exception:  # noqa: BLE001
+            _ver = '0'
+        _mig_hash = 'nohash'
+        try:
+            from django.db.migrations.loader import MigrationLoader
+            _loader = MigrationLoader(None, ignore_no_migrations=True)
+            _keys = sorted(f'{a}.{n}' for (a, n) in _loader.disk_migrations.keys())
+            _mig_hash = hashlib.sha1('\n'.join(_keys).encode('utf-8')).hexdigest()[:12]
+        except Exception:  # noqa: BLE001
+            pass
+        sig = f'{_ver}:{_mig_hash}'
+        if config_store.read_state().get('setup_sig') == sig:
+            log('Setup already current — skipping migrate/seed/collectstatic.')
+            return
         from django.core.management import call_command
         log('Applying database migrations…')
         call_command('migrate', '--noinput', verbosity=0)
@@ -156,6 +180,15 @@ class ServerManager:
         except Exception as exc:  # noqa: BLE001
             log(f'  (collectstatic skipped: {exc})')
         log('Setup complete.')
+        # Persist the signature so the next launch with nothing new skips all of
+        # the above. Only reached after migrate succeeded (it's unguarded above),
+        # so a failed migrate never writes the marker and is retried next launch.
+        try:
+            _st = config_store.read_state()
+            _st['setup_sig'] = sig
+            config_store.write_state(_st)
+        except Exception as exc:  # noqa: BLE001
+            log(f'  (could not persist setup marker: {exc})')
 
     # -- Server lifecycle ----------------------------------------------------
     def is_running(self):

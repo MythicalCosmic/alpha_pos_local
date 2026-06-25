@@ -141,79 +141,99 @@ def _autostart_backend():
         time.sleep(5)  # watchdog poll — restart promptly if the server stops
 
 
-def main():
-    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
-
-    # Finish any armed factory reset FIRST — before embedded Postgres opens the
-    # cluster. apply_env_to_process() also calls this, but that runs after the DB
-    # is up; if a reset left the cluster locked, the next launch would otherwise
-    # start the OLD database (re-locking it) and the wipe would silently fail,
-    # leaving the prior owner's data live. Here nothing holds the cluster yet.
+def _boot_worker():
+    """Bring the heavy backend up BEHIND the already-painted panel: finish any
+    armed factory reset, start embedded Postgres, load config env, supervise the
+    POS server, then run a DEFERRED self-update check. None of this is on the
+    first-paint path, so the window appears instantly and the panel's existing
+    status poller shows 'starting database / server…' until it's ready."""
+    # Factory reset MUST complete before embedded Postgres opens the cluster — if
+    # a reset left the cluster locked, starting the old DB first would re-lock it
+    # and the wipe would silently fail, leaving the prior owner's data live.
     try:
         from desktop import config_store
         config_store.consume_reset_pending()
     except Exception:  # noqa: BLE001
-        logger.exception('factory-reset consume failed; continuing')
+        logger.exception('boot: factory-reset consume failed; continuing')
 
-    # Embedded Postgres (packaged build): bring the private DB up before anything
-    # connects. No-op for a dev run against an external / workspace Postgres.
+    # Embedded Postgres (packaged build); no-op against an external/dev DB.
     try:
         from desktop import pg_embedded
         pg_embedded.start()
         atexit.register(pg_embedded.stop)
     except Exception:  # noqa: BLE001
-        logger.exception('embedded Postgres bootstrap failed; continuing')
+        logger.exception('boot: embedded Postgres bootstrap failed; continuing')
 
-    if '--selftest' in sys.argv:
-        return _selftest()
-
-    # Load saved config + baked defaults (incl. ALPHA_POS_UPDATE_URL) into the
-    # process env BEFORE the self-update check — otherwise apply_env_to_process
-    # only runs later inside ensure_django, so the launch-time updater would see
-    # no update server and skip on a hands-off boot.
+    # Load saved config + baked defaults (sync URL, update URL, telegram…) into
+    # the process env AFTER PG so its DB_* env stays authoritative.
     try:
         from desktop import config_store
         config_store.apply_env_to_process()
-    except Exception:  # noqa: BLE001 — never let env loading block startup
-        logger.exception('early env load failed; continuing')
+    except Exception:  # noqa: BLE001
+        logger.exception('boot: env load failed; continuing')
 
-    # Self-update check BEFORE anything binds or serves. In a configured frozen
-    # build this may download a new signed bundle and restart the process (so
-    # the call won't return); in dev or when unconfigured it's a guaranteed
-    # no-op that never raises. --no-update skips it (useful for debugging).
+    # Start + supervise the POS server (its own infinite watchdog loop) on its own
+    # thread so this worker can move on to the deferred update check.
+    threading.Thread(target=_autostart_backend, name='autostart', daemon=True).start()
+
+    # Self-update check — DEFERRED here, AFTER the window is painted + PG is up, so
+    # the ~800ms tufup import + blocking HTTPS round-trip never delays first paint.
+    # In a configured frozen build it may apply an update + restart the process.
     if '--no-update' not in sys.argv:
         try:
             from desktop import updater
             updater.check_and_apply()
-            # Reached here => no update applied; confirm any prior update booted
-            # cleanly so its pending marker is cleared.
             updater.mark_started_ok()
-        except Exception:  # noqa: BLE001 — never let updating block startup
-            logger.exception('self-update check failed; continuing')
+        except Exception:  # noqa: BLE001
+            logger.exception('boot: self-update check failed; continuing')
 
-    # Single-instance: if ANOTHER AlphaPOS panel already holds the port, surface
-    # its window and exit. serve() auto-falls-back to a free port when some
-    # UNRELATED app squats on 8765, so we never load the wrong server (which
-    # showed up to the operator as "forbidden").
-    try:
-        httpd = control_server.serve()
-    except control_server.AlreadyRunning:
-        url = f'http://{control_server.CONTROL_HOST}:{control_server.CONTROL_PORT}/'
+
+def main():
+    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
+
+    # 1) SINGLE-INSTANCE LOCK FIRST — before any embedded-Postgres / data-dir work.
+    #    A second launch must never touch pgdata or open a second window; it
+    #    focuses the running panel and exits (no second uvicorn/PG/window race).
+    from desktop import single_instance
+    url = f'http://{control_server.CONTROL_HOST}:{control_server.CONTROL_PORT}/'
+    if not single_instance.acquire():
+        logger.info('another AlphaPOS instance is already running — focusing it')
         if not _run_pywebview(url) and not _run_edge(url):
             webbrowser.open(url)
         return
 
-    # Build the URL from the port actually bound (may be a free fallback port).
+    # --selftest brings the backend up synchronously (no window).
+    if '--selftest' in sys.argv:
+        try:
+            from desktop import config_store, pg_embedded
+            config_store.consume_reset_pending()
+            pg_embedded.start()
+            atexit.register(pg_embedded.stop)
+            config_store.apply_env_to_process()
+        except Exception:  # noqa: BLE001
+            logger.exception('selftest backend bootstrap failed')
+        return _selftest()
+
+    # 2) Bind the lightweight control-panel server and PAINT THE WINDOW IMMEDIATELY.
+    #    The heavy backend (embedded Postgres + the POS uvicorn server) boots on a
+    #    worker behind it; serve() auto-falls-back to a free port if 8765 is squatted.
+    try:
+        httpd = control_server.serve()
+    except control_server.AlreadyRunning:
+        # Port held though our mutex said we're sole (a stale owner): focus + exit.
+        if not _run_pywebview(url) and not _run_edge(url):
+            webbrowser.open(url)
+        return
+
+    # serve() may have bound a free fallback port — rebuild the URL from it.
     url = f'http://{control_server.CONTROL_HOST}:{control_server.CONTROL_PORT}/'
-
     threading.Thread(target=httpd.serve_forever, name='control', daemon=True).start()
-    time.sleep(0.4)  # let the socket bind
 
-    # Auto-start + supervise the POS backend so every launch comes up serving
-    # on the LAN by itself, with retries — no operator button press needed.
-    threading.Thread(target=_autostart_backend, name='autostart', daemon=True).start()
+    # 3) Boot the backend (PG → env → POS server → deferred update) off the paint path.
+    threading.Thread(target=_boot_worker, name='boot', daemon=True).start()
 
-    # Show the panel. Prefer the native window; fall back so it ALWAYS appears.
+    # 4) FIRST PAINT — nothing slow upstream. Prefer the native window; fall back so
+    #    the panel ALWAYS appears.
     forced_browser = '--browser' in sys.argv
     shown = False
     if not forced_browser:
@@ -227,9 +247,14 @@ def main():
         except KeyboardInterrupt:
             pass
 
-    # Window closed → stop the POS server (if running) and exit.
+    # Window closed → stop the POS server + embedded Postgres and exit.
     try:
         control_server._API.stop_server()
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from desktop import pg_embedded
+        pg_embedded.stop()
     except Exception:  # noqa: BLE001
         pass
     httpd.shutdown()

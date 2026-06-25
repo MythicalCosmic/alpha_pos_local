@@ -13,6 +13,9 @@ urlpatterns = [
     # Payment-method catalog for the cashier payment screen (staff-auth).
     path('payment-methods', payment_views.payment_methods),
 
+    # Active couriers (DeliveryPerson) for the order courier picker.
+    path('couriers', order_views.list_couriers),
+
     # Cashier-facing shift control (own shift; manual start/end + resume).
     path('shifts/start', shift_views.start_shift),
     path('shifts/end', shift_views.end_shift),
@@ -47,6 +50,8 @@ urlpatterns = [
     path('orders/<int:order_id>/add-item', order_views.add_item),
     path('orders/<int:order_id>/status', order_views.update_status),
     path('orders/<int:order_id>/type', order_views.update_order_type),
+    path('orders/<int:order_id>/courier', order_views.assign_courier),
+    path('orders/<int:order_id>/details', order_views.update_order_details),
     path('orders/<int:order_id>/pay', order_views.pay_order),
     path('orders/<int:order_id>/ready', order_views.mark_ready),
     path('orders/<int:order_id>/cancel', order_views.cancel_order),

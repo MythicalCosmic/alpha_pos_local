@@ -71,21 +71,53 @@ def _run(bin_dir: Path, exe: str, *args, **kw) -> subprocess.CompletedProcess:
                           text=True, **kw)
 
 
-def _wait_ready(bin_dir: Path, timeout: float = 60.0) -> bool:
-    """Poll until the embedded server actually ACCEPTS connections.
-
-    `pg_ctl -w start` is unreliable on Windows, so we confirm readiness with a
-    real `SELECT 1` before creating the role/db. Creating them too early used to
-    fail silently and leave Django with 'role alpha_pos does not exist' on a
-    fresh install."""
+def _wait_ready(bin_dir: Path, timeout: float = 15.0) -> bool:
+    """Poll until the embedded server ACCEPTS connections on its port. A raw TCP
+    connect is far cheaper than spawning psql.exe twice a second (each flashed a
+    console + cost a process launch); the 0.15s cadence makes a normal start
+    return in a fraction of a second instead of the old up-to-60s poll."""
+    import socket
     deadline = time.time() + timeout
     while time.time() < deadline:
-        r = _run(bin_dir, 'psql.exe', '-p', PG_PORT, '-U', 'postgres',
-                 '-d', 'postgres', '-tAc', 'SELECT 1')
-        if r.returncode == 0 and '1' in (r.stdout or ''):
-            return True
-        time.sleep(0.5)
+        try:
+            with socket.create_connection(('127.0.0.1', int(PG_PORT)), timeout=1.0):
+                return True
+        except OSError:
+            time.sleep(0.15)
     return False
+
+
+def _pid_alive(pid: int) -> bool:
+    """True if PID is a RUNNING postgres.exe — so we never delete a live lock.
+    Uncertain -> True (safe default: don't remove a possibly-live postmaster.pid)."""
+    try:
+        out = subprocess.run(
+            ['tasklist', '/FI', f'PID eq {pid}', '/FI', 'IMAGENAME eq postgres.exe', '/NH'],
+            capture_output=True, text=True, creationflags=_NO_WINDOW, timeout=5)
+        return 'postgres.exe' in (out.stdout or '').lower()
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _role_exists(bin_dir: Path) -> bool:
+    chk = _run(bin_dir, 'psql.exe', '-p', PG_PORT, '-U', 'postgres', '-d', 'postgres',
+               '-tAc', f"SELECT 1 FROM pg_roles WHERE rolname='{PG_USER}'")
+    return '1' in (chk.stdout or '')
+
+
+def _log_pg_failure(data: Path) -> None:
+    """Surface the REAL Postgres error (tail of pg.log) on a failed start, instead
+    of the old silent timeout that left Django dying with 'role does not exist'."""
+    try:
+        log = data / 'pg.log'
+        if log.exists():
+            tail = log.read_text(encoding='utf-8', errors='replace').splitlines()[-15:]
+            logger.error('embedded Postgres did not become ready. pg.log tail:\n%s',
+                         '\n'.join(tail))
+        else:
+            logger.error('embedded Postgres did not become ready (no pg.log yet)')
+    except Exception:  # noqa: BLE001
+        logger.error('embedded Postgres did not become ready (pg.log unreadable)')
 
 
 def _ensure_role_db(bin_dir: Path) -> None:
@@ -111,7 +143,23 @@ def start() -> bool:
         return False
     try:
         data = _data_dir()
-        if not (data / 'PG_VERSION').exists():
+        # Recover from a stale lock left by a hard kill (crash / Task Manager /
+        # power loss / a double-launch race): a postmaster.pid pointing at a DEAD
+        # pid makes pg_ctl refuse to start and _wait_ready burn its whole timeout
+        # — the "server sometimes won't start" symptom. Remove it ONLY when the
+        # pid is provably not a running postgres (never delete a live lock).
+        pid_file = data / 'postmaster.pid'
+        if pid_file.exists():
+            try:
+                stale_pid = int(pid_file.read_text(encoding='utf-8').splitlines()[0].strip())
+                if not _pid_alive(stale_pid):
+                    pid_file.unlink()
+                    logger.warning('removed stale postmaster.pid (pid %s not running)', stale_pid)
+            except Exception:  # noqa: BLE001
+                logger.exception('could not evaluate postmaster.pid')
+
+        was_initialised = (data / 'PG_VERSION').exists()
+        if not was_initialised:
             logger.info('initialising embedded Postgres at %s', data)
             _run(bin_dir, 'initdb.exe', '-D', str(data), '-U', 'postgres',
                  '-A', 'trust', '-E', 'UTF8')
@@ -122,7 +170,8 @@ def start() -> bool:
         # pipe and block subprocess.run forever (the app hangs on launch).
         # postgres's own output already goes to -l pg.log; send pg_ctl's to NUL.
         st = _run(bin_dir, 'pg_ctl.exe', '-D', str(data), 'status')
-        if st.returncode != 0:
+        running = (st.returncode == 0)
+        if not running:
             logger.info('starting embedded Postgres')
             subprocess.run(
                 [str(bin_dir / 'pg_ctl.exe'), '-D', str(data),
@@ -130,19 +179,22 @@ def start() -> bool:
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL, creationflags=_NO_WINDOW,
             )
-        # Confirm the server actually accepts connections BEFORE creating the
-        # role — otherwise the CREATE ROLE races the startup, fails silently, and
-        # Django dies with 'role alpha_pos does not exist' on a fresh install.
-        if not _wait_ready(bin_dir):
-            logger.error('embedded Postgres did not become ready in time')
-            return False
-        _ensure_role_db(bin_dir)
-        # Verify the role landed; retry once if the first attempt was lost.
-        chk = _run(bin_dir, 'psql.exe', '-p', PG_PORT, '-U', 'postgres', '-d', 'postgres',
-                   '-tAc', f"SELECT 1 FROM pg_roles WHERE rolname='{PG_USER}'")
-        if '1' not in (chk.stdout or ''):
-            logger.warning('app role missing after first attempt — retrying')
+            # Confirm it actually accepts connections (pg_ctl -w is unreliable on
+            # Windows); surface pg.log instead of a silent timeout on failure.
+            if not _wait_ready(bin_dir):
+                _log_pg_failure(data)
+                return False
+            running = True
+
+        # Role/db are created on first init and PERSIST across restarts. On a warm
+        # launch (already running + initialised) just verify (1 cheap query) and
+        # only (re)create if missing — instead of the old unconditional double
+        # CREATE + verify, saving 3-4 psql.exe spawns on every normal launch.
+        if not _role_exists(bin_dir):
             _ensure_role_db(bin_dir)
+            if not _role_exists(bin_dir):
+                logger.warning('app role still missing after create — retrying once')
+                _ensure_role_db(bin_dir)
         # point Django at it
         os.environ.setdefault('DB_ENGINE', 'django.db.backends.postgresql')
         os.environ['DB_NAME'] = PG_DB

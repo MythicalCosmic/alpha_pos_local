@@ -10,6 +10,10 @@ from base.services.inkassa_service import InkassaService
 from base.helpers.response import ServiceResponse
 from notifications.handlers.order import OrderNotification
 
+# Sentinel: distinguishes "delivery_person_id not provided" (leave the courier
+# unchanged) from "delivery_person_id = null/0" (clear it) in a partial order edit.
+_UNSET = object()
+
 
 ALLOWED_STATUSES = ['PREPARING', 'READY', 'CANCELED']
 
@@ -83,6 +87,11 @@ def _serialize_order_list(order):
                      for p in order.payments.all()],
         'place': {'id': order.place.id, 'name': order.place.name} if order.place else None,
         'table': {'id': order.table.id, 'number': order.table.number} if order.table else None,
+        'delivery_person': {
+            'id': order.delivery_person.id,
+            'name': f"{order.delivery_person.first_name} {order.delivery_person.last_name or ''}".strip(),
+            'phone': order.delivery_person.phone_number,
+        } if order.delivery_person_id else None,
         # The list queryset is prefetched with `items__product__category`
         # (OrderRepository.get_with_relations) — iterate the cached items
         # instead of `.values()`, which would issue a fresh query per order
@@ -156,6 +165,11 @@ def _serialize_order_detail(order):
         } if order.customer_id else None,
         'place': {'id': order.place.id, 'name': order.place.name} if order.place else None,
         'table': {'id': order.table.id, 'number': order.table.number} if order.table else None,
+        'delivery_person': {
+            'id': order.delivery_person.id,
+            'name': f"{order.delivery_person.first_name} {order.delivery_person.last_name or ''}".strip(),
+            'phone': order.delivery_person.phone_number,
+        } if order.delivery_person_id else None,
         'status': _to_api_status(order.status),
         'is_paid': order.is_paid,
         'paid_at': order.paid_at.isoformat() if order.paid_at else None,
@@ -187,6 +201,17 @@ def _check_cashier_ownership(order, cashier_id, user_id=None, user_role=None):
     # they touch.
     if user_role in ('ADMIN', 'MANAGER', 'CASHIER'):
         return None
+    # A WAITER is POS staff but scoped to the orders THEY own (created via the
+    # waiter app with cashier_id == themselves) — so they can settle / modify
+    # their own table's order through the shared till surface (pay, items,
+    # status). They cannot touch another staff member's order.
+    if user_role == 'WAITER':
+        if user_id is not None and (order.cashier_id == user_id or order.user_id == user_id):
+            return None
+        return ServiceResponse.forbidden(
+            f'You do not have permission to modify order #{order.display_id} '
+            '(created by another staff member).'
+        )
     # USER (or any other role): require ownership of the order itself.
     if user_id is not None and order.user_id != user_id:
         return ServiceResponse.forbidden(
@@ -1089,6 +1114,75 @@ class CustomerOrderService:
             message='Order marked as ready',
         )
 
+    @staticmethod
+    def list_couriers():
+        """Active couriers (DeliveryPerson) for the order's courier picker."""
+        couriers = DeliveryPersonRepository.get_active().order_by('first_name', 'last_name')
+        return ServiceResponse.success(data={'items': [
+            {'id': c.id,
+             'name': f"{c.first_name} {c.last_name or ''}".strip(),
+             'phone': c.phone_number}
+            for c in couriers
+        ]})
+
+    @staticmethod
+    def assign_courier(order_id, delivery_person_id, user_id=None, user_role=None):
+        """Assign / replace / clear the courier on an EXISTING order (any status
+        except CANCELED). A falsy delivery_person_id clears it."""
+        order = OrderRepository.get_by_id(order_id)
+        if not order:
+            return ServiceResponse.not_found('Order not found')
+        if order.status == 'CANCELED':
+            return ServiceResponse.error('Cannot assign a courier to a cancelled order')
+        ownership = _check_cashier_ownership(order, None, user_id=user_id, user_role=user_role)
+        if ownership:
+            return ownership
+        if delivery_person_id:
+            dp = DeliveryPersonRepository.get_by_id(delivery_person_id)
+            if not dp:
+                return ServiceResponse.not_found('Courier not found')
+            order.delivery_person = dp
+        else:
+            order.delivery_person = None
+        order.save(update_fields=['delivery_person'])
+        return ServiceResponse.success(data={
+            'id': order.id, 'delivery_person_id': order.delivery_person_id})
+
+    @staticmethod
+    def update_order_details(order_id, phone_number=None, description=None,
+                             delivery_person_id=_UNSET, user_id=None, user_role=None):
+        """Staff edit of an existing order's phone_number / description / courier
+        (order_type has its own endpoint). Only the provided fields change; a
+        cancelled order can't be edited."""
+        order = OrderRepository.get_by_id(order_id)
+        if not order:
+            return ServiceResponse.not_found('Order not found')
+        if order.status == 'CANCELED':
+            return ServiceResponse.error('Cannot edit a cancelled order')
+        ownership = _check_cashier_ownership(order, None, user_id=user_id, user_role=user_role)
+        if ownership:
+            return ownership
+        update_fields = []
+        if phone_number is not None:
+            order.phone_number = phone_number
+            update_fields.append('phone_number')
+        if description is not None:
+            order.description = description
+            update_fields.append('description')
+        if delivery_person_id is not _UNSET:
+            if delivery_person_id:
+                dp = DeliveryPersonRepository.get_by_id(delivery_person_id)
+                if not dp:
+                    return ServiceResponse.not_found('Courier not found')
+                order.delivery_person = dp
+            else:
+                order.delivery_person = None
+            update_fields.append('delivery_person')
+        if update_fields:
+            order.save(update_fields=update_fields)
+        fresh = OrderRepository.get_by_id_with_relations(order_id)
+        return ServiceResponse.success(data=_serialize_order_detail(fresh))
+
     DISPLAY_LIMIT = 200
 
     @staticmethod
@@ -1101,16 +1195,24 @@ class CustomerOrderService:
         # — pre-fix each row issued two extra queries (items.count() and
         # items.filter().count()), defeating the prefetch and turning a
         # 200-row display into 600+ DB hits.
+        # Only orders with >=1 non-instant (kitchen) item belong on the customer
+        # display — the SAME rule as the chef display. A drinks-only (all-instant)
+        # order is born ready and must NOT appear here or ring the chime.
+        _has_kitchen_item = Count('items', filter=Q(
+            items__product__is_instant=False, items__is_deleted=False))
         processing = OrderRepository.model.objects.filter(
             status='PREPARING', is_deleted=False
         ).select_related('user').annotate(
             items_total=Count('items'),
             items_ready=Count('items', filter=Q(items__ready_at__isnull=False)),
-        ).order_by('created_at')[:CustomerOrderService.DISPLAY_LIMIT]
+            non_instant=_has_kitchen_item,
+        ).filter(non_instant__gt=0).order_by('created_at')[:CustomerOrderService.DISPLAY_LIMIT]
 
         finished = OrderRepository.model.objects.filter(
             status='READY', is_deleted=False, ready_at__gte=five_minutes_ago
-        ).select_related('user').order_by(
+        ).select_related('user').annotate(
+            non_instant=_has_kitchen_item,
+        ).filter(non_instant__gt=0).order_by(
             '-ready_at'
         )[:CustomerOrderService.DISPLAY_LIMIT]
 

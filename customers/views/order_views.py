@@ -330,6 +330,54 @@ def chef_display(request):
 
 
 @csrf_exempt
+@require_GET
+@login_required
+@role_required(*STAFF_ROLES)
+def list_couriers(request):
+    result, status_code = CustomerOrderService.list_couriers()
+    return JsonResponse(result, status=status_code)
+
+
+@csrf_exempt
+@require_POST
+@login_required
+@role_required(*STAFF_ROLES)
+def assign_courier(request, order_id):
+    """Assign / replace / clear the courier on an existing order."""
+    data, error = parse_json_body(request)
+    if error:
+        return json_response(error)
+    result, status_code = CustomerOrderService.assign_courier(
+        order_id, data.get('delivery_person_id'),
+        user_id=request.user.id, user_role=request.user.role,
+    )
+    return JsonResponse(result, status=status_code)
+
+
+@csrf_exempt
+@require_http_methods(["PATCH", "POST"])
+@login_required
+@role_required(*STAFF_ROLES)
+def update_order_details(request, order_id):
+    """Staff edit of phone_number / description / delivery_person on an existing
+    order. Only the provided fields change (delivery_person_id present => set/clear)."""
+    data, error = parse_json_body(request)
+    if error:
+        return json_response(error)
+    kwargs = {}
+    if 'delivery_person_id' in data:
+        kwargs['delivery_person_id'] = data.get('delivery_person_id')
+    result, status_code = CustomerOrderService.update_order_details(
+        order_id,
+        phone_number=data.get('phone_number'),
+        description=data.get('description'),
+        user_id=request.user.id, user_role=request.user.role,
+        **kwargs,
+    )
+    return JsonResponse(result, status=status_code)
+
+
+@csrf_exempt
 @require_POST
 @login_required
 @role_required(*STAFF_ROLES)
