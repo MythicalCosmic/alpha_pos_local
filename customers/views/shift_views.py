@@ -51,9 +51,15 @@ def start_shift(request):
 @login_required
 @role_required(*STAFF_ROLES)
 def end_shift(request):
+    # Body: { notes?, counted?: { CASH, UZCARD, HUMO, PAYME } } — `counted` is the
+    # cashier's blind per-tender count; thread it through so the per-method
+    # ShiftPaymentTotal reconciliation rows are created on close.
+    body = _optional_body(request)
     result, status_code = ShiftService.end_active_for_user(
         user_id=request.user.id,
-        notes=_optional_body(request).get('notes', ''),
+        notes=body.get('notes', ''),
+        counted=body.get('counted'),
+        actor=request.user,
     )
     return JsonResponse(result, status=status_code)
 
