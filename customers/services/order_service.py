@@ -419,6 +419,7 @@ class CustomerOrderService:
 
         display_id = OrderRepository.next_display_id()
         chef_queue_number = OrderRepository.next_chef_queue_number()
+        order_number = OrderRepository.next_order_number()
 
         product_ids = [item.get('product_id') for item in items]
         products = {p.id: p for p in ProductRepository.filter(id__in=product_ids)}
@@ -453,6 +454,7 @@ class CustomerOrderService:
             cashier_id=cashier_id,
             display_id=display_id,
             chef_queue_number=chef_queue_number,
+            order_number=order_number,
             order_type=order_type,
             phone_number=phone_number,
             description=description,

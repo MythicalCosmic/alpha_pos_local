@@ -287,6 +287,7 @@ class WaiterOrderService:
 
         display_id = OrderRepository.next_display_id()
         chef_queue_number = OrderRepository.next_chef_queue_number()
+        order_number = OrderRepository.next_order_number()
 
         product_ids = [it['product_id'] for it in cleaned_items]
         products = {p.id: p for p in ProductRepository.filter(id__in=product_ids)}
@@ -313,6 +314,7 @@ class WaiterOrderService:
             cashier_id=user_id,
             display_id=display_id,
             chef_queue_number=chef_queue_number,
+            order_number=order_number,
             order_type=order_type,
             phone_number=phone_number,
             description=description,
