@@ -182,8 +182,13 @@ def _boot_worker():
     if '--no-update' not in sys.argv:
         try:
             from desktop import updater
-            updater.check_and_apply()
+            # Clear any pending marker from an update applied on the PREVIOUS launch
+            # FIRST, before checking for a new one. check_and_apply() restarts the
+            # process when it applies an update, so it never returns — a
+            # mark_started_ok() AFTER it would never run, leaving the marker set and
+            # re-applying the same staged bundle in an endless restart loop.
             updater.mark_started_ok()
+            updater.check_and_apply()
         except Exception:  # noqa: BLE001
             logger.exception('boot: self-update check failed; continuing')
 
