@@ -37,5 +37,11 @@ urlpatterns = [
     # config/urls.py `api/customer-bot/webhook/` and notifications/services/customer_bot.py.)
     path('api/qr/menu/<str:token>/', qr_order_views.menu_view, name='qr-menu'),
     path('api/qr/order/<str:token>/', qr_order_views.order_view, name='qr-order'),
+    # Courier delivery app: rider REST at root (auth/courier/*, courier/*,
+    # orders/<id>/accept|decline|status, payments/*) + the till's dispatch/create
+    # picker under api/couriers/ (pos-staff auth). Mounted BEFORE customers so the
+    # courier order-action routes resolve ahead of the cashier catch-all.
+    path('api/couriers/', include('couriers.admin_urls')),
+    path('', include('couriers.urls')),
     path('', include('customers.urls')),
 ]

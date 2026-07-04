@@ -19,7 +19,7 @@ EDITION = 'local'
 # POS apps on top of the shared spine. admins is NOT installed. hr IS installed
 # (shared, tables-only — its urls are not mounted), so the AUTO_POS attendance row
 # written at cashier login has a table to land in.
-INSTALLED_APPS = build_installed_apps(['customers', 'waiters'])  # noqa: F405
+INSTALLED_APPS = build_installed_apps(['customers', 'waiters', 'couriers'])  # noqa: F405
 
 ROOT_URLCONF = 'config.urls'
 WSGI_APPLICATION = 'config.wsgi.application'
