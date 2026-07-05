@@ -22,9 +22,24 @@ from pathlib import Path
 def _data_dir() -> Path:
     """Persistent, writable data dir. In a packaged build BASE_DIR is a temp
     extraction dir wiped each launch, so we store DB/secrets/config under
-    %LOCALAPPDATA%\\AlphaPOS instead. From source, use the project root."""
+    %LOCALAPPDATA%\\AlphaPOS instead. From source, use the project root.
+
+    CRITICAL (auto-boot bug): LOCALAPPDATA is frequently MISSING from the
+    environment when the app is launched from the Startup folder at logon — that
+    launch context does not always inherit the full interactive user environment.
+    The old fallback `os.environ.get('LOCALAPPDATA') or str(Path.home())` then
+    resolved to  <home>\\AlphaPOS  — a DIFFERENT, empty directory than the manual
+    launch's  <home>\\AppData\\Local\\AlphaPOS  — so an auto-started till opened a
+    brand-new install: no .env, freshly generated secrets, a new empty DB, the
+    license UNREGISTERED and the kill switch ON. Derive the canonical
+    AppData\\Local path from USERPROFILE/home when LOCALAPPDATA is absent so an
+    auto-boot and a manual launch ALWAYS use the same data dir."""
     if getattr(sys, 'frozen', False):
-        base = os.environ.get('LOCALAPPDATA') or str(Path.home())
+        base = os.environ.get('LOCALAPPDATA')
+        if not base:
+            home = (os.environ.get('USERPROFILE') or os.environ.get('HOME')
+                    or str(Path.home()))
+            base = str(Path(home) / 'AppData' / 'Local')
         return Path(base) / 'AlphaPOS'
     return Path(__file__).resolve().parent.parent
 

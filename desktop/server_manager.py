@@ -43,26 +43,42 @@ class ServerManager:
         logger.info('heartbeat worker started')
 
     def _heartbeat_loop(self):
-        from django.conf import settings as dj
-        from django.db import close_old_connections
         first = True
         while not self._hb_stop:
-            delay = 20 if first else max(
-                60, int(getattr(dj, 'LICENSE_HEARTBEAT_INTERVAL', 300) or 300))
-            first = False
-            for _ in range(delay):
-                if self._hb_stop:
-                    return
-                time.sleep(1)
+            # EVERYTHING in the iteration — the delay maths, the sleep, the
+            # heartbeat call AND the connection close — is inside one broad
+            # try/except. The old code only guarded do_heartbeat(); an exception
+            # from close_old_connections() in the finally, or from the settings
+            # lookup, escaped the while-loop and KILLED this thread for good.
+            # A dead heartbeat thread stops refreshing License.last_heartbeat_at,
+            # so the offline-grace clock runs out and the kill switch fires on a
+            # perfectly healthy till (the "heartbeat randomly stops" report).
+            # Nothing an iteration can throw may end the loop.
             try:
-                from licensing.services.heartbeat import do_heartbeat
-                do_heartbeat()  # no-op without LICENSE_CONTROL_CENTER_URL
-            except Exception:  # noqa: BLE001 — never let the worker die
-                logger.exception('heartbeat worker iteration failed')
-            finally:
-                # Release this thread's DB connection each cycle — see the note
-                # in _sync_loop. License.load() runs queries here.
-                close_old_connections()
+                from django.conf import settings as dj
+                delay = 20 if first else max(
+                    60, int(getattr(dj, 'LICENSE_HEARTBEAT_INTERVAL', 300) or 300))
+                first = False
+                for _ in range(delay):
+                    if self._hb_stop:
+                        return
+                    time.sleep(1)
+                try:
+                    from licensing.services.heartbeat import do_heartbeat
+                    do_heartbeat()  # no-op without LICENSE_CONTROL_CENTER_URL
+                finally:
+                    # Release this thread's DB connection each cycle — see the
+                    # note in _sync_loop. License.load() runs queries here.
+                    from django.db import close_old_connections
+                    close_old_connections()
+            except Exception:  # noqa: BLE001 — a transient error must NEVER kill
+                # the worker; log it and keep looping. Brief backoff so a hard,
+                # instantly-repeating failure doesn't spin the CPU.
+                logger.exception('heartbeat worker iteration failed; continuing')
+                try:
+                    time.sleep(5)
+                except Exception:  # noqa: BLE001
+                    pass
 
     # -- Automatic background sync ------------------------------------------
     def _ensure_sync_worker(self):
@@ -78,34 +94,48 @@ class ServerManager:
         logger.info('sync worker started')
 
     def _sync_loop(self):
-        from django.db import close_old_connections
-        from base.services.sync.config import (
-            SyncConfig, get_sync_interval, is_local_mode, get_pull_enabled,
-            get_cloud_url,
-        )
-        from base.services.sync.service import SyncService
         while not self._sync_stop:
-            interval = max(10, get_sync_interval())
-            for _ in range(interval):  # responsive to stop without long sleeps
-                if self._sync_stop:
-                    return
-                time.sleep(1)
+            # As with _heartbeat_loop, the ENTIRE iteration is wrapped so nothing
+            # — including a failing import, the interval lookup, or the finally's
+            # close_old_connections() — can kill this thread.
             try:
-                if SyncConfig.is_enabled() and is_local_mode() and get_cloud_url():
-                    SyncService.push()
-                    if get_pull_enabled():
-                        SyncService.pull_from_cloud()
-            except Exception:  # noqa: BLE001 — never let the worker die
-                logger.exception('sync worker iteration failed')
-            finally:
-                # This daemon thread runs ORM queries outside Django's
-                # request cycle, so the request_finished signal never fires to
-                # release its DB connection. Without this the connection stays
-                # pinned for the life of the process — on SQLite it holds a
-                # WAL/writer slot (worsening "database is locked" for LAN
-                # terminals), on Postgres it accumulates toward "too many
-                # clients". Close it each cycle; the next iteration reopens.
-                close_old_connections()
+                # Watchdog: if the license-heartbeat thread ever died (despite its
+                # own guards), resurrect it here. The two daemons keep each other
+                # alive, so a stale License marker can't quietly fire the kill
+                # switch on a working till. Idempotent — a no-op while it's alive.
+                self._ensure_heartbeat_worker()
+                from django.db import close_old_connections
+                from base.services.sync.config import (
+                    SyncConfig, get_sync_interval, is_local_mode,
+                    get_pull_enabled, get_cloud_url,
+                )
+                from base.services.sync.service import SyncService
+                interval = max(10, get_sync_interval())
+                for _ in range(interval):  # responsive to stop without long sleeps
+                    if self._sync_stop:
+                        return
+                    time.sleep(1)
+                try:
+                    if SyncConfig.is_enabled() and is_local_mode() and get_cloud_url():
+                        SyncService.push()
+                        if get_pull_enabled():
+                            SyncService.pull_from_cloud()
+                finally:
+                    # This daemon thread runs ORM queries outside Django's
+                    # request cycle, so the request_finished signal never fires
+                    # to release its DB connection. Without this the connection
+                    # stays pinned for the life of the process — on SQLite it
+                    # holds a WAL/writer slot (worsening "database is locked" for
+                    # LAN terminals), on Postgres it accumulates toward "too many
+                    # clients". Close it each cycle; the next iteration reopens.
+                    close_old_connections()
+            except Exception:  # noqa: BLE001 — a transient error must NEVER kill
+                # the worker (it also watchdogs the heartbeat); keep looping.
+                logger.exception('sync worker iteration failed; continuing')
+                try:
+                    time.sleep(5)
+                except Exception:  # noqa: BLE001
+                    pass
 
     # -- Django bootstrap (idempotent) --------------------------------------
     def ensure_django(self):
