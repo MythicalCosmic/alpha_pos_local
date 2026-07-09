@@ -38,6 +38,52 @@ function TestTile({ test, state, onRun }) {
   );
 }
 
+// Recovery: surface records that failed to push enough times to be dropped from
+// the outbound batch (dead-lettered) and offer a one-click requeue+push. This is
+// the operator's lever when a shift/order goes "missing" on the cloud panel while
+// it still lives on this till.
+function RecoveryPanel() {
+  const app = useApp();
+  const { t } = app;
+  const [stuck, setStuck] = React.useState(null); // { total, by_model }
+  const [busy, setBusy] = React.useState(false);
+
+  const refresh = React.useCallback(() => {
+    api.cloud_dead_letters().then((r) => {
+      if (r && r.ok) setStuck({ total: r.total || 0, by_model: r.by_model || {} });
+    });
+  }, []);
+  React.useEffect(() => { refresh(); }, [refresh]);
+
+  const retry = () => {
+    setBusy(true);
+    api.cloud_resync_failed().then((r) => {
+      setBusy(false);
+      const n = (r && r.requeued) || 0;
+      app.toast(t("tests.retryDone").replace("{n}", n));
+      refresh();
+    });
+  };
+
+  const total = stuck ? stuck.total : null;
+  const models = stuck ? Object.keys(stuck.by_model) : [];
+
+  return (
+    <Card title={t("tests.recovery")} tone={total > 0 ? "warn" : undefined} style={{ marginTop: 28 }}>
+      <p style={{ margin: "0 0 14px", color: "var(--ink-3)", fontSize: 13, maxWidth: "80ch", textWrap: "pretty" }}>{t("tests.recoveryHint")}</p>
+      <div className="kv">
+        <KRow l={t("tests.stuckLabel")} badge={<Badge tone={total > 0 ? "warn" : "ok"}>{total == null ? "…" : total}</Badge>}></KRow>
+        {models.map((m) => <KRow key={m} l={m} v={String(stuck.by_model[m])} mono dim></KRow>)}
+      </div>
+      <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        {total === 0 && <span style={{ fontSize: 12.5, color: "var(--ok)" }}>{t("tests.stuckNone")}</span>}
+        {total > 0 && <span style={{ fontSize: 12.5, color: "var(--ink-3)" }}>{t("tests.stuckSome")}</span>}
+        <Btn variant={total > 0 ? "primary" : "ghost"} icon="refresh" onClick={retry} disabled={busy || !total}>{busy ? t("common.running") : t("tests.retryStuck")}</Btn>
+      </div>
+    </Card>
+  );
+}
+
 function TestsScreen() {
   const app = useApp();
   const { t } = app;
@@ -79,6 +125,8 @@ function TestsScreen() {
       <div className="tile-grid">
         {CLOUD_TESTS.map((tt) => <TestTile key={tt.name} test={tt} state={results[tt.name]} onRun={() => run(tt)}></TestTile>)}
       </div>
+
+      <RecoveryPanel></RecoveryPanel>
     </div>
   );
 }

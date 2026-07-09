@@ -519,6 +519,42 @@ class Api:
         pull = SyncService.pull_from_cloud() if get_pull_enabled() else {'skipped': True}
         return {'ok': True, 'push': push, 'pull': pull}
 
+    @_safe
+    def cloud_dead_letters(self):
+        """Per-model count of records that failed to push enough times to be
+        dropped from the normal outbound batch (dead-lettered). A non-zero
+        'shift'/'order' here is why a shift/sale is 'missing' on the cloud panel
+        while it still exists on this till."""
+        self.server.ensure_django()
+        from collections import Counter
+        from base.models import SyncQueueRecord
+        from base.services.sync.config import get_sync_max_queue_attempts
+        cap = get_sync_max_queue_attempts()
+        by_model, total = {}, 0
+        if cap:
+            qs = SyncQueueRecord.objects.filter(attempts__gte=cap)
+            by_model = dict(Counter(qs.values_list('model_name', flat=True)))
+            total = sum(by_model.values())
+        return {'ok': True, 'total': total, 'by_model': by_model, 'cap': cap}
+
+    @_safe
+    def cloud_resync_failed(self):
+        """Recover stuck records: reset every dead-lettered row's attempt counter
+        so it re-enters the outbound batch, then push right now. This is the
+        'Retry stuck records' button — use it after the cloud is confirmed
+        reachable to recover a shift/order that had gone permanently missing."""
+        self.server.ensure_django()
+        from base.models import SyncQueueRecord
+        from base.services.sync.config import get_sync_max_queue_attempts
+        from base.services.sync.service import SyncService
+        cap = get_sync_max_queue_attempts()
+        requeued = 0
+        if cap:
+            requeued = SyncQueueRecord.objects.filter(
+                attempts__gte=cap).update(attempts=0, last_error='')
+        push = SyncService.push()
+        return {'ok': True, 'requeued': requeued, 'push': push}
+
     # -- telegram / notifications -------------------------------------------
     @_safe
     def telegram_test(self):
