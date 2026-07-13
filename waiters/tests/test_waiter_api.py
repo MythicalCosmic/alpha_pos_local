@@ -38,6 +38,27 @@ def _order(waiter, status='PREPARING', is_paid=False, table=None, total='10.00')
 
 
 @pytest.mark.django_db
+def test_waiter_cancel_uses_live_payment_rows_only():
+    from decimal import Decimal
+    from base.models import CashRegister, OrderPayment
+    from waiters.services.order_service import WaiterOrderService
+
+    waiter = _waiter()
+    order = _order(waiter, is_paid=True, total='10.00')
+    order.payment_method = 'MIXED'
+    order.save(update_fields=['payment_method'])
+    CashRegister.objects.create(current_balance=Decimal('4.00'))
+    OrderPayment.objects.create(order=order, method='HUMO', amount='6.00')
+    OrderPayment.objects.create(order=order, method='CASH', amount='4.00')
+    stale = OrderPayment.objects.create(order=order, method='UZCARD', amount='9.00')
+    stale.delete()
+
+    result, status = WaiterOrderService.cancel_order(order.id, waiter.id)
+    assert status == 200, result
+    assert CashRegister.objects.first().current_balance == Decimal('0.00')
+
+
+@pytest.mark.django_db
 class TestRequestPayment:
     def test_stamps_once_and_is_idempotent(self):
         from waiters.services.order_service import WaiterOrderService

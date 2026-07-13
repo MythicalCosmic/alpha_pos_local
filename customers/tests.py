@@ -164,6 +164,31 @@ class TestCancelPaidOrderReversesCash:
         register.refresh_from_db()
         assert register.current_balance == Decimal('0.00')
 
+    def test_cancel_ignores_soft_deleted_payment_rows(
+        self, order_factory, cashier_user, regular_user,
+    ):
+        from decimal import Decimal
+        from base.models import CashRegister, OrderPayment
+
+        CashRegister.objects.create(current_balance=Decimal('0'))
+        order = order_factory(user=regular_user, cashier=cashier_user)
+        result, status = CustomerOrderService.mark_as_paid(
+            order.id, cashier_id=cashier_user.id,
+            user_id=cashier_user.id, user_role='CASHIER',
+            payments=[{'method': 'HUMO', 'amount': 6},
+                      {'method': 'CASH', 'amount': 4}],
+        )
+        assert status == 200, result
+        stale = OrderPayment.objects.create(order=order, method='UZCARD', amount=9)
+        stale.delete()  # soft-deleted history must not change drawer arithmetic
+
+        result, status = CustomerOrderService.update_order_status(
+            order.id, 'CANCELED', cashier_id=cashier_user.id,
+            user_id=cashier_user.id, user_role='CASHIER')
+        assert status == 200, result
+        assert CashRegister.objects.first().current_balance == Decimal('0.00')
+
+
 
 class TestReverseDeductionIdempotent:
     """Pre-fix: reverse_deduction always issued RETURN_FROM_CUSTOMER for every

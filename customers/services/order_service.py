@@ -721,22 +721,14 @@ class CustomerOrderService:
         # reverse-deducted by the handler below. Only cash reverses through
         # the drawer; card/Payme settle externally.
         if status == 'CANCELED' and order.is_paid:
-            from base.models import OrderPayment
-            from django.db.models import Sum
-            pay_qs = OrderPayment.objects.filter(order=order)
-            if pay_qs.exists():
-                # Reverse exactly the cash share that hit the drawer = the bill
-                # total minus what settled externally (card/Payme), so a MIXED
-                # order reverses only its cash portion.
-                noncash = pay_qs.exclude(method='CASH').aggregate(s=Sum('amount'))['s'] or Decimal('0')
-                cash_in_drawer = Decimal(order.total_amount or 0) - noncash
-            elif order.payment_method in ('CASH', None) and order.total_amount:
-                # Legacy order (paid before per-line payments) — full reversal.
-                cash_in_drawer = Decimal(order.total_amount or 0)
-            else:
-                cash_in_drawer = Decimal('0')
+            # Keep cancel in lockstep with shifts/analytics: ignore soft-deleted
+            # rows, derive cash net of change, and never treat an unknown method
+            # as external money merely because it is not the literal CASH.
+            from base.services.tender import order_tender_split
+            split, _ = order_tender_split(order)
+            cash_in_drawer = split['cash']
             if cash_in_drawer > 0:
-                InkassaService.add_to_register(-cash_in_drawer)
+                InkassaService.add_to_register(-cash_in_drawer, order.branch_id)
 
         if status == 'READY':
             OrderNotification.on_order_ready(order_id)
@@ -1031,7 +1023,7 @@ class CustomerOrderService:
         # share of the bill = effective_total - non-cash settled externally.
         cash_to_drawer = effective_total - noncash_sum
         if cash_to_drawer > 0:
-            InkassaService.add_to_register(cash_to_drawer)
+            InkassaService.add_to_register(cash_to_drawer, order.branch_id)
         OrderNotification.on_order_paid(order_id)
 
         # Fiscalize the sale (Soliq). No-op unless fiscalization is enabled.

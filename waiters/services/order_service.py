@@ -628,19 +628,11 @@ class WaiterOrderService:
         # reconciles identically regardless of which surface cancelled.
         if order.is_paid:
             from base.services.inkassa_service import InkassaService
-            from base.models import OrderPayment
-            from django.db.models import Sum
-            from decimal import Decimal
-            pay_qs = OrderPayment.objects.filter(order=order)
-            if pay_qs.exists():
-                noncash = pay_qs.exclude(method='CASH').aggregate(s=Sum('amount'))['s'] or Decimal('0')
-                cash_in_drawer = Decimal(order.total_amount or 0) - noncash
-            elif order.payment_method in ('CASH', None) and order.total_amount:
-                cash_in_drawer = Decimal(order.total_amount or 0)
-            else:
-                cash_in_drawer = Decimal('0')
+            from base.services.tender import order_tender_split
+            split, _ = order_tender_split(order)
+            cash_in_drawer = split['cash']
             if cash_in_drawer > 0:
-                InkassaService.add_to_register(-cash_in_drawer)
+                InkassaService.add_to_register(-cash_in_drawer, order.branch_id)
 
         if order.table:
             TableRepository.update_status(order.table_id, Table.Status.AVAILABLE)
