@@ -11,8 +11,9 @@ Usage:
     # PyInstaller bundle into dist/AlphaPOS/ :
     python tools/release.py --publish --bundle dist/AlphaPOS
 
-Then sync the repo dir to the server path your ALPHA_POS_UPDATE_URL points at
-(e.g. rsync update_repo/ control-server:/srv/alpha_pos_updates/), and ship
+Then stage and hash-check the target on the server behind
+ALPHA_POS_UPDATE_URL, promoting the target first and timestamp metadata last
+(see desktop/UPDATES.md), and ship
 update_repo/metadata/root.json inside the next installer as tuf_root/root.json
 so clients can bootstrap trust.
 
@@ -95,8 +96,9 @@ def publish(bundle: Path):
     repo.publish_changes(private_key_dirs=[str(KEYS_DIR)])
     print(
         f"Published {APP_NAME} {__version__}.\n"
-        f"Now sync {REPO_DIR}/ to the control-center host behind ALPHA_POS_UPDATE_URL,\n"
-        f"e.g.:  rsync -a {REPO_DIR}/ <control-server>:/srv/alpha_pos_updates/"
+        f"Now stage and hash-check the target on the control-center host, then promote\n"
+        f"target -> targets.json -> snapshot.json -> timestamp.json (timestamp last).\n"
+        f"See desktop/UPDATES.md; never publish metadata before its target archive."
     )
     return 0
 

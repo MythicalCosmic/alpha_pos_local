@@ -1,10 +1,10 @@
 """Local config + secret management for the desktop app.
 
-Everything the operator enters lives in BASE_DIR/.env (the same env vars
-settings.py reads). Secrets (SECRET_KEY, license Fernet key) are generated once
-and persisted next to the project, mirroring run.py so a desktop launch and a
-`python run.py` launch share state. Desktop-only flags (ToS acceptance) live in
-config.json.
+Everything the operator enters lives in the persistent data directory's .env
+(the same variables settings.py reads). Secrets (SECRET_KEY, license Fernet key)
+are generated once and persisted beside it. From source the data directory is
+the project root; a frozen build uses %LOCALAPPDATA%\\AlphaPOS. Desktop-only flags
+(ToS acceptance and setup signature) live in desktop_state.json.
 
 NOTE: .env holds this ONE business's own fiscal credentials. It is never shared
 between installs.
@@ -12,11 +12,30 @@ between installs.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
 import secrets
 import string
 import sys
+import tempfile
+import threading
+import time
 from pathlib import Path
+
+
+logger = logging.getLogger('desktop.config')
+
+
+class ConfigError(RuntimeError):
+    """A persistent desktop configuration could not be read safely."""
+
+
+_IO_LOCK = threading.RLock()
+_ENV_KEY_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+_last_env_error = ''
+_last_env_keys: tuple[str, ...] = ()
+_env_applied = False
 
 
 def _data_dir() -> Path:
@@ -35,12 +54,12 @@ def _data_dir() -> Path:
     AppData\\Local path from USERPROFILE/home when LOCALAPPDATA is absent so an
     auto-boot and a manual launch ALWAYS use the same data dir."""
     if getattr(sys, 'frozen', False):
-        base = os.environ.get('LOCALAPPDATA')
+        base = (os.environ.get('LOCALAPPDATA') or '').strip()
         if not base:
             home = (os.environ.get('USERPROFILE') or os.environ.get('HOME')
                     or str(Path.home()))
             base = str(Path(home) / 'AppData' / 'Local')
-        return Path(base) / 'AlphaPOS'
+        return Path(os.path.expandvars(base)).expanduser() / 'AlphaPOS'
     return Path(__file__).resolve().parent.parent
 
 
@@ -52,6 +71,8 @@ FERNET_FILE = DATA_DIR / '.license_fernet_key'
 DEVICE_FILE = DATA_DIR / '.device_id'
 STATE_FILE = DATA_DIR / 'desktop_state.json'
 CREDS_FILE = DATA_DIR / 'admin_credentials.json'
+LEGACY_MIGRATION_MARKER = DATA_DIR / '.legacy_env_migrated'
+LEGACY_PG_MIGRATION_MARKER = DATA_DIR / '.legacy_pgdata_migrated'
 # Marker written by a factory reset so a leftover (locked) DB is wiped on the
 # next launch, before Django opens it.
 RESET_FLAG = DATA_DIR / '.reset_pending'
@@ -60,7 +81,9 @@ RESET_FLAG = DATA_DIR / '.reset_pending'
 # Grouped only for the UI; stored flat in .env.
 CONFIG_FIELDS = [
     # General
-    ('BRANCH_ID', 'branch1'),
+    # Tenant identity is provisioned per restaurant. Never bake one live
+    # branch/token into a redistributable installer.
+    ('BRANCH_ID', ''),
     ('DEPLOYMENT_MODE', 'local'),
     ('PORT', '8000'),
     # Licensing / control center
@@ -70,12 +93,11 @@ CONFIG_FIELDS = [
     # Points at the CONTROL CENTER (pos_control serves /updates) — publish a release
     # there once and every till pulls it on next launch. See RELEASES.md.
     ('ALPHA_POS_UPDATE_URL', 'https://control.78.111.91.113.nip.io/updates'),
-    # Sync (cloud) — baked defaults point at the production hub so a fresh
-    # install is pre-wired. CLOUD_SYNC_TOKEN is the per-branch token from the
-    # server's .env (DESKTOP_BRANCH_TOKEN); fill it in the panel or bake it here.
-    ('SYNC_ENABLED', 'True'),
+    # The endpoint may be public knowledge, but enabling sync requires a
+    # restaurant-specific branch id + token entered during provisioning.
+    ('SYNC_ENABLED', 'False'),
     ('CLOUD_SYNC_URL', 'https://pos.78.111.90.65.nip.io/api/sync'),
-    ('CLOUD_SYNC_TOKEN', '0Ha1ZESmkBSSjMGDNjLNiW6PDCfpbHP3xjD1GAyTLyI'),  # baked from the server deploy; override via the panel
+    ('CLOUD_SYNC_TOKEN', ''),
     # Telegram (token + chat ids drive real message delivery)
     ('TELEGRAM_BOT_TOKEN', ''),   # staff/internal bot token — set via the desktop panel
     ('TELEGRAM_CHAT_IDS', ''),    # staff chat ids — set via the desktop panel
@@ -99,16 +121,59 @@ SECRET_KEYS = {'FISCAL_SECRET', 'CLOUD_SYNC_TOKEN', 'TELEGRAM_BOT_TOKEN',
 
 
 def _write_protected(path: Path, contents: str) -> None:
-    path.write_text(contents, encoding='utf-8')
+    """Atomically replace a config/secret file with restrictive permissions.
+
+    Direct ``write_text`` truncates first. A power loss, updater restart, or
+    concurrent panel request could therefore leave a partial .env and make the
+    next boot use baked defaults for the wrong branch. A same-directory temp
+    file plus ``os.replace`` makes the visible update atomic. The short bounded
+    retry handles transient Windows antivirus/indexer sharing races.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _IO_LOCK:
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f'.{path.name}.', suffix='.tmp', dir=str(path.parent),
+        )
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as fh:
+                fh.write(contents)
+                fh.flush()
+                os.fsync(fh.fileno())
+            try:
+                os.chmod(tmp, 0o600)
+            except OSError:
+                pass
+            for attempt, delay in enumerate((0.0, 0.05, 0.15)):
+                try:
+                    os.replace(tmp, path)
+                    break
+                except PermissionError:
+                    if attempt == 2:
+                        raise
+                    time.sleep(delay)
+        finally:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _read_text(path: Path, *, label: str) -> str:
     try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
+        # utf-8-sig also accepts ordinary UTF-8 and strips a BOM produced by
+        # common Windows editors. Never ignore decoding errors in credentials.
+        return path.read_text(encoding='utf-8-sig')
+    except (OSError, UnicodeError) as exc:
+        raise ConfigError(f'Could not read {label} at {path}: {exc}') from exc
 
 
 def load_or_generate_secret() -> str:
     if SECRET_FILE.exists():
-        return SECRET_FILE.read_text(encoding='utf-8').strip()
+        value = _read_text(SECRET_FILE, label='secret key').strip()
+        if value:
+            return value
+        logger.warning('secret key file was empty; repairing it')
     key = secrets.token_urlsafe(64)
     _write_protected(SECRET_FILE, key + '\n')
     return key
@@ -116,7 +181,21 @@ def load_or_generate_secret() -> str:
 
 def load_or_generate_fernet() -> str:
     if FERNET_FILE.exists():
-        return FERNET_FILE.read_text(encoding='utf-8').strip()
+        key = _read_text(FERNET_FILE, label='license encryption key').strip()
+        if not key:
+            raise ConfigError(
+                f'License encryption key is empty at {FERNET_FILE}; restore it '
+                'from backup instead of generating a replacement.'
+            )
+        try:
+            from cryptography.fernet import Fernet
+            Fernet(key.encode('ascii'))
+        except (ValueError, UnicodeError) as exc:
+            raise ConfigError(
+                f'License encryption key is invalid at {FERNET_FILE}; restore '
+                'the original key instead of rotating it.'
+            ) from exc
+        return key
     from cryptography.fernet import Fernet
     key = Fernet.generate_key().decode('ascii')
     _write_protected(FERNET_FILE, key + '\n')
@@ -129,7 +208,7 @@ def load_or_generate_device_id() -> str:
     active cashier on a connected POS. Survives restarts; regenerated only on a
     factory reset (the data dir is wiped)."""
     if DEVICE_FILE.exists():
-        existing = DEVICE_FILE.read_text(encoding='utf-8').strip()
+        existing = _read_text(DEVICE_FILE, label='device id').strip()
         if existing:
             return existing
     device_id = secrets.token_hex(16)
@@ -137,17 +216,147 @@ def load_or_generate_device_id() -> str:
     return device_id
 
 
-def parse_env_file() -> dict:
+def _parse_env_value(raw: str, line_number: int, source_path: Path) -> str:
+    value = raw.strip()
+    if not value:
+        return ''
+    if value[0] in ('"', "'"):
+        quote = value[0]
+        if quote == '"':
+            try:
+                parsed, end = json.JSONDecoder().raw_decode(value)
+            except (ValueError, TypeError) as exc:
+                raise ConfigError(
+                    f'Invalid quoted value in {source_path} line {line_number}'
+                ) from exc
+            remainder = value[end:].strip()
+            if remainder and not remainder.startswith('#'):
+                raise ConfigError(
+                    f'Unexpected text after quoted value in {source_path} line {line_number}'
+                )
+            return str(parsed)
+        escaped = False
+        end = None
+        for index, character in enumerate(value[1:], 1):
+            if character == quote and not escaped:
+                end = index
+                break
+            escaped = character == '\\' and not escaped
+            if character != '\\':
+                escaped = False
+        if end is None:
+            raise ConfigError(f'Unclosed quote in {source_path} line {line_number}')
+        remainder = value[end + 1:].strip()
+        if remainder and not remainder.startswith('#'):
+            raise ConfigError(
+                f'Unexpected text after quoted value in {source_path} line {line_number}'
+            )
+        return value[1:end].replace("\\'", "'").replace('\\\\', '\\')
+    # dotenv-style inline comments start only after whitespace. Tokens such as
+    # ``abc#123`` are preserved verbatim.
+    return re.split(r'\s+#', value, maxsplit=1)[0].rstrip()
+
+
+def parse_env_file(path: Path | None = None) -> dict:
+    """Parse the canonical desktop .env without silently losing values.
+
+    Supports UTF-8 BOMs, ``export KEY=...``, quoted values and inline comments.
+    Invalid non-comment lines are fatal: starting with partial baked defaults
+    after damaging a branch/token file can sync the till as the wrong branch.
+    """
+    source_path = path or ENV_FILE
     data = {}
-    if not ENV_FILE.exists():
+    if not source_path.exists():
         return data
-    for line in ENV_FILE.read_text(encoding='utf-8').splitlines():
-        line = line.strip()
-        if not line or line.startswith('#') or '=' not in line:
+    with _IO_LOCK:
+        text = _read_text(source_path, label='desktop environment')
+    for line_number, original in enumerate(text.splitlines(), 1):
+        line = original.strip()
+        if not line or line.startswith('#'):
             continue
-        k, _, v = line.partition('=')
-        data[k.strip()] = v.strip()
+        if line.startswith('export '):
+            line = line[7:].lstrip()
+        if '=' not in line:
+            raise ConfigError(
+                f'Invalid entry in {source_path} line {line_number}: expected KEY=value'
+            )
+        key, _, raw_value = line.partition('=')
+        key = key.strip()
+        if not _ENV_KEY_RE.fullmatch(key):
+            raise ConfigError(
+                f'Invalid environment key {key!r} in {source_path} line {line_number}'
+            )
+        data[key] = _parse_env_value(raw_value, line_number, source_path)
     return data
+
+
+def _legacy_env_candidates() -> tuple[Path, ...]:
+    """Known pre-canonical locations, in deterministic precedence order."""
+    if not getattr(sys, 'frozen', False):
+        return ()
+    candidates = [
+        # Old frozen fallback when LOCALAPPDATA was absent.
+        Path.home() / 'AlphaPOS' / '.env',
+    ]
+    local = (os.environ.get('LOCALAPPDATA') or '').strip()
+    if local:
+        candidates.append(Path(os.path.expandvars(local)) / 'AlphaPOS' / '.env')
+    candidates.extend([
+        Path(sys.executable).resolve().parent / '.env',
+        Path.cwd() / '.env',
+        Path(__file__).resolve().parent.parent / '.env',
+    ])
+    canonical = ENV_FILE.resolve()
+    unique = []
+    seen = {canonical}
+    for candidate in candidates:
+        try:
+            resolved = candidate.expanduser().resolve()
+        except OSError:
+            continue
+        if resolved not in seen:
+            seen.add(resolved)
+            unique.append(resolved)
+    return tuple(unique)
+
+
+def migrate_legacy_env_if_needed() -> Path | None:
+    """Move one valid persisted legacy .env into the canonical data directory.
+
+    The canonical file always wins and is never overwritten. A durable marker
+    prevents an undeletable exe-adjacent legacy file from being resurrected
+    after an intentional factory reset.
+    """
+    if ENV_FILE.exists() or LEGACY_MIGRATION_MARKER.exists():
+        return None
+    recognized = {key for key, _default in CONFIG_FIELDS} | set(_INSTALL_VALUE_FILES)
+    for candidate in _legacy_env_candidates():
+        if not candidate.is_file():
+            continue
+        try:
+            parsed = parse_env_file(candidate)
+        except ConfigError:
+            logger.exception('ignoring unreadable legacy environment at %s', candidate)
+            continue
+        # Avoid importing an unrelated project's .env merely because the app
+        # happened to be launched from that directory.
+        if len(recognized.intersection(parsed)) < 2:
+            logger.warning('ignoring unrelated legacy .env candidate at %s', candidate)
+            continue
+        contents = _read_text(candidate, label='legacy desktop environment')
+        with _IO_LOCK:
+            if ENV_FILE.exists():
+                return None
+            _write_protected(ENV_FILE, contents)
+            _write_protected(LEGACY_MIGRATION_MARKER, 'migrated\n')
+        try:
+            candidate.unlink()
+        except OSError:
+            # Program Files can be read-only. The marker prevents re-import.
+            logger.info('legacy .env migrated but source could not be removed: %s', candidate)
+        logger.info('migrated persisted desktop environment into %s', ENV_FILE)
+        return candidate
+    return None
 
 
 def read_config() -> dict:
@@ -158,17 +367,24 @@ def read_config() -> dict:
 
 def write_config(values: dict) -> None:
     """Persist the form values into .env, preserving any unmanaged keys."""
-    existing = parse_env_file()
-    for k, default in CONFIG_FIELDS:
-        if k in values and values[k] is not None:
-            existing[k] = str(values[k])
-        else:
-            existing.setdefault(k, default)
-    lines = ['# Alpha POS configuration — generated by the desktop control panel',
-             '# This file holds THIS business\'s own settings + fiscal identity.', '']
-    for k in sorted(existing):
-        lines.append(f'{k}={existing[k]}')
-    _write_protected(ENV_FILE, '\n'.join(lines) + '\n')
+    with _IO_LOCK:
+        existing = parse_env_file()
+        for k, default in CONFIG_FIELDS:
+            if k in values and values[k] is not None:
+                existing[k] = str(values[k])
+            else:
+                existing.setdefault(k, default)
+        lines = ['# Alpha POS configuration — generated by the desktop control panel',
+                 '# This file holds THIS business\'s own settings + fiscal identity.', '']
+        for k in sorted(existing):
+            value = str(existing[k])
+            if '\n' in value or '\r' in value:
+                raise ConfigError(f'Configuration value {k} may not contain a newline')
+            if (value != value.strip() or re.search(r'\s+#', value)
+                    or value.startswith(('"', "'"))):
+                value = json.dumps(value, ensure_ascii=False)
+            lines.append(f'{k}={value}')
+        _write_protected(ENV_FILE, '\n'.join(lines) + '\n')
 
 
 def _wipe_data() -> list:
@@ -190,8 +406,10 @@ def _wipe_data() -> list:
     targets = [
         DATA_DIR / 'db.sqlite3', DATA_DIR / 'db.sqlite3-wal', DATA_DIR / 'db.sqlite3-shm',
         DATA_DIR / 'pgdata',  # embedded Postgres cluster — re-initialised fresh next launch
-        ENV_FILE, SECRET_FILE, FERNET_FILE, STATE_FILE, CREDS_FILE,
+        ENV_FILE, SECRET_FILE, FERNET_FILE, DEVICE_FILE, STATE_FILE, CREDS_FILE,
+        DATA_DIR / '.control_token',
         DATA_DIR / 'logs', DATA_DIR / 'staticfiles', DATA_DIR / 'private_media',
+        DATA_DIR / 'edge-profile',
     ]
     removed = []
     for p in targets:
@@ -212,50 +430,158 @@ def factory_reset() -> dict:
     locked by the running process is removed on the next launch."""
     removed = _wipe_data()
     try:
-        RESET_FLAG.write_text('1', encoding='utf-8')
+        _write_protected(RESET_FLAG, '1\n')
     except OSError:
         pass
     return {'removed': removed}
 
 
-def consume_reset_pending() -> None:
+def consume_reset_pending() -> bool:
     """If a reset was armed, finish it before Django touches the DB. Runs at the
     very start of apply_env_to_process so the wipe happens in a fresh process
     where nothing holds the sqlite file open."""
-    try:
-        if RESET_FLAG.exists():
-            _wipe_data()
+    pending = RESET_FLAG.exists()
+    if pending:
+        _wipe_data()
+        critical = [
+            DATA_DIR / 'db.sqlite3', DATA_DIR / 'db.sqlite3-wal',
+            DATA_DIR / 'db.sqlite3-shm', DATA_DIR / 'pgdata', ENV_FILE,
+            SECRET_FILE, FERNET_FILE, DEVICE_FILE, STATE_FILE, CREDS_FILE,
+        ]
+        remaining = [path for path in critical if path.exists()]
+        if remaining:
+            raise ConfigError(
+                'Factory reset could not remove locked data: '
+                + ', '.join(path.name for path in remaining)
+            )
+        try:
             RESET_FLAG.unlink(missing_ok=True)
-    except OSError:
-        pass
+        except OSError as exc:
+            raise ConfigError(f'Could not clear factory-reset marker: {exc}') from exc
+    return pending
+
+
+_INSTALL_VALUE_FILES = {
+    'SECRET_KEY': SECRET_FILE,
+    'LICENSE_FERNET_KEY': FERNET_FILE,
+    'DEVICE_ID': DEVICE_FILE,
+}
+
+
+def _resolve_install_value(env: dict, key: str, loader) -> str:
+    """Migrate legacy .env-owned identity values into their atomic sidecars.
+
+    Older builds allowed these keys in .env to override the generated files.
+    Ignoring that value now would rotate cookie/license/device identity. Preserve
+    it once, validate the encryption key, and make the sidecar canonical.
+    """
+    legacy = str(env.get(key) or '').strip()
+    if not legacy:
+        return loader()
+    if key == 'LICENSE_FERNET_KEY':
+        try:
+            from cryptography.fernet import Fernet
+            Fernet(legacy.encode('ascii'))
+        except (ValueError, UnicodeError) as exc:
+            raise ConfigError(f'{key} in {ENV_FILE} is invalid') from exc
+    target = _INSTALL_VALUE_FILES[key]
+    current = ''
+    if target.exists():
+        current = _read_text(target, label=key).strip()
+    if current != legacy:
+        _write_protected(target, legacy + '\n')
+        logger.info('migrated legacy %s from .env to its persistent sidecar', key)
+    return legacy
 
 
 def apply_env_to_process() -> None:
     """Load .env + the generated secrets into os.environ. MUST run before
     django.setup() so settings.py sees them."""
+    global _last_env_error, _last_env_keys, _env_applied
     # Finish any armed factory reset first — before secrets are regenerated.
-    consume_reset_pending()
-    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
-    # Tell settings.py where to keep the DB / logs / media (persistent).
-    os.environ.setdefault('ALPHA_POS_DATA_DIR', str(DATA_DIR))
-    os.environ.setdefault('SECRET_KEY', load_or_generate_secret())
-    os.environ.setdefault('LICENSE_FERNET_KEY', load_or_generate_fernet())
-    # Per-install till id for the cloud presence registry (auto-dispatch).
-    os.environ.setdefault('DEVICE_ID', load_or_generate_device_id())
-    os.environ.setdefault('DEBUG', 'False')
-    os.environ.setdefault('ALLOWED_HOSTS', 'localhost,127.0.0.1')
-    # Trusted-LAN appliance: the POS is exposed to the whole network, so open
-    # CSRF + CORS to any origin/device by default (auth + licensing still apply).
-    os.environ.setdefault('OPEN_LAN', 'True')
-    # Seed the baked-in config defaults so a FRESH install (no .env yet) runs
-    # pre-configured — sync URL, Telegram, control-center URL — without the
-    # operator having to open the panel. setdefault means real .env values
-    # (loaded just below) always win.
-    for _k, _default in CONFIG_FIELDS:
-        if _default != '':
-            os.environ.setdefault(_k, _default)
-    for k, v in parse_env_file().items():
-        os.environ[k] = v
+    try:
+        reset_consumed = consume_reset_pending()
+        if reset_consumed:
+            # Never resurrect an old exe/cwd-adjacent config after the operator
+            # deliberately reset this install.
+            # Overwrite even a prior split/migrated marker: reset successfully
+            # removed canonical data and explicitly authorizes a new empty store.
+            _write_protected(LEGACY_MIGRATION_MARKER, 'factory-reset\n')
+            _write_protected(LEGACY_PG_MIGRATION_MARKER, 'factory-reset\n')
+        else:
+            migrate_legacy_env_if_needed()
+        env = parse_env_file()
+        secret = _resolve_install_value(env, 'SECRET_KEY', load_or_generate_secret)
+        fernet = _resolve_install_value(
+            env, 'LICENSE_FERNET_KEY', load_or_generate_fernet,
+        )
+        device = _resolve_install_value(env, 'DEVICE_ID', load_or_generate_device_id)
+
+        frozen = getattr(sys, 'frozen', False)
+        port_default = dict(CONFIG_FIELDS).get('PORT', '8000')
+        # A packaged launch is governed by its persistent config, not whatever
+        # PORT happened to exist in the process that started it.
+        port_text = str(env.get(
+            'PORT', port_default if frozen else os.environ.get('PORT', port_default),
+        ) or port_default)
+        try:
+            port = int(port_text)
+        except ValueError as exc:
+            raise ConfigError(f'PORT must be an integer, got {port_text!r}') from exc
+        if not 1 <= port <= 65535:
+            raise ConfigError(f'PORT must be between 1 and 65535, got {port}')
+
+        # These define the packaged edition and persistent install identity.
+        # Force them rather than inheriting an unrelated shell/service env.
+        os.environ['DJANGO_SETTINGS_MODULE'] = 'config.settings'
+        os.environ['ALPHA_POS_DATA_DIR'] = str(DATA_DIR)
+        os.environ['SECRET_KEY'] = secret
+        os.environ['LICENSE_FERNET_KEY'] = fernet
+        os.environ['DEVICE_ID'] = device
+
+        os.environ.setdefault('DEBUG', 'False')
+        os.environ.setdefault('ALLOWED_HOSTS', 'localhost,127.0.0.1')
+        os.environ.setdefault('OPEN_LAN', 'True')
+        for config_key, default in CONFIG_FIELDS:
+            if frozen:
+                # The persistent file is authoritative for every managed field,
+                # including blank values. Otherwise a packaged app launched from
+                # a hostile/stale parent shell can inherit another restaurant's
+                # branch/token, and removing a value from .env does not clear the
+                # previous in-process value on re-apply.
+                os.environ[config_key] = str(env.get(config_key, default))
+            elif default != '':
+                # Source runs may intentionally override defaults from their
+                # shell; explicit .env entries below still take precedence.
+                os.environ.setdefault(config_key, default)
+        protected = set(_INSTALL_VALUE_FILES) | {
+            'DJANGO_SETTINGS_MODULE', 'ALPHA_POS_DATA_DIR',
+        }
+        for key, value in env.items():
+            if key not in protected:
+                os.environ[key] = value
+        if frozen:
+            # DB_* is intentionally editable only through the persistent .env
+            # (for the rare external-Postgres deployment). Never let an inherited
+            # DB_HOST silently divert a till to another/empty database.
+            for key in (
+                'DB_ENGINE', 'DB_NAME', 'DB_USER', 'DB_PASSWORD', 'DB_HOST', 'DB_PORT',
+            ):
+                if key not in env:
+                    os.environ.pop(key, None)
+        # A shipped app must never inherit DEBUG=True and re-enable development
+        # license bypasses merely because it was launched from a developer shell.
+        if frozen:
+            os.environ['DEBUG'] = 'False'
+
+        _last_env_error = ''
+        _last_env_keys = tuple(sorted(env))
+        _env_applied = True
+    except Exception as exc:
+        _last_env_error = str(exc)
+        _env_applied = False
+        logger.exception('desktop environment load failed')
+        raise
     # The desktop binds the POS to the whole LAN (0.0.0.0), so devices reach it
     # by this machine's LAN IP / hostname. Allow any Host header — this is a
     # trusted-LAN appliance; auth + licensing are the real boundary, not Host
@@ -266,17 +592,42 @@ def apply_env_to_process() -> None:
         os.environ['ALLOWED_HOSTS'] = ','.join(hosts)
 
 
+def env_status() -> dict:
+    """Non-secret diagnostics for the control panel and support logs."""
+    return {
+        'path': str(ENV_FILE),
+        'exists': ENV_FILE.exists(),
+        'loaded': _env_applied and not bool(_last_env_error),
+        'error': _last_env_error,
+        'key_count': len(_last_env_keys),
+    }
+
+
 def read_state() -> dict:
     if STATE_FILE.exists():
         try:
-            return json.loads(STATE_FILE.read_text(encoding='utf-8'))
-        except (ValueError, OSError):
+            with _IO_LOCK:
+                return json.loads(_read_text(STATE_FILE, label='desktop state'))
+        except (ValueError, ConfigError):
             return {}
     return {}
 
 
 def write_state(state: dict) -> None:
-    STATE_FILE.write_text(json.dumps(state, indent=2), encoding='utf-8')
+    _write_protected(STATE_FILE, json.dumps(state, indent=2) + '\n')
+
+
+def update_state(values) -> dict:
+    """Atomically perform a read/modify/write of desktop_state.json."""
+    with _IO_LOCK:
+        state = read_state()
+        if callable(values):
+            updated = values(dict(state))
+            state = state if updated is None else updated
+        else:
+            state.update(values or {})
+        write_state(state)
+        return state
 
 
 def generate_password(length: int = 14) -> str:
@@ -307,6 +658,4 @@ def tos_accepted() -> bool:
 
 
 def accept_tos() -> None:
-    state = read_state()
-    state['tos_accepted'] = True
-    write_state(state)
+    update_state({'tos_accepted': True})

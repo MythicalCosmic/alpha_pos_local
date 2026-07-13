@@ -9,8 +9,45 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from datetime import datetime, timezone
 
 logger = logging.getLogger('desktop.server')
+
+
+def _setup_signature_and_schema_current():
+    """Return the release/migration fingerprint and live DB migration health.
+
+    The former shortcut trusted only desktop_state.json. If PostgreSQL was
+    replaced or emptied independently, that file survived and migrations were
+    skipped against a blank database. MigrationExecutor reuses one loader for
+    both the fingerprint and a read-only migration plan; an empty plan is the
+    authoritative low-overhead signal that the selected database is current.
+    """
+    import hashlib
+    try:
+        from desktop.version import __version__ as version
+    except Exception:  # noqa: BLE001
+        version = '0'
+
+    migration_hash = 'nohash'
+    schema_current = False
+    try:
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+        executor = MigrationExecutor(connection)
+        keys = sorted(
+            f'{app}.{name}' for app, name in executor.loader.disk_migrations.keys()
+        )
+        migration_hash = hashlib.sha1(
+            '\n'.join(keys).encode('utf-8'),
+        ).hexdigest()[:12]
+        targets = executor.loader.graph.leaf_nodes()
+        schema_current = not bool(executor.migration_plan(targets))
+    except Exception:  # noqa: BLE001
+        # Unknown/unreadable schema is never safe to skip. migrate will provide
+        # the actionable error through the normal setup path.
+        logger.exception('could not verify applied database migrations')
+    return f'{version}:{migration_hash}', schema_current
 
 
 class ServerManager:
@@ -23,10 +60,42 @@ class ServerManager:
         # cashier terminals) can reach the POS, not just this machine.
         self.host = '0.0.0.0'
         self.port = 8000
+        self._django_lock = threading.RLock()
+        self._lifecycle_lock = threading.RLock()
+        self._worker_lock = threading.RLock()
+        self._desired_running = True
         self._sync_thread = None
-        self._sync_stop = False
+        self._sync_stop_event = threading.Event()
         self._hb_thread = None
-        self._hb_stop = False
+        self._hb_stop_event = threading.Event()
+        self._worker_state = {
+            'heartbeat': self._new_worker_state(),
+            'sync': self._new_worker_state(),
+        }
+        self._lan_ip_value = '127.0.0.1'
+        # ``time.monotonic()`` may still be under 30 seconds just after Windows
+        # boots. None makes the first status call probe unconditionally instead
+        # of incorrectly returning loopback for that entire initial window.
+        self._lan_ip_checked_at = None
+
+    @staticmethod
+    def _new_worker_state():
+        return {
+            'last_attempt_at': None,
+            'last_success_at': None,
+            'consecutive_failures': 0,
+            'last_status': None,
+            'last_error': '',
+            'next_run_in_s': None,
+        }
+
+    @staticmethod
+    def _utc_now():
+        return datetime.now(timezone.utc).isoformat()
+
+    def _record_worker(self, name, **values):
+        with self._worker_lock:
+            self._worker_state[name].update(values)
 
     # -- Automatic license heartbeat ----------------------------------------
     def _ensure_heartbeat_worker(self):
@@ -34,120 +103,208 @@ class ServerManager:
         the license/billing verdict (active/suspended/expired) stays fresh
         without the operator clicking. Self-gates: do_heartbeat() is a no-op
         when no control-center URL is configured (offline-activated installs)."""
-        if self._hb_thread is not None and self._hb_thread.is_alive():
-            return
-        self._hb_stop = False
-        self._hb_thread = threading.Thread(
-            target=self._heartbeat_loop, name='license-heartbeat', daemon=True)
-        self._hb_thread.start()
-        logger.info('heartbeat worker started')
+        with self._worker_lock:
+            if not self._desired_running:
+                return
+            if self._hb_thread is not None and self._hb_thread.is_alive():
+                return
+            self._hb_stop_event = threading.Event()
+            self._hb_thread = threading.Thread(
+                target=self._heartbeat_loop,
+                args=(self._hb_stop_event,),
+                name='license-heartbeat', daemon=True,
+            )
+            self._hb_thread.start()
+            logger.info('heartbeat worker started')
 
-    def _heartbeat_loop(self):
-        first = True
-        while not self._hb_stop:
-            # EVERYTHING in the iteration — the delay maths, the sleep, the
-            # heartbeat call AND the connection close — is inside one broad
-            # try/except. The old code only guarded do_heartbeat(); an exception
-            # from close_old_connections() in the finally, or from the settings
-            # lookup, escaped the while-loop and KILLED this thread for good.
-            # A dead heartbeat thread stops refreshing License.last_heartbeat_at,
-            # so the offline-grace clock runs out and the kill switch fires on a
-            # perfectly healthy till (the "heartbeat randomly stops" report).
-            # Nothing an iteration can throw may end the loop.
+    def _heartbeat_loop(self, stop_event=None):
+        """Resilient heartbeat scheduler with bounded adaptive backoff.
+
+        ``do_heartbeat`` reports network/HTTP failures as return statuses rather
+        than exceptions. The previous loop ignored those results, so there was
+        no observable failure counter or backoff. An Event makes shutdown
+        immediate instead of sleeping one second at a time.
+        """
+        stop_event = stop_event or self._hb_stop_event
+        delay = 5
+        failures = 0
+        while not stop_event.wait(delay):
+            attempted = self._utc_now()
+            self._record_worker(
+                'heartbeat', last_attempt_at=attempted, next_run_in_s=None,
+            )
             try:
                 from django.conf import settings as dj
-                delay = 20 if first else max(
-                    60, int(getattr(dj, 'LICENSE_HEARTBEAT_INTERVAL', 300) or 300))
-                first = False
-                for _ in range(delay):
-                    if self._hb_stop:
-                        return
-                    time.sleep(1)
+                interval = max(
+                    30, int(getattr(dj, 'LICENSE_HEARTBEAT_INTERVAL', 300) or 300),
+                )
+                schedule = tuple(
+                    min(3600, max(5, int(v))) for v in
+                    (getattr(dj, 'LICENSE_BACKOFF_SCHEDULE_S', ()) or ())
+                ) or (60, 300, 900)
                 try:
                     from licensing.services.heartbeat import do_heartbeat
-                    do_heartbeat()  # no-op without LICENSE_CONTROL_CENTER_URL
+                    body, status = do_heartbeat()
                 finally:
-                    # Release this thread's DB connection each cycle — see the
-                    # note in _sync_loop. License.load() runs queries here.
                     from django.db import close_old_connections
                     close_old_connections()
-            except Exception:  # noqa: BLE001 — a transient error must NEVER kill
-                # the worker; log it and keep looping. Brief backoff so a hard,
-                # instantly-repeating failure doesn't spin the CPU.
-                logger.exception('heartbeat worker iteration failed; continuing')
-                try:
-                    time.sleep(5)
-                except Exception:  # noqa: BLE001
-                    pass
+
+                if status in (200, 304):
+                    failures = 0
+                    delay = interval
+                    self._record_worker(
+                        'heartbeat', last_success_at=self._utc_now(),
+                        consecutive_failures=0, last_status=status,
+                        last_error='', next_run_in_s=delay,
+                    )
+                    logger.debug('heartbeat completed with status %s', status)
+                else:
+                    failures += 1
+                    # A failure schedule is intentionally allowed to retry sooner
+                    # than the normal heartbeat interval (e.g. 60s vs 300s).
+                    # Taking max(interval, retry) suppressed exactly that recovery.
+                    delay = schedule[min(failures - 1, len(schedule) - 1)]
+                    error = str((body or {}).get('message') or f'HTTP {status}')[:300]
+                    self._record_worker(
+                        'heartbeat', consecutive_failures=failures,
+                        last_status=status, last_error=error,
+                        next_run_in_s=delay,
+                    )
+                    logger.warning(
+                        'heartbeat failed (status=%s, failures=%s); retry in %ss: %s',
+                        status, failures, delay, error,
+                    )
+            except Exception as exc:  # noqa: BLE001 — never kill the scheduler
+                failures += 1
+                delay = min(3600, max(30, 30 * (2 ** min(failures - 1, 6))))
+                self._record_worker(
+                    'heartbeat', consecutive_failures=failures,
+                    last_status='exception', last_error=str(exc)[:300],
+                    next_run_in_s=delay,
+                )
+                logger.exception(
+                    'heartbeat iteration failed; retrying in %ss', delay,
+                )
 
     # -- Automatic background sync ------------------------------------------
     def _ensure_sync_worker(self):
         """Start a daemon that pushes (and pulls) every SYNC_INTERVAL whenever
         sync is enabled, so records reach the cloud hands-free — no button
         press. Idempotent; the loop self-gates when sync is off."""
-        if self._sync_thread is not None and self._sync_thread.is_alive():
-            return
-        self._sync_stop = False
-        self._sync_thread = threading.Thread(
-            target=self._sync_loop, name='sync-worker', daemon=True)
-        self._sync_thread.start()
-        logger.info('sync worker started')
+        with self._worker_lock:
+            if not self._desired_running:
+                return
+            if self._sync_thread is not None and self._sync_thread.is_alive():
+                return
+            self._sync_stop_event = threading.Event()
+            self._sync_thread = threading.Thread(
+                target=self._sync_loop,
+                args=(self._sync_stop_event,),
+                name='sync-worker', daemon=True,
+            )
+            self._sync_thread.start()
+            logger.info('sync worker started')
 
-    def _sync_loop(self):
-        while not self._sync_stop:
-            # As with _heartbeat_loop, the ENTIRE iteration is wrapped so nothing
-            # — including a failing import, the interval lookup, or the finally's
-            # close_old_connections() — can kill this thread.
+    def _sync_loop(self, stop_event=None):
+        stop_event = stop_event or self._sync_stop_event
+        delay = 2
+        failures = 0
+        while not stop_event.wait(delay):
+            self._record_worker(
+                'sync', last_attempt_at=self._utc_now(), next_run_in_s=None,
+            )
             try:
-                # Watchdog: if the license-heartbeat thread ever died (despite its
-                # own guards), resurrect it here. The two daemons keep each other
-                # alive, so a stale License marker can't quietly fire the kill
-                # switch on a working till. Idempotent — a no-op while it's alive.
                 self._ensure_heartbeat_worker()
                 from django.db import close_old_connections
                 from base.services.sync.config import (
                     SyncConfig, get_sync_interval, is_local_mode,
-                    get_pull_enabled, get_cloud_url,
+                    get_pull_enabled, get_cloud_url, get_sync_retry_interval,
                 )
                 from base.services.sync.service import SyncService
                 interval = max(10, get_sync_interval())
-                for _ in range(interval):  # responsive to stop without long sleeps
-                    if self._sync_stop:
-                        return
-                    time.sleep(1)
                 try:
                     if SyncConfig.is_enabled() and is_local_mode() and get_cloud_url():
-                        SyncService.push()
-                        if get_pull_enabled():
-                            SyncService.pull_from_cloud()
+                        push = SyncService.push()
+                        pull = ({'success': True, 'message': 'Pull disabled'}
+                                if not get_pull_enabled()
+                                else SyncService.pull_from_cloud())
+                        ok = bool(push.get('success')) and bool(pull.get('success'))
+                        if ok:
+                            failures = 0
+                            delay = interval
+                            self._record_worker(
+                                'sync', last_success_at=self._utc_now(),
+                                consecutive_failures=0, last_status='ok',
+                                last_error='', next_run_in_s=delay,
+                            )
+                        else:
+                            failures += 1
+                            retry = max(10, int(get_sync_retry_interval()))
+                            delay = min(900, retry * (2 ** min(failures - 1, 4)))
+                            error = str(
+                                push.get('message') or push.get('errors')
+                                or pull.get('message') or pull.get('errors')
+                                or 'sync failed'
+                            )[:300]
+                            self._record_worker(
+                                'sync', consecutive_failures=failures,
+                                last_status='failed', last_error=error,
+                                next_run_in_s=delay,
+                            )
+                            logger.warning(
+                                'background sync failed (%s consecutive); '
+                                'retry in %ss: %s', failures, delay, error,
+                            )
+                    else:
+                        failures = 0
+                        delay = interval
+                        self._record_worker(
+                            'sync', consecutive_failures=0,
+                            last_status='disabled', last_error='',
+                            next_run_in_s=delay,
+                        )
                 finally:
-                    # This daemon thread runs ORM queries outside Django's
-                    # request cycle, so the request_finished signal never fires
-                    # to release its DB connection. Without this the connection
-                    # stays pinned for the life of the process — on SQLite it
-                    # holds a WAL/writer slot (worsening "database is locked" for
-                    # LAN terminals), on Postgres it accumulates toward "too many
-                    # clients". Close it each cycle; the next iteration reopens.
                     close_old_connections()
-            except Exception:  # noqa: BLE001 — a transient error must NEVER kill
-                # the worker (it also watchdogs the heartbeat); keep looping.
-                logger.exception('sync worker iteration failed; continuing')
-                try:
-                    time.sleep(5)
-                except Exception:  # noqa: BLE001
-                    pass
+            except Exception as exc:  # noqa: BLE001 — never kill the scheduler
+                failures += 1
+                delay = min(900, 30 * (2 ** min(failures - 1, 5)))
+                self._record_worker(
+                    'sync', consecutive_failures=failures,
+                    last_status='exception', last_error=str(exc)[:300],
+                    next_run_in_s=delay,
+                )
+                logger.exception('sync iteration failed; retrying in %ss', delay)
+
+    def ensure_background_workers(self):
+        """Watchdog entrypoint used by the launcher supervisor."""
+        if self.is_running() and self.wants_running():
+            self._ensure_heartbeat_worker()
+            self._ensure_sync_worker()
 
     # -- Django bootstrap (idempotent) --------------------------------------
     def ensure_django(self):
         if self._django_ready:
             return
-        from desktop import config_store
-        config_store.apply_env_to_process()
-        self.port = int(config_store.parse_env_file().get('PORT', '8000') or 8000)
+        # The boot worker and a fast operator click can arrive here together.
+        # Serialize env loading + django.setup so neither thread observes a
+        # half-populated settings registry or creates competing secret files.
+        with self._django_lock:
+            if self._django_ready:
+                return
+            import os
+            from desktop import config_store, pg_embedded
+            config_store.apply_env_to_process()
+            # UI status calls can arrive before the launcher's boot worker. The
+            # database decision must therefore live inside this same serialized
+            # Django bootstrap boundary: env -> verified PG -> django.setup.
+            # Otherwise the first diagnostic call permanently configures Django
+            # against fallback SQLite and the real orders appear missing.
+            pg_embedded.start()
+            self.port = int(os.environ.get('PORT', '8000') or 8000)
 
-        import django
-        django.setup()
-        self._django_ready = True
+            import django
+            django.setup()
+            self._django_ready = True
 
     def first_time_install(self, log=lambda m: None):
         """Run migrations, bootstrap the admin, and collect static — the
@@ -160,23 +317,13 @@ class ServerManager:
         when the schema actually changed. Safe to re-run."""
         self.ensure_django()
         from desktop import config_store
-        import hashlib
-        try:
-            from desktop.version import __version__ as _ver
-        except Exception:  # noqa: BLE001
-            _ver = '0'
-        _mig_hash = 'nohash'
-        try:
-            from django.db.migrations.loader import MigrationLoader
-            _loader = MigrationLoader(None, ignore_no_migrations=True)
-            _keys = sorted(f'{a}.{n}' for (a, n) in _loader.disk_migrations.keys())
-            _mig_hash = hashlib.sha1('\n'.join(_keys).encode('utf-8')).hexdigest()[:12]
-        except Exception:  # noqa: BLE001
-            pass
-        sig = f'{_ver}:{_mig_hash}'
-        if config_store.read_state().get('setup_sig') == sig:
+        sig, schema_current = _setup_signature_and_schema_current()
+        signature_matches = config_store.read_state().get('setup_sig') == sig
+        if signature_matches and schema_current:
             log('Setup already current — skipping migrate/seed/collectstatic.')
             return
+        if signature_matches:
+            log('Saved setup signature matches, but database schema is stale/unknown; repairing.')
         from django.core.management import call_command
         log('Applying database migrations…')
         call_command('migrate', '--noinput', verbosity=0)
@@ -196,14 +343,19 @@ class ServerManager:
             else:
                 call_command('bootstrap_admin', verbosity=0)
         except Exception as exc:  # noqa: BLE001
-            log(f'  (bootstrap_admin skipped: {exc})')
+            log(f'  bootstrap_admin failed: {exc}')
+            # Required invariant: never persist setup_sig without a usable admin.
+            raise
         log('Seeding notification templates…')
         try:
             # Idempotent (get_or_create) — without this the templates table is
             # empty and automatic Telegram notifications silently no-op.
             call_command('seed_templates', verbosity=0)
         except Exception as exc:  # noqa: BLE001
-            log(f'  (seed_templates skipped: {exc})')
+            log(f'  seed_templates failed: {exc}')
+            # Automatic Telegram notifications depend on these rows. Retrying
+            # next launch is safer than blessing a permanently half-set-up till.
+            raise
         log('Collecting static files…')
         try:
             call_command('collectstatic', '--noinput', verbosity=0)
@@ -214,87 +366,237 @@ class ServerManager:
         # the above. Only reached after migrate succeeded (it's unguarded above),
         # so a failed migrate never writes the marker and is retried next launch.
         try:
-            _st = config_store.read_state()
-            _st['setup_sig'] = sig
-            config_store.write_state(_st)
+            config_store.update_state({'setup_sig': sig})
         except Exception as exc:  # noqa: BLE001
             log(f'  (could not persist setup marker: {exc})')
 
     # -- Server lifecycle ----------------------------------------------------
     def is_running(self):
-        return self._thread is not None and self._thread.is_alive()
+        return bool(
+            self._thread is not None
+            and self._thread.is_alive()
+            and self._server is not None
+            and getattr(self._server, 'started', False)
+        )
 
-    def start(self):
-        if self.is_running():
-            return {'running': True, 'message': 'Server already running'}
+    def wants_running(self):
+        with self._lifecycle_lock:
+            return self._desired_running
+
+    def _run_server(self, server):
         try:
-            self.ensure_django()
-            import uvicorn
+            server.run()
+        except BaseException as exc:  # uvicorn raises SystemExit on bind errors
+            self._last_error = str(exc) or exc.__class__.__name__
+            logger.exception('uvicorn server thread exited with an error')
+        finally:
+            if self._desired_running and not getattr(server, 'should_exit', False):
+                logger.error('POS server stopped unexpectedly; supervisor will restart it')
 
-            # ASGI server (uvicorn) so the POS serves HTTP *and* websockets
-            # (channels) from one in-process server — replaces waitress (WSGI,
-            # no websockets). Runs in a daemon thread; signal handlers are
-            # disabled because they can only be installed on the main thread.
-            cfg = uvicorn.Config(
-                'config.asgi:application', host=self.host, port=int(self.port),
-                log_level='info', lifespan='off', access_log=False,
-            )
-            self._server = uvicorn.Server(cfg)
-            self._server.install_signal_handlers = lambda: None
-            self._thread = threading.Thread(
-                target=self._server.run, name='uvicorn', daemon=True,
-            )
-            self._thread.start()
-            self._ensure_sync_worker()  # auto-push/pull when sync is enabled
-            self._ensure_heartbeat_worker()  # keep the license verdict fresh
-            self._last_error = ''
-            logger.info('POS server bound on 0.0.0.0:%s — reachable on the LAN at %s',
-                        self.port, self.url())
-            return {'running': True, 'url': self.url(),
-                    'lan_url': self.url(), 'lan_ip': self.lan_ip(),
-                    'message': 'Server started'}
-        except Exception as exc:  # noqa: BLE001
-            self._last_error = str(exc)
-            logger.exception('server start failed')
-            return {'running': False, 'error': str(exc)}
+    def start(self, *, automatic=False):
+        """Start once and return only after uvicorn has actually bound.
 
-    def stop(self):
-        if self._server is not None:
+        ``automatic`` is used by the crash supervisor and never overrides an
+        operator's explicit Stop. The old implementation returned success as
+        soon as the thread was spawned; bind failures happened later on that
+        thread and the UI falsely displayed Online.
+        """
+        with self._lifecycle_lock:
+            if automatic and not self._desired_running:
+                return {'running': False, 'message': 'Server intentionally stopped'}
+            if not automatic:
+                self._desired_running = True
+            if self.is_running():
+                self.ensure_background_workers()
+                return {'running': True, 'message': 'Server already running'}
+            if self._thread is not None and self._thread.is_alive():
+                return {'running': False, 'message': 'Server is still starting or stopping'}
             try:
-                # uvicorn graceful stop: flip should_exit so the run loop ends.
-                self._server.should_exit = True
-            except Exception:  # noqa: BLE001
-                logger.exception('server close failed')
-        self._server = None
-        self._thread = None
-        return {'running': False, 'message': 'Server stopped'}
+                self.ensure_django()
+                import os
+                import uvicorn
 
-    @staticmethod
-    def lan_ip():
+                cfg = uvicorn.Config(
+                    'config.asgi:application', host=self.host, port=int(self.port),
+                    log_level='info', lifespan='off', access_log=False,
+                )
+                server = uvicorn.Server(cfg)
+                server.install_signal_handlers = lambda: None
+                thread = threading.Thread(
+                    target=self._run_server, args=(server,),
+                    name='uvicorn', daemon=True,
+                )
+                self._server = server
+                self._thread = thread
+                self._last_error = ''
+                thread.start()
+
+                try:
+                    timeout = max(2.0, float(os.environ.get(
+                        'DESKTOP_SERVER_START_TIMEOUT', '15',
+                    )))
+                except ValueError:
+                    timeout = 15.0
+                deadline = time.monotonic() + min(timeout, 60.0)
+                while thread.is_alive() and not getattr(server, 'started', False):
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.05)
+                if not getattr(server, 'started', False):
+                    server.should_exit = True
+                    thread.join(timeout=1.0)
+                    error = self._last_error or (
+                        f'POS server did not bind {self.host}:{self.port} within '
+                        f'{timeout:g} seconds'
+                    )
+                    self._last_error = error
+                    logger.error('server start failed: %s', error)
+                    return {'running': False, 'error': error}
+
+                self.ensure_background_workers()
+                logger.info(
+                    'POS server bound on 0.0.0.0:%s — reachable on the LAN at %s',
+                    self.port, self.url(),
+                )
+                return {
+                    'running': True, 'url': self.url(), 'lan_url': self.url(),
+                    'lan_ip': self.lan_ip(), 'message': 'Server started',
+                }
+            except Exception as exc:  # noqa: BLE001
+                self._last_error = str(exc)
+                logger.exception('server start failed')
+                return {'running': False, 'error': str(exc)}
+
+    def stop(self, *, worker_timeout=3.0):
+        with self._lifecycle_lock:
+            self._desired_running = False
+            self._hb_stop_event.set()
+            self._sync_stop_event.set()
+            # Give idle workers an immediate Event-driven exit and bound the
+            # wait for an in-flight HTTP call. Destructive reset callers can
+            # request a longer timeout; ordinary Stop stays responsive.
+            deadline = time.monotonic() + max(0.0, float(worker_timeout))
+            for worker in (self._sync_thread, self._hb_thread):
+                if worker is not None and worker.is_alive():
+                    worker.join(timeout=max(0.0, deadline - time.monotonic()))
+            workers_quiescent = not any(
+                worker is not None and worker.is_alive()
+                for worker in (self._sync_thread, self._hb_thread)
+            )
+            if not workers_quiescent:
+                logger.warning(
+                    'background workers still finishing after %.1fs stop timeout',
+                    worker_timeout,
+                )
+            server, thread = self._server, self._thread
+            if server is not None:
+                try:
+                    server.should_exit = True
+                except Exception:  # noqa: BLE001
+                    logger.exception('server close failed')
+            if thread is not None and thread.is_alive():
+                thread.join(timeout=8.0)
+            if thread is None or not thread.is_alive():
+                self._server = None
+                self._thread = None
+            self._record_worker(
+                'heartbeat', next_run_in_s=None, last_status='stopped',
+            )
+            self._record_worker('sync', next_run_in_s=None, last_status='stopped')
+            return {
+                'running': False, 'message': 'Server stopped',
+                'workers_quiescent': workers_quiescent,
+            }
+
+    def lan_ip(self, *, force=False):
         """This machine's primary LAN IP — the address other devices use to
-        reach the POS. Falls back to 127.0.0.1 if offline."""
+        reach the POS. Cached briefly because the panel polls status frequently;
+        route discovery on every poll was unnecessary work on slow/offline PCs."""
+        now = time.monotonic()
+        if (not force and self._lan_ip_checked_at is not None
+                and now - self._lan_ip_checked_at < 30):
+            return self._lan_ip_value
         import socket
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             # No packets are actually sent; this just selects the outbound
             # interface so getsockname() returns the real LAN IP.
+            s.settimeout(0.25)
             s.connect(('8.8.8.8', 80))
-            return s.getsockname()[0]
+            value = s.getsockname()[0]
         except Exception:  # noqa: BLE001
-            return '127.0.0.1'
+            # Restaurants often run a valid isolated LAN with no internet/default
+            # route. Hostname adapter enumeration still exposes the till's private
+            # address, which is far more useful than advertising loopback.
+            import ipaddress
+            candidates = []
+            try:
+                candidates.extend(socket.gethostbyname_ex(socket.gethostname())[2])
+                candidates.extend(
+                    item[4][0] for item in socket.getaddrinfo(
+                        socket.gethostname(), None, socket.AF_INET,
+                    )
+                )
+            except OSError:
+                pass
+            usable = []
+            for candidate in dict.fromkeys(candidates):
+                try:
+                    address = ipaddress.ip_address(candidate)
+                except ValueError:
+                    continue
+                if address.version == 4 and not address.is_loopback:
+                    usable.append(address)
+            private = next((address for address in usable if address.is_private), None)
+            value = str(private or (usable[0] if usable else '127.0.0.1'))
         finally:
             s.close()
+        self._lan_ip_value = value
+        self._lan_ip_checked_at = now
+        return value
 
     def url(self):
         # The address OTHER devices use — the LAN IP, not the 0.0.0.0 bind addr.
         return f'http://{self.lan_ip()}:{self.port}'
 
     def status(self):
+        with self._worker_lock:
+            workers = {
+                name: {
+                    **state,
+                    'alive': bool(
+                        (self._hb_thread if name == 'heartbeat' else self._sync_thread)
+                        and (self._hb_thread if name == 'heartbeat' else self._sync_thread).is_alive()
+                    ),
+                }
+                for name, state in self._worker_state.items()
+            }
+        if self.is_running():
+            phase = 'running'
+        elif self._thread is not None and self._thread.is_alive():
+            phase = 'starting' if self._desired_running else 'stopping'
+        else:
+            phase = 'stopped'
+        try:
+            from desktop import config_store
+            environment = config_store.env_status()
+        except Exception as exc:  # noqa: BLE001
+            environment = {'loaded': False, 'error': str(exc)}
+        try:
+            from desktop import pg_embedded
+            database = pg_embedded.migration_status()
+        except Exception as exc:  # noqa: BLE001
+            database = {'warning': '', 'error': str(exc)}
         return {
             'running': self.is_running(),
+            'phase': phase,
+            'desired_running': self._desired_running,
             'url': self.url(),
             'lan_ip': self.lan_ip(),
             'port': self.port,
             'django_ready': self._django_ready,
             'last_error': self._last_error,
+            'workers': workers,
+            'environment': environment,
+            'database': database,
         }

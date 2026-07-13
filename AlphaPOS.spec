@@ -81,6 +81,7 @@ hiddenimports += ['clr', 'pythonnet']
 datas = [
     ('desktop/ui', 'desktop/ui'),
     ('desktop/tos.txt', 'desktop'),
+    ('desktop/update_helper.ps1', 'desktop'),
 ]
 # Ship the trusted TUF root so the self-updater (desktop/updater.py) can
 # bootstrap trust offline. Guarded: a build made before

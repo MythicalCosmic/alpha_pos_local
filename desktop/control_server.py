@@ -97,19 +97,44 @@ class Handler(BaseHTTPRequestHandler):
             name = host.rsplit(':', 1)[0] if ':' in host else host
         return name in _LOOPBACK_NAMES
 
-    def _send(self, code, body, ctype='application/json'):
+    def _send(self, code, body, ctype='application/json', *,
+              cache_control='no-store', headers=None):
         data = body.encode('utf-8') if isinstance(body, str) else body
         self.send_response(code)
         self.send_header('Content-Type', ctype)
         self.send_header('Content-Length', str(len(data)))
-        # No-store: this panel exposes config/secrets; never let a proxy cache it.
-        self.send_header('Cache-Control', 'no-store')
+        self.send_header('Cache-Control', cache_control)
+        for key, value in (headers or {}).items():
+            self.send_header(key, value)
         self.end_headers()
-        self.wfile.write(data)
+        if data:
+            self.wfile.write(data)
 
-    # Static assets the panel pulls in (CSS, vendored React/Babel, the app/*.jsx
-    # Babel fetches at runtime). JSX is served as text/babel so the in-browser
-    # compiler picks it up.
+    def _send_static(self, target: Path, ctype: str):
+        """Serve local UI assets with safe private revalidation.
+
+        The old global ``no-store`` rule was appropriate for HTML/API responses
+        containing secrets, but it also forced WebView2 to re-read and recompile
+        every JS/CSS asset on every launch. Static assets contain no config. An
+        mtime/size ETag lets the persistent WebView profile reuse its code cache,
+        while mandatory revalidation makes an app update visible immediately.
+        """
+        stat = target.stat()
+        etag = f'"{stat.st_mtime_ns:x}-{stat.st_size:x}"'
+        headers = {'ETag': etag, 'X-Content-Type-Options': 'nosniff'}
+        cache = 'private, max-age=0, must-revalidate'
+        if self.headers.get('If-None-Match') == etag:
+            return self._send(
+                304, b'', ctype, cache_control=cache, headers=headers,
+            )
+        return self._send(
+            200, target.read_bytes(), ctype,
+            cache_control=cache, headers=headers,
+        )
+
+    # Static assets used by the fully local, precompiled panel.  Source JSX is
+    # kept available for development diagnostics, but production loads only the
+    # generated app.bundle.js and never runs a browser-side compiler.
     _CTYPES = {
         '.css': 'text/css; charset=utf-8',
         '.js': 'application/javascript; charset=utf-8',
@@ -144,7 +169,7 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 return self._send(403, '{"error":"forbidden path"}')
             if target.is_file():
-                return self._send(200, target.read_bytes(), self._CTYPES[ext])
+                return self._send_static(target, self._CTYPES[ext])
         self._send(404, '{"error":"not found"}')
 
     def do_POST(self):

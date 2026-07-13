@@ -46,9 +46,10 @@ class Api:
 
     @_safe
     def set_ui_prefs(self, prefs=None):
-        state = config_store.read_state()
-        state['ui'] = {**(state.get('ui') or {}), **(prefs or {})}
-        config_store.write_state(state)
+        def merge(state):
+            state['ui'] = {**(state.get('ui') or {}), **(prefs or {})}
+            return state
+        state = config_store.update_state(merge)
         return {'ok': True, 'prefs': state['ui']}
 
     @_safe
@@ -269,9 +270,15 @@ class Api:
             return {'ok': False,
                     'error': 'Database flush only runs in the installed app.'}
         try:
-            self.server.stop()
+            stopped = self.server.stop(worker_timeout=35)
+            if not stopped.get('workers_quiescent', False):
+                return {
+                    'ok': False,
+                    'error': 'A background sync is still finishing. Wait a moment and retry.',
+                }
         except Exception:  # noqa: BLE001
             logger.exception('stop during flush failed')
+            return {'ok': False, 'error': 'Could not stop the database safely.'}
         try:
             from django.db import connections
             connections.close_all()
@@ -286,9 +293,24 @@ class Api:
         import shutil
         try:
             from desktop import pg_embedded
-            pg_embedded.stop()
+            if not pg_embedded.stop():
+                return {
+                    'ok': False,
+                    'error': 'Embedded database is still running; flush cancelled safely.',
+                }
         except Exception:  # noqa: BLE001
             logger.exception('embedded Postgres stop during flush failed')
+            return {'ok': False, 'error': 'Could not stop the embedded database safely.'}
+        # The operator explicitly requested a new empty database. Prevent an old
+        # pre-canonical cluster from being imported after canonical pgdata is
+        # removed, and authorize start() to initialize the empty replacement.
+        try:
+            config_store._write_protected(
+                config_store.LEGACY_PG_MIGRATION_MARKER, 'factory-reset\n',
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception('could not arm PostgreSQL flush marker')
+            return {'ok': False, 'error': f'Could not prepare database flush: {exc}'}
         for _name in ('db.sqlite3', 'db.sqlite3-wal', 'db.sqlite3-shm'):
             try:
                 (config_store.DATA_DIR / _name).unlink(missing_ok=True)
@@ -298,9 +320,26 @@ class Api:
         try:
             from desktop import pg_embedded
             if not pg_embedded.start():   # re-initialises a fresh empty cluster
-                logger.warning('embedded Postgres did not restart after flush')
-        except Exception:  # noqa: BLE001
+                return {
+                    'ok': False,
+                    'error': 'Embedded database is not available; rebuild cancelled.',
+                }
+        except Exception as exc:  # noqa: BLE001
             logger.exception('embedded Postgres restart during flush failed')
+            return {
+                'ok': False,
+                'error': f'Embedded database restart failed; rebuild cancelled: {exc}',
+            }
+        # setup_sig describes the old cluster. Keeping it would make
+        # first_time_install() skip migrations on this brand-new empty database.
+        try:
+            def clear_setup_signature(state):
+                state.pop('setup_sig', None)
+                return state
+            config_store.update_state(clear_setup_signature)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception('could not clear setup signature during flush')
+            return {'ok': False, 'error': f'Could not prepare schema rebuild: {exc}'}
         # Rebuild empty schema + reseed (payment methods, templates) + admin.
         try:
             self.server.first_time_install()
@@ -308,9 +347,15 @@ class Api:
             logger.exception('rebuild after flush failed')
             return {'ok': False, 'error': f'Rebuild failed: {exc}'}
         try:
-            self.server.start()
-        except Exception:  # noqa: BLE001
+            started = self.server.start()
+            if not started.get('running'):
+                return {
+                    'ok': False,
+                    'error': started.get('error') or 'Server failed to restart after rebuild.',
+                }
+        except Exception as exc:  # noqa: BLE001
             logger.exception('start after flush failed')
+            return {'ok': False, 'error': f'Server failed to restart after rebuild: {exc}'}
         return {'ok': True,
                 'message': 'Database flushed — clean data, same configuration. '
                            'The admin login was reset (see the Dashboard).'}
@@ -331,9 +376,15 @@ class Api:
         # Stop the POS server and drop DB connections so the sqlite file isn't
         # locked when we delete it.
         try:
-            self.server.stop()
+            stopped = self.server.stop(worker_timeout=35)
+            if not stopped.get('workers_quiescent', False):
+                return {
+                    'ok': False,
+                    'error': 'A background sync is still finishing. Wait a moment and retry.',
+                }
         except Exception:  # noqa: BLE001
             logger.exception('stop during factory reset failed')
+            return {'ok': False, 'error': 'Could not stop the database safely.'}
         try:
             from django.db import connections
             connections.close_all()
@@ -356,22 +407,30 @@ class Api:
         import urllib.request
         if not self.server.is_running():
             return {'ok': False, 'error': 'Server is not running'}
-        url = self.server.url() + '/healthz'
+        # Probe the local bind directly. The advertised LAN URL can be blocked by
+        # Windows hairpin/firewall rules even while uvicorn is perfectly healthy.
+        url = f'http://127.0.0.1:{self.server.port}/healthz'
         with urllib.request.urlopen(url, timeout=5) as resp:
             body = resp.read().decode('utf-8', 'replace')
         return {'ok': resp.status == 200, 'status': resp.status, 'body': body[:50]}
 
     # -- self-update --------------------------------------------------------
     def _ensure_update_env(self):
-        """Make sure ALPHA_POS_UPDATE_URL is in the process env (the launcher
-        seeds it once the server auto-starts, but the panel may be opened
-        first). Lightweight — no Django setup, no factory-reset side effects."""
+        """Mirror the authoritative persisted update URL into this process.
+
+        The panel can be used before the boot worker applies the full env.  A
+        stale/injected parent variable must not win in that window, and clearing
+        or changing the configured URL must take effect without a restart.
+        ``read_config`` is lightweight and merges the canonical file over the
+        packaged default without importing Django.
+        """
         import os
-        if not os.environ.get('ALPHA_POS_UPDATE_URL'):
-            url = (config_store.parse_env_file().get('ALPHA_POS_UPDATE_URL')
-                   or dict(config_store.CONFIG_FIELDS).get('ALPHA_POS_UPDATE_URL', ''))
-            if url:
-                os.environ['ALPHA_POS_UPDATE_URL'] = url
+        key = 'ALPHA_POS_UPDATE_URL'
+        url = str(config_store.read_config().get(key, '') or '').strip()
+        if url:
+            os.environ[key] = url
+        else:
+            os.environ.pop(key, None)
 
     @_safe
     def update_status(self):
@@ -392,15 +451,16 @@ class Api:
 
     @_safe
     def check_updates_now(self):
-        """Check the update server now and apply a newer signed build if present.
-        In a configured frozen install this downloads + restarts the app (so this
-        call may not return); from source / when unconfigured it is a safe no-op."""
+        """Start the signed download in the background and return immediately.
+
+        Progress is exposed by update_status().  Once verification completes,
+        the launcher gracefully stops the backend and the windowless helper
+        performs a bounded atomic swap + relaunch.
+        """
         self._ensure_update_env()
         from desktop import updater
-        applied = updater.check_and_apply()
-        return {'ok': True, 'applied': bool(applied),
-                'message': 'Update applied — restarting…' if applied
-                           else 'You are on the latest version.'}
+        result = updater.start_update()
+        return {'ok': True, **result}
 
     # -- dashboards ----------------------------------------------------------
     @_safe
@@ -446,7 +506,12 @@ class Api:
         readback = Category.objects.filter(uuid=u).first()
         found = readback is not None
         if readback:
-            readback.delete(hard_delete=True)  # cleanup
+            # This is diagnostic scratch data, not a real local deletion. The
+            # model's hard_delete path correctly publishes a sync tombstone, so
+            # invoking it here would leave fake outbound work after a supposedly
+            # side-effect-free loopback test. QuerySet.delete performs the direct
+            # cleanup without calling the model override.
+            Category.objects.filter(pk=readback.pk).delete()
         return {'ok': True, 'sent': record, 'received': {
             'created': result.get('created'), 'errors': result.get('errors'),
         }, 'read_back': found}

@@ -37,6 +37,11 @@ function DashboardScreen() {
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className="hero-status">{statusTitle}</div>
               <div className="hero-sub">{statusSub}</div>
+              {server.error ? (
+                <div style={{ marginTop: 8, color: "var(--danger)", fontSize: 12.5, wordBreak: "break-word" }}>
+                  {server.error}
+                </div>
+              ) : null}
               <div style={{ marginTop: 14 }}>
                 <EpRow l={t("dash.local")} v={"http://127.0.0.1:" + app.cfg.port}></EpRow>
                 <EpRow l={t("dash.network")} v={"http://" + app.cfg.lanIp + ":" + app.cfg.port}></EpRow>
@@ -58,6 +63,7 @@ function DashboardScreen() {
           <div className="kv">
             <KRow l={t("dash.controlCenter")} v={app.cfg.controlHost} mono></KRow>
             <KRow l={t("dash.lastBeat")} v={hb.lastBeatStr} dim={!hb.hasBeat}></KRow>
+            <KRow l={t("dash.nextBeat")} v={hb.nextIn != null ? hb.nextIn + "s" : "—"} dim={!hb.alive}></KRow>
             <KRow l={t("dash.pending")} v={hb.pending}></KRow>
             <KRow l={t("dash.lastError")} v={hb.lastError || t("common.none")} dim={!hb.lastError}></KRow>
           </div>
