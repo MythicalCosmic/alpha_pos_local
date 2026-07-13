@@ -53,13 +53,20 @@ class ClientService:
             return ServiceResponse.not_found('Client not found')
 
         orders_qs = OrderRepository.build_filtered_queryset(customer_id=c.id)
-        stats = orders_qs.aggregate(
-            count=Count('id'), spent=Sum('total_amount'), last=Max('created_at'))
+        stats = orders_qs.aggregate(count=Count('id'), last=Max('created_at'))
+        spent = (orders_qs.filter(is_paid=True).exclude(status='CANCELED')
+                 .aggregate(total=Sum('total_amount'))['total'])
         recent = [_serialize_order_list(o) for o in orders_qs[:history_limit]]
 
         # Most-ordered products across this client's whole history ("their foods").
         fav = (OrderItem.objects
-               .filter(order__customer_id=c.id, order__is_deleted=False)
+               .filter(
+                   is_deleted=False,
+                   order__customer_id=c.id,
+                   order__is_deleted=False,
+                   order__is_paid=True,
+               )
+               .exclude(order__status='CANCELED')
                .values('product_id', 'product__name')
                .annotate(times=Count('id'), qty=Sum('quantity'))
                .order_by('-times', '-qty')[:fav_limit])
@@ -74,7 +81,7 @@ class ClientService:
             'client': _client_dict(c),
             'stats': {
                 'order_count': stats['count'] or 0,
-                'total_spent': str(stats['spent'] or 0),
+                'total_spent': str(spent or 0),
                 'last_order_at': stats['last'].isoformat() if stats['last'] else None,
             },
             'orders': recent,

@@ -34,6 +34,8 @@ def _order(waiter, status='PREPARING', is_paid=False, table=None, total='10.00')
         user=waiter, cashier=waiter, order_type='HALL', status=status,
         is_paid=is_paid, display_id=Order.objects.count() + 1,
         subtotal=total, total_amount=total, table=table,
+        payment_method='CASH' if is_paid else None,
+        paid_at=timezone.now() if is_paid else None,
     )
 
 
@@ -177,17 +179,65 @@ class TestWaiterStats:
         # auto_now_add stamps "now"; rewrite it to yesterday via .update (which
         # bypasses auto_now_add) so it falls outside the default today window.
         yesterday = timezone.now() - timedelta(days=1)
-        Order.objects.filter(pk=old.pk).update(created_at=yesterday)
+        Order.objects.filter(pk=old.pk).update(
+            created_at=yesterday, paid_at=yesterday,
+        )
         _order(w, is_paid=True, total='20.00')   # today
 
         res, _ = WaiterService.get_stats(w.id)
         assert res['data']['orders_count'] == 1
         assert res['data']['sales_total'] == '20.00'
 
+        from base.services.business_day import business_date
         res2, _ = WaiterService.get_stats(
-            w.id, date_from=yesterday.date().isoformat())
+            w.id, date_from=business_date(yesterday).isoformat())
         assert res2['data']['orders_count'] == 2
         assert res2['data']['sales_total'] == '70.00'
+
+    def test_late_payment_counts_on_settlement_date(self):
+        from base.models import Order
+        from waiters.services.waiter_service import WaiterService
+
+        waiter = _waiter()
+        order = _order(waiter, is_paid=True, status='COMPLETED', total='40.00')
+        yesterday = timezone.now() - timedelta(days=1)
+        Order.objects.filter(pk=order.pk).update(created_at=yesterday)
+
+        res, status = WaiterService.get_stats(waiter.id)
+
+        assert status == 200
+        assert res['data']['orders_count'] == 0
+        assert res['data']['paid_count'] == 1
+        assert res['data']['sales_total'] == '40.00'
+
+    def test_pre_cutover_payment_belongs_to_previous_business_day(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from base.models import Order
+        from waiters.services.waiter_service import WaiterService
+
+        waiter = _waiter()
+        order = _order(waiter, is_paid=True, status='COMPLETED', total='25.00')
+        before_cutover = datetime(
+            2026, 7, 2, 1, 0, tzinfo=ZoneInfo('Asia/Tashkent'),
+        )
+        Order.objects.filter(pk=order.pk).update(
+            created_at=before_cutover, paid_at=before_cutover,
+        )
+
+        previous, _ = WaiterService.get_stats(
+            waiter.id, date_from='2026-07-01', date_to='2026-07-01',
+        )
+        calendar, _ = WaiterService.get_stats(
+            waiter.id, date_from='2026-07-02', date_to='2026-07-02',
+        )
+
+        assert previous['data']['orders_count'] == 1
+        assert previous['data']['paid_count'] == 1
+        assert previous['data']['sales_total'] == '25.00'
+        assert calendar['data']['orders_count'] == 0
+        assert calendar['data']['sales_total'] == '0.00'
 
 
 @pytest.mark.django_db

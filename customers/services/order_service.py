@@ -566,11 +566,12 @@ class CustomerOrderService:
         is_instant = product.is_instant
         existing = OrderItemRepository.get_existing_unready(order_id, product_id)
         if existing and not is_instant:
-            # Increment in SQL so concurrent add-item calls cannot lose updates.
-            from django.db.models import F
-            OrderItemRepository.model.objects.filter(pk=existing.pk).update(
-                quantity=F('quantity') + quantity,
-            )
+            # Every add locks the parent Order above, so calls for this order are
+            # already serialized. Save through SyncMixin: QuerySet.update()
+            # changed the local quantity without clearing synced_at or queuing a
+            # new payload, leaving cloud product analytics behind the bill total.
+            existing.quantity += quantity
+            existing.save(update_fields=['quantity'])
         else:
             # Instant items are born ready and never need the kitchen.
             OrderItemRepository.create(

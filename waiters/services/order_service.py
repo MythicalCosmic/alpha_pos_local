@@ -436,11 +436,11 @@ class WaiterOrderService:
         is_instant = product.is_instant
         existing = OrderItemRepository.get_existing_unready(order_id, product_id)
         if existing and not is_instant:
-            # Increment in SQL so concurrent add-item calls cannot lose updates.
-            from django.db.models import F
-            OrderItemRepository.model.objects.filter(pk=existing.pk).update(
-                quantity=F('quantity') + quantity,
-            )
+            # The parent Order row is locked above, so concurrent additions for
+            # this ticket are serialized. Use save() so SyncMixin marks the line
+            # dirty; a bulk update silently left the cloud quantity stale.
+            existing.quantity += quantity
+            existing.save(update_fields=['quantity'])
         else:
             # Instant items are born ready and never need the kitchen.
             OrderItemRepository.create(

@@ -10,4 +10,4 @@ pywebview
 pythonnet
 Pillow
 # Signed self-update engine.
-tufup
+tufup==0.10.0

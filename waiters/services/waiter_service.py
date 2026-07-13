@@ -31,34 +31,41 @@ class WaiterService:
         create_order) — so we scope by cashier_id, mirroring the admin
         get_cashier_stats aggregation. `sales_total` counts only paid orders
         (money actually collected); active/cancelled are status tallies."""
-        today = timezone.localdate()
+        from base.services.business_day import business_date, range_window
+
+        today = business_date()
         d_from = _parse_date(date_from) or today
         d_to = _parse_date(date_to) or today
         if d_to < d_from:
             d_from, d_to = d_to, d_from
 
-        # __date__range honours the active timezone under USE_TZ — no manual
-        # make_aware (which would crash if USE_TZ were ever False).
+        window_start, window_end = range_window(d_from, d_to)
         qs = Order.objects.filter(
             is_deleted=False,
             cashier_id=waiter_user_id,
-            created_at__date__gte=d_from,
-            created_at__date__lte=d_to,
+            created_at__gte=window_start,
+            created_at__lt=window_end,
         )
 
         # Cancelling a paid order reverses the drawer cash but does NOT reset
         # is_paid, so the money tallies must also exclude CANCELED to match the
         # authoritative shift/cash-reconciliation aggregation (core/shifts/
         # service.py pairs is_paid=True with .exclude(status='CANCELED')).
-        paid_and_live = Q(is_paid=True) & ~Q(status='CANCELED')
         agg = qs.aggregate(
             orders_count=Count('id'),
-            paid_count=Count('id', filter=paid_and_live),
             cancelled_count=Count('id', filter=Q(status='CANCELED')),
             active_count=Count(
                 'id', filter=Q(status__in=('PREPARING', 'READY'), is_paid=False),
             ),
-            sales_total=Sum('total_amount', filter=paid_and_live),
+        )
+        settled = Order.objects.filter(
+            is_deleted=False,
+            cashier_id=waiter_user_id,
+            is_paid=True,
+            paid_at__gte=window_start,
+            paid_at__lt=window_end,
+        ).exclude(status='CANCELED').aggregate(
+            paid_count=Count('id'), sales_total=Sum('total_amount'),
         )
         # Distinct tables the waiter served in the window (HALL orders only carry
         # a table); excludes table-less DELIVERY/PICKUP.
@@ -67,13 +74,15 @@ class WaiterService:
         )
         # SUM drops the field's 2-dp scale (SQLite returns Decimal('20')), so
         # quantize to match the money formatting everywhere else in the API.
-        sales_total = (agg['sales_total'] or Decimal('0')).quantize(Decimal('0.01'))
+        sales_total = (settled['sales_total'] or Decimal('0')).quantize(
+            Decimal('0.01'),
+        )
 
         return ServiceResponse.success(data={
             'date_from': d_from.isoformat(),
             'date_to': d_to.isoformat(),
             'orders_count': agg['orders_count'] or 0,
-            'paid_count': agg['paid_count'] or 0,
+            'paid_count': settled['paid_count'] or 0,
             'active_count': agg['active_count'] or 0,
             'cancelled_count': agg['cancelled_count'] or 0,
             'tables_served': tables_served,

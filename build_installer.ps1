@@ -33,6 +33,18 @@ $iscc = @("$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
 
 $env:SECRET_KEY = 'build-time-secret'; $env:DEBUG = 'True'
 
+# Keep the Python app, signed update bundle, and Windows installer on exactly
+# the same version. desktop/version.py is the release source of truth; the
+# numeric x.y.z check also guarantees that Inno Setup can use it for the
+# executable version resource.
+$versionOutput = & $py -c "from desktop.version import __version__; print(__version__)"
+if ($LASTEXITCODE -ne 0) { throw "could not read desktop version ($LASTEXITCODE)" }
+$version = "$versionOutput".Trim()
+if ($version -notmatch '^\d+\.\d+\.\d+$') {
+    throw "Invalid desktop version '$version' (expected numeric x.y.z)."
+}
+Write-Host "Building Alpha POS $version" -ForegroundColor DarkCyan
+
 # Core MUST be a regular (non-editable) install. PyInstaller's module graph does
 # not follow PEP 660 editable installs, so an editable core bundles core.* but not
 # the top-level `alpha_pos_core` package -> the frozen app ModuleNotFounds at launch
@@ -58,7 +70,7 @@ if ($LASTEXITCODE -ne 0) { throw "PyInstaller (onefile) failed ($LASTEXITCODE)" 
 
 Write-Host '== 4/4  Compiling Setup installer (Inno Setup) ==' -ForegroundColor Cyan
 if ($iscc) {
-    & $iscc 'installer\AlphaPOS.iss'
+    & $iscc "/DAppVersion=$version" 'installer\AlphaPOS.iss'
     if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed ($LASTEXITCODE)" }
 } else {
     Write-Host 'ISCC not found - skipping Setup installer (install Inno Setup 6).' -ForegroundColor Yellow
@@ -66,8 +78,12 @@ if ($iscc) {
 
 $deliv = Join-Path $root 'DELIVERABLES'
 New-Item -ItemType Directory -Force -Path $deliv | Out-Null
-if (Test-Path "$root\installer\Output\AlphaPOS-Setup.exe") {
-    Copy-Item "$root\installer\Output\AlphaPOS-Setup.exe" "$deliv\AlphaPOS-Setup.exe" -Force
+if ($iscc) {
+    $installer = Join-Path $root "installer\Output\AlphaPOS-$version-Setup.exe"
+    if (-not (Test-Path $installer)) {
+        throw "Inno Setup succeeded but expected installer is missing: $installer"
+    }
+    Copy-Item $installer "$deliv\AlphaPOS-Setup.exe" -Force
 }
 if (Test-Path "$root\dist\AlphaPOS.exe") {
     Copy-Item "$root\dist\AlphaPOS.exe" "$deliv\AlphaPOS-Portable.exe" -Force

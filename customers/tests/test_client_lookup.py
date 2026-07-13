@@ -43,6 +43,35 @@ def test_lookup_not_found():
     assert st == 404
 
 
+def test_lookup_spend_and_favorites_exclude_unpaid_cancelled_and_deleted_lines():
+    client, product, _ = _setup()
+    user = User.objects.first()
+    unpaid = Order.objects.create(
+        user=user, customer=client, order_type='HALL', status='PREPARING',
+        is_paid=False, total_amount=Decimal('90000'), branch_id='branch1',
+    )
+    OrderItem.objects.create(
+        order=unpaid, product=product, quantity=9, price=product.price,
+    )
+    cancelled = Order.objects.create(
+        user=user, customer=client, order_type='HALL', status='CANCELED',
+        is_paid=True, total_amount=Decimal('80000'), branch_id='branch1',
+    )
+    OrderItem.objects.create(
+        order=cancelled, product=product, quantity=8, price=product.price,
+    )
+
+    result, status = ClientService.lookup(customer_id=client.id)
+
+    assert status == 200
+    assert Decimal(result['data']['stats']['total_spent']) == Decimal('120000')
+    favorite = next(
+        row for row in result['data']['frequent_products']
+        if row['product_id'] == product.id
+    )
+    assert favorite['total_qty'] == 2
+
+
 def test_find_exact_and_normalized():
     client, _p1, _p2 = _setup()
     assert ClientService.find(phone='998901112233').id == client.id
