@@ -33,7 +33,8 @@ def test_cashier_can_record_drawer_expense_end_to_end():
     from datetime import timedelta
     from decimal import Decimal
     from django.utils import timezone
-    from base.models import User, Shift
+    from base.models import Order, OrderPayment, Shift, User
+    from base.services.inkassa_service import InkassaService
     from base.security.hashing import hash_password
     from base.repositories.session import SessionRepository
 
@@ -41,6 +42,24 @@ def test_cashier_can_record_drawer_expense_end_to_end():
         first_name='Cash', last_name='Ier', email='till@t.local',
         role='CASHIER', status='ACTIVE', password=hash_password('1234'))
     shift = Shift.objects.create(user=cashier, start_time=timezone.now(), status='ACTIVE')
+    sale = Order.objects.create(
+        user=cashier,
+        cashier=cashier,
+        status='COMPLETED',
+        is_paid=True,
+        payment_method='CASH',
+        paid_at=timezone.now(),
+        subtotal='50000.00',
+        total_amount='50000.00',
+        branch_id=shift.branch_id,
+    )
+    OrderPayment.objects.create(
+        order=sale,
+        method='CASH',
+        amount='50000.00',
+        branch_id=shift.branch_id,
+    )
+    InkassaService.add_to_register(Decimal('50000.00'), shift.branch_id)
 
     # Mint a session the same way auth_service.login does (raw token -> sha256 payload).
     raw = secrets.token_hex(32)
@@ -60,4 +79,4 @@ def test_cashier_can_record_drawer_expense_end_to_end():
     # No cash sales yet, so the drawer goes negative by the expense — but the row exists.
     from cashbox.models import CashboxExpense
     assert CashboxExpense.objects.filter(shift=shift, amount=Decimal('30000.00')).exists()
-    assert drawer_cash(shift) == Decimal('-30000.00')
+    assert drawer_cash(shift) == Decimal('20000.00')
