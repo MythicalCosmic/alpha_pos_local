@@ -299,6 +299,7 @@ def cancel_order(request, order_id):
     result, status_code = CustomerOrderService.update_order_status(
         order_id, 'CANCELED', cashier_id,
         user_id=request.user.id, user_role=request.user.role,
+        reason=reason or '',
     )
     if result.get('success'):
         audit(
