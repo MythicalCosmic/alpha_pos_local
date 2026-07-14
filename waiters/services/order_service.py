@@ -14,7 +14,90 @@ from notifications.handlers.order import OrderNotification
 from base.models import Table
 
 
+def _schedule_order_notification(event, order_id):
+    """Keep external messages behind the successful transaction boundary."""
+    def notify():
+        if event == 'new':
+            order = OrderRepository.get_by_id_with_relations(order_id)
+            if order:
+                OrderNotification.on_new_order(order)
+        elif event == 'ready':
+            OrderNotification.on_order_ready(order_id)
+        elif event == 'cancelled':
+            OrderNotification.on_order_cancelled(order_id)
+
+    transaction.on_commit(notify, robust=True)
+
+
+def _adjust_order_stock(order_id, product_id, quantity_delta, performed_by_id):
+    """Apply an edit to already-deducted stock, or fail the order transaction."""
+    if quantity_delta == 0:
+        return None
+    try:
+        from stock.services import OrderStockService, StockSettingsService
+        location_id = StockSettingsService.get_default_location_id()
+        result, status = OrderStockService.adjust_for_item_change(
+            order_id, product_id, quantity_delta, location_id, performed_by_id,
+        )
+        if status >= 400:
+            logger.error(
+                'stock adjustment rejected for waiter order=%s product=%s: %s',
+                order_id, product_id, result,
+            )
+            return result, status
+        return None
+    except Exception:
+        logger.exception('stock adjustment failed in waiter order edit flow')
+        return ServiceResponse.error(
+            'Stock adjustment failed; the order change was not applied. Please retry.'
+        )
+
+
+def _apply_order_stock_transition(order_id, old_status, new_status,
+                                  stock_items, performed_by_id):
+    try:
+        from stock.services import OrderStatusHandler, StockSettingsService
+        stock_settings = StockSettingsService.load()
+        if (not stock_settings.stock_enabled
+                or not getattr(stock_settings, 'auto_deduct_on_sale', True)):
+            return None
+        location_id = StockSettingsService.get_default_location_id()
+        needs_location = (
+            (stock_settings.reserve_on_order_create and old_status is None)
+            or new_status == stock_settings.deduct_on_order_status
+        )
+        if needs_location and not location_id:
+            return ServiceResponse.error(
+                'Stock is enabled but no default stock location is configured.'
+            )
+        result, status = OrderStatusHandler.on_status_change(
+            order_id, old_status, new_status, stock_items,
+            location_id, performed_by_id,
+        )
+        if status >= 400:
+            logger.error(
+                'stock transition rejected for waiter order=%s %s->%s: %s',
+                order_id, old_status, new_status, result,
+            )
+            return result, status
+        return None
+    except Exception:
+        logger.exception(
+            'stock transition failed for waiter order=%s %s->%s',
+            order_id, old_status, new_status,
+        )
+        return ServiceResponse.error(
+            'Stock processing failed; the order change was not applied. Please retry.'
+        )
+
+
+def _live_items(order):
+    """Return live lines while reusing OrderRepository's prefetch cache."""
+    return [item for item in order.items.all() if not item.is_deleted]
+
+
 def _serialize_order_list(order):
+    live_items = _live_items(order)
     return {
         'id': order.id,
         'display_id': order.display_id,
@@ -45,7 +128,7 @@ def _serialize_order_list(order):
         # (OrderRepository.get_with_relations) — iterate the cached items
         # instead of `.count()` (extra query per order) and `.values()` (fresh
         # query that bypasses the prefetch). Mirrors the admin list serializer.
-        'items_count': len(order.items.all()),
+        'items_count': len(live_items),
         'items': [
             {
                 'id': i.id,
@@ -60,7 +143,7 @@ def _serialize_order_list(order):
                 'price': i.price,
                 'ready_at': i.ready_at,
             }
-            for i in order.items.all()
+            for i in live_items
         ],
         'created_at': order.created_at.isoformat(),
         'updated_at': order.updated_at.isoformat(),
@@ -69,7 +152,7 @@ def _serialize_order_list(order):
 
 def _serialize_order_detail(order):
     items = []
-    for item in order.items.all():
+    for item in _live_items(order):
         items.append({
             'id': item.id,
             'product': {
@@ -144,12 +227,16 @@ def _recalculate_total(order):
     # under-credited (mark_as_paid would settle the wrong cash, or drive
     # total_amount negative and *remove* real cash via add_to_register). The
     # OrderDiscount rows are the source of truth — refresh them, then sum.
-    order_items = list(order.items.select_related('product__category').all())
+    order_items = list(order.items.filter(is_deleted=False).select_related(
+        'product__category',
+    ))
     applied = Decimal('0')
     for od in OrderDiscountRepository.get_for_order(order.id).select_related(
         'discount__discount_type'
-    ):
-        new_amount = DiscountService.calculate_discount(od.discount, order_items)
+    ).order_by('created_at', 'pk'):
+        new_amount = DiscountService.calculate_discount(
+            od.discount, order_items, already_applied_discount=applied,
+        )
         if new_amount != od.discount_amount:
             od.discount_amount = new_amount
             od.save(update_fields=['discount_amount'])
@@ -366,23 +453,18 @@ class WaiterOrderService:
         if table:
             TableRepository.update_status(table.id, Table.Status.OCCUPIED)
 
-        fresh = OrderRepository.get_by_id_with_relations(order.id)
-        if fresh:
-            OrderNotification.on_new_order(fresh)
+        stock_items = [
+            {'product_id': d['product'].id, 'quantity': d['quantity']}
+            for d in order_items_data
+        ]
+        stock_error = _apply_order_stock_transition(
+            order.id, None, 'PREPARING', stock_items, user_id,
+        )
+        if stock_error:
+            transaction.set_rollback(True)
+            return stock_error
 
-        try:
-            from stock.services import OrderStatusHandler, StockSettingsService
-            location_id = StockSettingsService.get_default_location_id()
-            if location_id:
-                stock_items = [
-                    {'product_id': d['product'].id, 'quantity': d['quantity']}
-                    for d in order_items_data
-                ]
-                OrderStatusHandler.on_status_change(
-                    order.id, None, 'PREPARING', stock_items, location_id, user_id,
-                )
-        except Exception:
-            logger.exception('non-critical stock-handler error in waiter order flow')
+        _schedule_order_notification('new', order.id)
 
         return ServiceResponse.created(
             data={'order_id': order.id, 'display_id': order.display_id},
@@ -456,6 +538,12 @@ class WaiterOrderService:
             order.save(update_fields=['ready_at', 'status'])
 
         _recalculate_total(order)
+        stock_error = _adjust_order_stock(
+            order_id, product_id, quantity, waiter_user_id,
+        )
+        if stock_error:
+            transaction.set_rollback(True)
+            return stock_error
         return ServiceResponse.success(message='Item added to order successfully')
 
     @staticmethod
@@ -488,9 +576,18 @@ class WaiterOrderService:
         if not item:
             return ServiceResponse.not_found('Order item not found')
 
+        old_quantity = item.quantity
+        product_id = item.product_id
         item.quantity = quantity
         item.save(update_fields=['quantity'])
         _recalculate_total(order)
+
+        stock_error = _adjust_order_stock(
+            order_id, product_id, quantity - old_quantity, waiter_user_id,
+        )
+        if stock_error:
+            transaction.set_rollback(True)
+            return stock_error
 
         return ServiceResponse.success(message='Order item updated successfully')
 
@@ -518,9 +615,18 @@ class WaiterOrderService:
         if not item:
             return ServiceResponse.not_found('Order item not found')
 
+        product_id = item.product_id
+        removed_quantity = item.quantity
         item.delete(hard_delete=True)
 
-        if not order.items.exists():
+        stock_error = _adjust_order_stock(
+            order_id, product_id, -removed_quantity, waiter_user_id,
+        )
+        if stock_error:
+            transaction.set_rollback(True)
+            return stock_error
+
+        if not order.items.filter(is_deleted=False).exists():
             if order.table:
                 TableRepository.update_status(order.table_id, Table.Status.AVAILABLE)
             order.delete(hard_delete=True)
@@ -559,9 +665,15 @@ class WaiterOrderService:
         order.status = 'READY'
         order.ready_at = now
         order.save(update_fields=['status', 'ready_at'])
-        order.items.filter(ready_at__isnull=True).update(ready_at=now)
+        # Preserve SyncMixin dirty/version state for every line. A bulk update
+        # changes the local KDS only and silently leaves the cloud stale.
+        for item in order.items.select_for_update().filter(
+            is_deleted=False, ready_at__isnull=True,
+        ):
+            item.ready_at = now
+            item.save(update_fields=['ready_at'])
 
-        OrderNotification.on_order_ready(order_id)
+        _schedule_order_notification('ready', order_id)
 
         return ServiceResponse.success(
             data={'status': order.status, 'ready_at': order.ready_at.isoformat()},
@@ -619,42 +731,42 @@ class WaiterOrderService:
 
         old_status = order.status
         order.status = 'CANCELED'
-        order.save(update_fields=['status'])
 
-        # Cancelling a paid order must reverse the cash that actually hit the
-        # drawer. A MIXED order reverses only its cash portion (bill total minus
-        # whatever settled externally via card/Payme); card/Payme settle
-        # off-drawer. Mirrors the customer-service reversal so the till
-        # reconciles identically regardless of which surface cancelled.
+        refund = None
         if order.is_paid:
-            from base.services.inkassa_service import InkassaService
-            from base.services.tender import order_tender_split
-            split, _ = order_tender_split(order)
-            cash_in_drawer = split['cash']
-            if cash_in_drawer > 0:
-                InkassaService.add_to_register(-cash_in_drawer, order.branch_id)
+            from base.services.order_refund import (
+                SettlementInvariantError, record_paid_order_refund,
+            )
+            try:
+                refund, _ = record_paid_order_refund(
+                    order.id, waiter_user_id,
+                    reason='Cancelled from waiter app',
+                )
+            except SettlementInvariantError as exc:
+                return ServiceResponse.error(str(exc))
+        order.save(update_fields=['status'])
 
         if order.table:
             TableRepository.update_status(order.table_id, Table.Status.AVAILABLE)
 
-        OrderNotification.on_order_cancelled(order_id)
+        stock_items = [
+            {'product_id': i.product_id, 'quantity': i.quantity}
+            for i in order.items.filter(is_deleted=False)
+        ]
+        stock_error = _apply_order_stock_transition(
+            order.id, old_status, 'CANCELED', stock_items, order.user_id,
+        )
+        if stock_error:
+            transaction.set_rollback(True)
+            return stock_error
 
-        try:
-            from stock.services import OrderStatusHandler, StockSettingsService
-            location_id = StockSettingsService.get_default_location_id()
-            if location_id:
-                stock_items = [
-                    {'product_id': i.product_id, 'quantity': i.quantity}
-                    for i in order.items.all()
-                ]
-                OrderStatusHandler.on_status_change(
-                    order.id, old_status, 'CANCELED', stock_items, location_id, order.user_id,
-                )
-        except Exception:
-            logger.exception('non-critical stock-handler error in waiter order flow')
+        _schedule_order_notification('cancelled', order_id)
 
         return ServiceResponse.success(
-            data={'status': 'CANCELED'},
+            data={
+                'status': 'CANCELED',
+                'refund_id': refund.id if refund else None,
+            },
             message='Order cancelled successfully',
         )
 

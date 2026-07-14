@@ -42,10 +42,16 @@ def _order(waiter, status='PREPARING', is_paid=False, table=None, total='10.00')
 @pytest.mark.django_db
 def test_waiter_cancel_uses_live_payment_rows_only():
     from decimal import Decimal
-    from base.models import CashRegister, OrderPayment
+    from base.models import CashRegister, OrderPayment, Shift
     from waiters.services.order_service import WaiterOrderService
 
     waiter = _waiter()
+    Shift.objects.create(
+        user=waiter,
+        status=Shift.Status.ACTIVE,
+        start_time=timezone.now() - timedelta(hours=1),
+        branch_id='main',
+    )
     order = _order(waiter, is_paid=True, total='10.00')
     order.payment_method = 'MIXED'
     order.save(update_fields=['payment_method'])
@@ -367,9 +373,29 @@ class TestStatsExcludesCancelledPaid:
     def test_paid_then_cancelled_not_in_sales(self):
         """A paid order that is later cancelled keeps is_paid=True (the drawer is
         reversed separately) — it must NOT inflate sales_total / paid_count."""
+        from base.models import OrderRefund, Shift
         from waiters.services.waiter_service import WaiterService
         w = _waiter()
-        _order(w, status='CANCELED', is_paid=True, total='30.00')
+        cancelled = _order(w, status='CANCELED', is_paid=True, total='30.00')
+        refund_shift = Shift.objects.create(
+            user=w,
+            status=Shift.Status.ENDED,
+            start_time=timezone.now() - timedelta(hours=2),
+            end_time=timezone.now() - timedelta(hours=1),
+            branch_id='main',
+        )
+        OrderRefund.objects.create(
+            order=cancelled,
+            shift=refund_shift,
+            cashier=w,
+            amount='30.00',
+            cash_amount='30.00',
+            drawer_cash_amount='30.00',
+            refunded_at=timezone.now(),
+            source=OrderRefund.Source.ORDER_CANCEL,
+            source_id=f'order-cancel:{cancelled.uuid}',
+            branch_id='main',
+        )
         _order(w, status='COMPLETED', is_paid=True, total='20.00')
         res, st = WaiterService.get_stats(w.id)
         assert st == 200

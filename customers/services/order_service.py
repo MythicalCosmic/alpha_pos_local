@@ -17,6 +17,23 @@ _UNSET = object()
 
 ALLOWED_STATUSES = ['PREPARING', 'READY', 'CANCELED']
 
+
+def _schedule_order_notification(event, order_id):
+    """Emit external notifications only after the DB transaction commits."""
+    def notify():
+        if event == 'new':
+            order = OrderRepository.get_by_id_with_relations(order_id)
+            if order:
+                OrderNotification.on_new_order(order)
+        elif event == 'ready':
+            OrderNotification.on_order_ready(order_id)
+        elif event == 'cancelled':
+            OrderNotification.on_order_cancelled(order_id)
+        elif event == 'paid':
+            OrderNotification.on_order_paid(order_id)
+
+    transaction.on_commit(notify, robust=True)
+
 # The POS frontend (smart-pos) keys its filters and badges on the spelling
 # `CANCELLED` (double L) — see issue #16. The Django model stores `CANCELED`
 # (single L). Normalize at this API boundary so the wire contract is always
@@ -57,7 +74,13 @@ def _format_duration(seconds):
     return f"{secs}s"
 
 
+def _live_items(order):
+    """Return live lines while reusing OrderRepository's prefetch cache."""
+    return [item for item in order.items.all() if not item.is_deleted]
+
+
 def _serialize_order_list(order):
+    live_items = _live_items(order)
     return {
         'id': order.id,
         'display_id': order.display_id,
@@ -110,7 +133,7 @@ def _serialize_order_list(order):
                 'price': i.price,
                 'ready_at': i.ready_at,
             }
-            for i in order.items.all()
+            for i in live_items
         ],
         'paid_at': order.paid_at.isoformat() if order.paid_at else None,
         'ready_at': order.ready_at.isoformat() if order.ready_at else None,
@@ -121,7 +144,7 @@ def _serialize_order_list(order):
 
 def _serialize_order_detail(order):
     items = []
-    for item in order.items.all():
+    for item in _live_items(order):
         prep_time = (item.ready_at - order.created_at).total_seconds() if item.ready_at else None
         items.append({
             'id': item.id,
@@ -265,12 +288,16 @@ def _recalculate_total(order):
     # under-credited (mark_as_paid would settle the wrong cash, or drive
     # total_amount negative and *remove* real cash via add_to_register). The
     # OrderDiscount rows are the source of truth — refresh them, then sum.
-    order_items = list(order.items.select_related('product__category').all())
+    order_items = list(order.items.filter(is_deleted=False).select_related(
+        'product__category',
+    ))
     applied = Decimal('0')
     for od in OrderDiscountRepository.get_for_order(order.id).select_related(
         'discount__discount_type'
-    ):
-        new_amount = DiscountService.calculate_discount(od.discount, order_items)
+    ).order_by('created_at', 'pk'):
+        new_amount = DiscountService.calculate_discount(
+            od.discount, order_items, already_applied_discount=applied,
+        )
         if new_amount != od.discount_amount:
             od.discount_amount = new_amount
             od.save(update_fields=['discount_amount'])
@@ -295,21 +322,69 @@ def _adjust_order_stock(order_id, product_id, quantity_delta, performed_by_id):
     # change. adjust_for_item_change self-gates: it's a no-op unless the order
     # had prior deductions, so this is safe to call regardless of config.
     if quantity_delta == 0:
-        return
+        return None
     try:
         from stock.services import OrderStockService, StockSettingsService
         location_id = StockSettingsService.get_default_location_id()
-        if location_id:
-            OrderStockService.adjust_for_item_change(
-                order_id, product_id, quantity_delta, location_id, performed_by_id,
+        result, status = OrderStockService.adjust_for_item_change(
+            order_id, product_id, quantity_delta, location_id, performed_by_id,
+        )
+        if status >= 400:
+            logger.error(
+                'stock adjustment rejected for order=%s product=%s: %s',
+                order_id, product_id, result,
             )
+            return result, status
+        return None
     except Exception:
-        logger.exception('non-critical stock-adjust error in order edit flow')
+        logger.exception('stock adjustment failed in order edit flow')
+        return ServiceResponse.error(
+            'Stock adjustment failed; the order change was not applied. Please retry.'
+        )
+
+
+def _apply_order_stock_transition(order_id, old_status, new_status,
+                                  stock_items, performed_by_id):
+    """Run status-driven stock work and surface any failure to the caller."""
+    try:
+        from stock.services import OrderStatusHandler, StockSettingsService
+        stock_settings = StockSettingsService.load()
+        if (not stock_settings.stock_enabled
+                or not getattr(stock_settings, 'auto_deduct_on_sale', True)):
+            return None
+        location_id = StockSettingsService.get_default_location_id()
+        needs_location = (
+            (stock_settings.reserve_on_order_create and old_status is None)
+            or new_status == stock_settings.deduct_on_order_status
+        )
+        if needs_location and not location_id:
+            return ServiceResponse.error(
+                'Stock is enabled but no default stock location is configured.'
+            )
+        result, status = OrderStatusHandler.on_status_change(
+            order_id, old_status, new_status, stock_items,
+            location_id, performed_by_id,
+        )
+        if status >= 400:
+            logger.error(
+                'stock transition rejected for order=%s %s->%s: %s',
+                order_id, old_status, new_status, result,
+            )
+            return result, status
+        return None
+    except Exception:
+        logger.exception(
+            'stock transition failed for order=%s %s->%s',
+            order_id, old_status, new_status,
+        )
+        return ServiceResponse.error(
+            'Stock processing failed; the order change was not applied. Please retry.'
+        )
 
 
 def _check_and_update_ready(order):
-    total = order.items.count()
-    ready = order.items.filter(ready_at__isnull=False).count()
+    total = order.items.filter(is_deleted=False).count()
+    ready = order.items.filter(is_deleted=False, ready_at__isnull=False).count()
     all_ready = total > 0 and total == ready
 
     if all_ready and order.status != 'READY':
@@ -505,23 +580,18 @@ class CustomerOrderService:
             order.ready_at = now
             order.save(update_fields=['status', 'ready_at'])
 
-        fresh = OrderRepository.get_by_id_with_relations(order.id)
-        if fresh:
-            OrderNotification.on_new_order(fresh)
+        stock_items = [
+            {'product_id': d['product'].id, 'quantity': d['quantity']}
+            for d in order_items_data
+        ]
+        stock_error = _apply_order_stock_transition(
+            order.id, None, 'PREPARING', stock_items, user_id,
+        )
+        if stock_error:
+            transaction.set_rollback(True)
+            return stock_error
 
-        try:
-            from stock.services import OrderStatusHandler, StockSettingsService
-            location_id = StockSettingsService.get_default_location_id()
-            if location_id:
-                stock_items = [
-                    {'product_id': d['product'].id, 'quantity': d['quantity']}
-                    for d in order_items_data
-                ]
-                OrderStatusHandler.on_status_change(
-                    order.id, None, 'PREPARING', stock_items, location_id, user_id,
-                )
-        except Exception:
-            logger.exception('non-critical stock-handler error in order flow')
+        _schedule_order_notification('new', order.id)
 
         return ServiceResponse.created(
             data={'order_id': order.id, 'display_id': order.display_id},
@@ -588,7 +658,12 @@ class CustomerOrderService:
             order.save(update_fields=['ready_at', 'status'])
 
         _recalculate_total(order)
-        _adjust_order_stock(order_id, product_id, quantity, cashier_id or user_id)
+        stock_error = _adjust_order_stock(
+            order_id, product_id, quantity, cashier_id or user_id,
+        )
+        if stock_error:
+            transaction.set_rollback(True)
+            return stock_error
         return ServiceResponse.success(message='Item added to order successfully')
 
     @staticmethod
@@ -626,7 +701,12 @@ class CustomerOrderService:
         item.quantity = quantity
         item.save(update_fields=['quantity'])
         _recalculate_total(order)
-        _adjust_order_stock(order_id, product_id, quantity - old_quantity, cashier_id or user_id)
+        stock_error = _adjust_order_stock(
+            order_id, product_id, quantity - old_quantity, cashier_id or user_id,
+        )
+        if stock_error:
+            transaction.set_rollback(True)
+            return stock_error
 
         return ServiceResponse.success(message='Order item updated successfully')
 
@@ -661,9 +741,14 @@ class CustomerOrderService:
         # Return ingredient stock for the removed line *before* any order
         # deletion: Order FK on StockTransaction is SET_NULL, so hard-deleting
         # the order first would strand the deductions with no way to reverse.
-        _adjust_order_stock(order_id, product_id, -removed_quantity, cashier_id or user_id)
+        stock_error = _adjust_order_stock(
+            order_id, product_id, -removed_quantity, cashier_id or user_id,
+        )
+        if stock_error:
+            transaction.set_rollback(True)
+            return stock_error
 
-        if order.items.count() == 0:
+        if not order.items.filter(is_deleted=False).exists():
             order.delete(hard_delete=True)
             return ServiceResponse.success(message='Order deleted (no items remaining)')
 
@@ -673,7 +758,8 @@ class CustomerOrderService:
 
     @staticmethod
     @transaction.atomic
-    def update_order_status(order_id, status, cashier_id=None, user_id=None, user_role=None):
+    def update_order_status(order_id, status, cashier_id=None, user_id=None,
+                            user_role=None, reason=''):
         order = OrderRepository.get_for_update(order_id)
         if not order:
             return ServiceResponse.not_found('Order not found')
@@ -709,46 +795,52 @@ class CustomerOrderService:
         update_fields = ['status']
         order.status = status
 
+        # The sale remains immutable.  A paid cancellation is a separate,
+        # dated reversal owned by the on-duty cashier's locked shift.  Record it
+        # before the operational status transition so any failure rolls the
+        # whole cancellation back.
+        refund = None
+        if status == 'CANCELED' and order.is_paid:
+            from base.services.order_refund import (
+                SettlementInvariantError, record_paid_order_refund,
+            )
+            try:
+                refund, _ = record_paid_order_refund(
+                    order.id, cashier_id or user_id, reason=reason,
+                )
+            except SettlementInvariantError as exc:
+                return ServiceResponse.error(str(exc))
+
         if status == 'READY':
             now = timezone.now()
             order.ready_at = now
-            order.items.filter(ready_at__isnull=True).update(ready_at=now)
+            # OrderItem is a SyncMixin. QuerySet.update() would bypass its
+            # version/dirty bookkeeping, so the cloud could keep showing the
+            # line as PREPARING after the till marked the order ready.
+            for item in order.items.select_for_update().filter(
+                is_deleted=False, ready_at__isnull=True,
+            ):
+                item.ready_at = now
+                item.save(update_fields=['ready_at'])
             update_fields.append('ready_at')
 
         order.save(update_fields=update_fields)
 
-        # Cancelling a paid order must reverse the cash-register entry,
-        # otherwise the register over-reports balance while stock is
-        # reverse-deducted by the handler below. Only cash reverses through
-        # the drawer; card/Payme settle externally.
-        if status == 'CANCELED' and order.is_paid:
-            # Keep cancel in lockstep with shifts/analytics: ignore soft-deleted
-            # rows, derive cash net of change, and never treat an unknown method
-            # as external money merely because it is not the literal CASH.
-            from base.services.tender import order_tender_split
-            split, _ = order_tender_split(order)
-            cash_in_drawer = split['cash']
-            if cash_in_drawer > 0:
-                InkassaService.add_to_register(-cash_in_drawer, order.branch_id)
+        stock_items = [
+            {'product_id': i.product_id, 'quantity': i.quantity}
+            for i in order.items.filter(is_deleted=False)
+        ]
+        stock_error = _apply_order_stock_transition(
+            order.id, old_status, status, stock_items, order.user_id,
+        )
+        if stock_error:
+            transaction.set_rollback(True)
+            return stock_error
 
         if status == 'READY':
-            OrderNotification.on_order_ready(order_id)
+            _schedule_order_notification('ready', order_id)
         elif status == 'CANCELED':
-            OrderNotification.on_order_cancelled(order_id)
-
-        try:
-            from stock.services import OrderStatusHandler, StockSettingsService
-            location_id = StockSettingsService.get_default_location_id()
-            if location_id:
-                stock_items = [
-                    {'product_id': i.product_id, 'quantity': i.quantity}
-                    for i in order.items.all()
-                ]
-                OrderStatusHandler.on_status_change(
-                    order.id, old_status, status, stock_items, location_id, order.user_id,
-                )
-        except Exception:
-            logger.exception('non-critical stock-handler error in order flow')
+            _schedule_order_notification('cancelled', order_id)
 
         # Return the full updated order object (BE-1/BE-2 contract). Re-fetch
         # with relations so the serialized payload reflects the just-applied
@@ -758,6 +850,7 @@ class CustomerOrderService:
             data={
                 'status': _to_api_status(status),
                 'order': _serialize_order_detail(fresh) if fresh else None,
+                'refund_id': refund.id if refund else None,
             },
             message=f'Order status updated to {_to_api_status(status)}',
         )
@@ -822,7 +915,7 @@ class CustomerOrderService:
         if order.status == 'READY':
             return ServiceResponse.error('Order is already marked as ready')
 
-        item = order.items.filter(id=item_id).first()
+        item = order.items.filter(id=item_id, is_deleted=False).first()
         if not item:
             return ServiceResponse.not_found('Order item not found')
 
@@ -839,7 +932,7 @@ class CustomerOrderService:
         order_prep_time = None
         if order_became_ready and order.ready_at:
             order_prep_time = (order.ready_at - order.created_at).total_seconds()
-            OrderNotification.on_order_ready(order_id)
+            _schedule_order_notification('ready', order_id)
 
         items_status = [{
             'id': oi.id,
@@ -849,7 +942,7 @@ class CustomerOrderService:
             'ready_at': oi.ready_at.isoformat() if oi.ready_at else None,
             'preparation_time_seconds': (oi.ready_at - order.created_at).total_seconds() if oi.ready_at else None,
             'preparation_time_formatted': _format_duration((oi.ready_at - order.created_at).total_seconds()) if oi.ready_at else None,
-        } for oi in order.items.all()]
+        } for oi in order.items.filter(is_deleted=False)]
 
         return ServiceResponse.success(
             data={
@@ -889,12 +982,15 @@ class CustomerOrderService:
             return ServiceResponse.error('Cannot modify cancelled order')
 
         from base.models import OrderItem
-        updated = OrderItem.objects.filter(
+        item = OrderItem.objects.select_for_update().filter(
             id=item_id, order=order, ready_at__isnull=False
-        ).update(ready_at=None)
+        ).first()
 
-        if not updated:
+        if not item:
             return ServiceResponse.error('Item is not marked as ready')
+
+        item.ready_at = None
+        item.save(update_fields=['ready_at'])
 
         if order.status == 'READY':
             order.status = 'PREPARING'
@@ -937,6 +1033,17 @@ class CustomerOrderService:
 
         if order.is_paid:
             return ServiceResponse.error('Order already paid')
+
+        from base.services.order_refund import (
+            SettlementInvariantError, lock_active_cashier_shift,
+        )
+        settlement_cashier_id = cashier_id or user_id
+        try:
+            settlement_shift = lock_active_cashier_shift(
+                settlement_cashier_id, branch_id=order.branch_id,
+            )
+        except SettlementInvariantError as exc:
+            return ServiceResponse.error(str(exc))
 
         # MIXED is a roll-up marker the server sets — never an input method.
         valid_methods = [c[0] for c in Order.PaymentMethod.choices if c[0] != 'MIXED']
@@ -1000,9 +1107,14 @@ class CustomerOrderService:
         # rings up payment — without this the order stays unattributed and never
         # appears in that cashier's shift stats / cash reconciliation.
         cashier_fields = []
-        if cashier_id and not order.cashier_id:
-            order.cashier_id = cashier_id
-            cashier_fields = ['cashier']
+        # Settlement attribution belongs to the cashier who actually collected
+        # the money, not whoever originally opened the ticket.
+        if order.cashier_id != settlement_cashier_id:
+            order.cashier_id = settlement_cashier_id
+            cashier_fields.append('cashier')
+        if not order.branch_id:
+            order.branch_id = settlement_shift.branch_id
+            cashier_fields.append('branch_id')
 
         if pct > 0:
             # Reflect the pay-time discount in the order totals (keeps the
@@ -1025,28 +1137,25 @@ class CustomerOrderService:
         cash_to_drawer = effective_total - noncash_sum
         if cash_to_drawer > 0:
             InkassaService.add_to_register(cash_to_drawer, order.branch_id)
-        OrderNotification.on_order_paid(order_id)
 
-        # Fiscalize the sale (Soliq). No-op unless fiscalization is enabled.
-        # serve-now: never blocks the sale on a provider error — a failure is
-        # recorded and retried by the queue. Honors block-on-failure if set.
-        _fiscalize_after_pay(order_id)
+        stock_items = [
+            {'product_id': i.product_id, 'quantity': i.quantity}
+            for i in order.items.filter(is_deleted=False)
+        ]
+        stock_error = _apply_order_stock_transition(
+            order.id, order.status, 'PAID', stock_items, order.user_id,
+        )
+        if stock_error:
+            transaction.set_rollback(True)
+            return stock_error
 
-        try:
-            from stock.services import OrderStatusHandler, StockSettingsService
-            settings = StockSettingsService.load()
-            if settings.stock_enabled and settings.deduct_on_order_status == 'PAID':
-                location_id = StockSettingsService.get_default_location_id()
-                if location_id:
-                    stock_items = [
-                        {'product_id': i.product_id, 'quantity': i.quantity}
-                        for i in order.items.all()
-                    ]
-                    OrderStatusHandler.on_status_change(
-                        order.id, order.status, 'PAID', stock_items, location_id, order.user_id,
-                    )
-        except Exception:
-            logger.exception('non-critical stock-handler error in order flow')
+        _schedule_order_notification('paid', order_id)
+        # Fiscalization is an external side effect. Run it only after every
+        # rollback-capable stock/register operation succeeds and this sale
+        # transaction commits.
+        transaction.on_commit(
+            lambda oid=order_id: _fiscalize_after_pay(oid), robust=True,
+        )
 
         return ServiceResponse.success(
             data={'is_paid': True},
@@ -1094,10 +1203,14 @@ class CustomerOrderService:
         order.status = 'READY'
         order.ready_at = now
         order.save(update_fields=['status', 'ready_at'])
-        order.items.filter(ready_at__isnull=True).update(ready_at=now)
+        for item in order.items.select_for_update().filter(
+            is_deleted=False, ready_at__isnull=True,
+        ):
+            item.ready_at = now
+            item.save(update_fields=['ready_at'])
 
         order_prep_time = (order.ready_at - order.created_at).total_seconds()
-        OrderNotification.on_order_ready(order_id)
+        _schedule_order_notification('ready', order_id)
 
         return ServiceResponse.success(
             data={
@@ -1259,7 +1372,7 @@ class CustomerOrderService:
         for order in orders:
             items = []
             ready_count = 0
-            for item in order.items.all():
+            for item in order.items.filter(is_deleted=False):
                 # Instant items (drinks etc.) need no kitchen work — keep them
                 # off the chef display entirely.
                 if item.product.is_instant:

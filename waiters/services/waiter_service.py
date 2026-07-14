@@ -8,7 +8,7 @@ from django.db.models import Count, Q, Sum
 from django.utils import timezone
 
 from base.helpers.response import ServiceResponse
-from base.models import AppSettings, Order, PaymentMethodConfig
+from base.models import AppSettings, Order, OrderRefund, PaymentMethodConfig
 
 
 def _parse_date(value):
@@ -47,10 +47,8 @@ class WaiterService:
             created_at__lt=window_end,
         )
 
-        # Cancelling a paid order reverses the drawer cash but does NOT reset
-        # is_paid, so the money tallies must also exclude CANCELED to match the
-        # authoritative shift/cash-reconciliation aggregation (core/shifts/
-        # service.py pairs is_paid=True with .exclude(status='CANCELED')).
+        # Operational counts use created_at/status. Money uses two immutable
+        # clocks: gross sales at paid_at and negative refunds at refunded_at.
         agg = qs.aggregate(
             orders_count=Count('id'),
             cancelled_count=Count('id', filter=Q(status='CANCELED')),
@@ -64,8 +62,20 @@ class WaiterService:
             is_paid=True,
             paid_at__gte=window_start,
             paid_at__lt=window_end,
-        ).exclude(status='CANCELED').aggregate(
+        ).aggregate(
             paid_count=Count('id'), sales_total=Sum('total_amount'),
+        )
+        refunds = OrderRefund.objects.filter(
+            is_deleted=False,
+            cashier_id=waiter_user_id,
+            refunded_at__gte=window_start,
+            refunded_at__lt=window_end,
+        ).aggregate(
+            refund_count=Count('id'),
+            cancelled_refund_count=Count(
+                'id', filter=Q(source=OrderRefund.Source.ORDER_CANCEL),
+            ),
+            refund_total=Sum('amount'),
         )
         # Distinct tables the waiter served in the window (HALL orders only carry
         # a table); excludes table-less DELIVERY/PICKUP.
@@ -74,19 +84,29 @@ class WaiterService:
         )
         # SUM drops the field's 2-dp scale (SQLite returns Decimal('20')), so
         # quantize to match the money formatting everywhere else in the API.
-        sales_total = (settled['sales_total'] or Decimal('0')).quantize(
+        gross_total = (settled['sales_total'] or Decimal('0')).quantize(
             Decimal('0.01'),
         )
+        refund_total = (refunds['refund_total'] or Decimal('0')).quantize(
+            Decimal('0.01'),
+        )
+        sales_total = gross_total - refund_total
 
         return ServiceResponse.success(data={
             'date_from': d_from.isoformat(),
             'date_to': d_to.isoformat(),
             'orders_count': agg['orders_count'] or 0,
-            'paid_count': settled['paid_count'] or 0,
+            'paid_count': (
+                (settled['paid_count'] or 0)
+                - (refunds['cancelled_refund_count'] or 0)
+            ),
+            'refund_count': refunds['refund_count'] or 0,
             'active_count': agg['active_count'] or 0,
             'cancelled_count': agg['cancelled_count'] or 0,
             'tables_served': tables_served,
             'sales_total': str(sales_total),
+            'gross_sales_total': str(gross_total),
+            'refund_total': str(refund_total),
         })
 
     @staticmethod
