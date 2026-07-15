@@ -55,7 +55,14 @@ def test_waiter_cancel_uses_live_payment_rows_only():
     order = _order(waiter, is_paid=True, total='10.00')
     order.payment_method = 'MIXED'
     order.save(update_fields=['payment_method'])
-    CashRegister.objects.create(current_balance=Decimal('4.00'))
+    # Creating the paid order takes the branch accounting lock and therefore
+    # creates its zero-balance register. Reuse that owner row and seed the cash
+    # this test expects the cancellation to return.
+    register = CashRegister.objects.get(
+        branch_id=order.branch_id, is_deleted=False,
+    )
+    register.current_balance = Decimal('4.00')
+    register.save(update_fields=['current_balance'])
     OrderPayment.objects.create(order=order, method='HUMO', amount='6.00')
     OrderPayment.objects.create(order=order, method='CASH', amount='4.00')
     stale = OrderPayment.objects.create(order=order, method='UZCARD', amount='9.00')
@@ -63,7 +70,8 @@ def test_waiter_cancel_uses_live_payment_rows_only():
 
     result, status = WaiterOrderService.cancel_order(order.id, waiter.id)
     assert status == 200, result
-    assert CashRegister.objects.first().current_balance == Decimal('0.00')
+    register.refresh_from_db()
+    assert register.current_balance == Decimal('0.00')
 
 
 @pytest.mark.django_db

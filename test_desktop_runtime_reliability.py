@@ -819,6 +819,63 @@ def test_mock_sync_cleanup_does_not_publish_a_fake_tombstone(monkeypatch):
     assert deleted == [{'pk': 41}]
 
 
+def test_cloud_push_bridge_does_not_hide_service_failure(monkeypatch):
+    from base.services.sync.service import SyncService
+    from desktop.bridge import Api
+
+    monkeypatch.setattr(
+        SyncService,
+        'push',
+        lambda: {'success': False, 'message': 'Cannot reach cloud server'},
+    )
+    api = Api()
+    api.server.ensure_django = lambda: None
+
+    result = api.cloud_push()
+
+    assert result['ok'] is False
+    assert result['error'] == 'Cannot reach cloud server'
+    assert result['result']['success'] is False
+
+
+def test_cloud_sync_bridge_requires_every_enabled_leg_to_succeed(monkeypatch):
+    from base.services.sync import config as sync_config
+    from base.services.sync.service import SyncService
+    from desktop.bridge import Api
+
+    monkeypatch.setattr(SyncService, 'push', lambda: {'success': True, 'synced': 3})
+    monkeypatch.setattr(
+        SyncService,
+        'pull_from_cloud',
+        lambda: {'success': False, 'message': 'Pull cursor rejected'},
+    )
+    monkeypatch.setattr(sync_config, 'get_pull_enabled', lambda: True)
+    api = Api()
+    api.server.ensure_django = lambda: None
+
+    result = api.cloud_sync_now()
+
+    assert result['ok'] is False
+    assert result['error'] == 'Pull cursor rejected'
+
+
+def test_cloud_sync_bridge_treats_disabled_pull_as_an_explicit_skip(monkeypatch):
+    from base.services.sync import config as sync_config
+    from base.services.sync.service import SyncService
+    from desktop.bridge import Api
+
+    monkeypatch.setattr(SyncService, 'push', lambda: {'success': True, 'synced': 0})
+    monkeypatch.setattr(sync_config, 'get_pull_enabled', lambda: False)
+    api = Api()
+    api.server.ensure_django = lambda: None
+
+    result = api.cloud_sync_now()
+
+    assert result['ok'] is True
+    assert result['pull']['success'] is True
+    assert result['pull']['skipped'] is True
+
+
 def test_database_flush_clears_old_setup_signature_and_reports_restart_failure(
         monkeypatch, tmp_path):
     import sys

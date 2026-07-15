@@ -5,6 +5,8 @@ this service is the read side: given a phone (or id) it returns the unified
 base.Customer plus their order history, spend stats, and most-ordered products,
 so the cashier sees a returning customer's past orders/foods at a glance.
 """
+from decimal import Decimal
+
 from django.db.models import Count, Sum, Max
 
 from base.models import Customer, OrderItem, OrderRefund
@@ -54,12 +56,40 @@ class ClientService:
 
         orders_qs = OrderRepository.build_filtered_queryset(customer_id=c.id)
         stats = orders_qs.aggregate(count=Count('id'), last=Max('created_at'))
-        gross_spent = (orders_qs.filter(is_paid=True)
-                       .aggregate(total=Sum('total_amount'))['total'] or 0)
+        paid_orders = orders_qs.filter(is_paid=True)
+        gross_spent = (
+            paid_orders.aggregate(total=Sum('total_amount'))['total']
+            or Decimal('0')
+        )
         refunded = (OrderRefund.objects.filter(
-            is_deleted=False, order__customer_id=c.id,
-        ).aggregate(total=Sum('amount'))['total'] or 0)
-        spent = gross_spent - refunded
+            is_deleted=False, order__in=paid_orders,
+        ).aggregate(total=Sum('amount'))['total'] or Decimal('0'))
+
+        # Current cancellation writes immutable refund events, so gross minus
+        # refunds is the canonical lifetime spend. Legacy/damaged databases can
+        # still contain CANCELED+paid orders with only part (or none) of that
+        # reversal ledger. Treat the remaining canceled amount as reversed for
+        # customer-facing spend without pretending it is a real refund event.
+        cancelled_orders = list(
+            paid_orders.filter(status='CANCELED')
+            .values('id', 'total_amount')
+        )
+        cancelled_ids = [row['id'] for row in cancelled_orders]
+        cancelled_refunds = {
+            row['order_id']: Decimal(row['total'] or 0)
+            for row in OrderRefund.objects.filter(
+                is_deleted=False, order_id__in=cancelled_ids,
+            ).values('order_id').annotate(total=Sum('amount'))
+        }
+        cancelled_unreversed = sum((
+            max(
+                Decimal(row['total_amount'] or 0)
+                - cancelled_refunds.get(row['id'], Decimal('0')),
+                Decimal('0'),
+            )
+            for row in cancelled_orders
+        ), Decimal('0'))
+        spent = gross_spent - refunded - cancelled_unreversed
         recent = [_serialize_order_list(o) for o in orders_qs[:history_limit]]
 
         # Most-ordered products across this client's whole history ("their foods").
@@ -70,6 +100,7 @@ class ClientService:
                    order__is_deleted=False,
                    order__is_paid=True,
                )
+               .exclude(order__status='CANCELED')
                .values('product_id', 'product__name')
                .annotate(times=Count('id'), qty=Sum('quantity'))
         )
@@ -77,7 +108,9 @@ class ClientService:
             REFUND_EVENT_ALIAS, refund_item_events, refund_line_quantity,
         )
         fav_refunds = list(refund_item_events(
-            item_queryset=OrderItem.objects.filter(order__customer_id=c.id),
+            item_queryset=OrderItem.objects.filter(
+                order__customer_id=c.id,
+            ).exclude(order__status='CANCELED'),
             source=OrderRefund.Source.ORDER_CANCEL,
         ).values('product_id', 'product__name').annotate(
             times=Count(f'{REFUND_EVENT_ALIAS}__id', distinct=True),

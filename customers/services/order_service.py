@@ -1095,27 +1095,32 @@ class CustomerOrderService:
                 errors={'payments': 'Non-cash overpayment is not allowed'})
 
         # -- persist ------------------------------------------------------------
+        branch_assigned = False
+        if not order.branch_id:
+            order.branch_id = settlement_shift.branch_id
+            branch_assigned = True
+        from base.services.accounting_cursor import lock_branch_accounting
+        lock_branch_accounting(order.branch_id)
+        paid_event_at = timezone.now()
+
         distinct = {m for m, _ in lines}
         order.is_paid = True
         order.payment_method = (next(iter(distinct)) if len(distinct) == 1
                                 else Order.PaymentMethod.MIXED)
-        order.paid_at = timezone.now()
+        order.paid_at = paid_event_at
+        order.accounting_recorded_at = paid_event_at
 
         # Credit the order to the cashier who collected the payment when it
         # isn't already attributed. In the restaurant flow a waiter (or the
         # customer) creates the order with cashier_id=NULL and the cashier only
         # rings up payment — without this the order stays unattributed and never
         # appears in that cashier's shift stats / cash reconciliation.
-        cashier_fields = []
+        cashier_fields = ['branch_id'] if branch_assigned else []
         # Settlement attribution belongs to the cashier who actually collected
         # the money, not whoever originally opened the ticket.
         if order.cashier_id != settlement_cashier_id:
             order.cashier_id = settlement_cashier_id
             cashier_fields.append('cashier')
-        if not order.branch_id:
-            order.branch_id = settlement_shift.branch_id
-            cashier_fields.append('branch_id')
-
         if pct > 0:
             # Reflect the pay-time discount in the order totals (keeps the
             # invariant total_amount == subtotal - discount_amount).
@@ -1124,10 +1129,14 @@ class CustomerOrderService:
                                      + (base_total - effective_total))
             order.total_amount = effective_total
             order.save(update_fields=['is_paid', 'payment_method', 'paid_at',
+                                      'accounting_recorded_at',
                                       'discount_percent', 'discount_amount',
                                       'total_amount'] + cashier_fields)
         else:
-            order.save(update_fields=['is_paid', 'payment_method', 'paid_at'] + cashier_fields)
+            order.save(update_fields=[
+                'is_paid', 'payment_method', 'paid_at',
+                'accounting_recorded_at',
+            ] + cashier_fields)
 
         for method, amount in lines:
             OrderPayment.objects.create(order=order, method=method, amount=amount)

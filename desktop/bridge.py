@@ -23,6 +23,25 @@ def _safe(fn):
     return wrapper
 
 
+def _sync_response(result, *, operation):
+    """Translate a SyncService result into the bridge's public contract.
+
+    SyncService reports operational failures inside its result dictionary.  A
+    successful Python call therefore does not necessarily mean that anything
+    reached the peer.  Keep that distinction at the bridge boundary so the UI
+    never displays a false success toast.
+    """
+    result = result if isinstance(result, dict) else {}
+    ok = result.get('success') is True and not result.get('errors')
+    response = {'ok': ok, 'result': result}
+    if not ok:
+        detail = result.get('error') or result.get('message')
+        if not detail and result.get('errors'):
+            detail = '; '.join(str(item) for item in result['errors'])
+        response['error'] = detail or f'{operation} failed'
+    return response
+
+
 class Api:
     def __init__(self):
         self.server = ServerManager()
@@ -564,14 +583,14 @@ class Api:
         """Push all unsynced local records up to the cloud hub."""
         self.server.ensure_django()
         from base.services.sync.service import SyncService
-        return {'ok': True, 'result': SyncService.push()}
+        return _sync_response(SyncService.push(), operation='Cloud push')
 
     @_safe
     def cloud_pull(self):
         """Pull changes from the cloud hub down into this branch."""
         self.server.ensure_django()
         from base.services.sync.service import SyncService
-        return {'ok': True, 'result': SyncService.pull_from_cloud()}
+        return _sync_response(SyncService.pull_from_cloud(), operation='Cloud pull')
 
     @_safe
     def cloud_sync_now(self):
@@ -581,8 +600,24 @@ class Api:
         from base.services.sync.service import SyncService
         from base.services.sync.config import get_pull_enabled
         push = SyncService.push()
-        pull = SyncService.pull_from_cloud() if get_pull_enabled() else {'skipped': True}
-        return {'ok': True, 'push': push, 'pull': pull}
+        pull = (
+            SyncService.pull_from_cloud()
+            if get_pull_enabled()
+            else {'success': True, 'skipped': True, 'message': 'Pull disabled'}
+        )
+        push_response = _sync_response(push, operation='Cloud push')
+        pull_response = _sync_response(pull, operation='Cloud pull')
+        response = {
+            'ok': push_response['ok'] and pull_response['ok'],
+            'push': push,
+            'pull': pull,
+        }
+        if not response['ok']:
+            response['error'] = (
+                push_response.get('error') or pull_response.get('error')
+                or 'Cloud sync failed'
+            )
+        return response
 
     @_safe
     def cloud_dead_letters(self):
