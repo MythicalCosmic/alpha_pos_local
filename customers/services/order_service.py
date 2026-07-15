@@ -7,6 +7,7 @@ from django.utils import timezone
 from datetime import timedelta
 from base.repositories import OrderRepository, OrderItemRepository, ProductRepository, UserRepository, DeliveryPersonRepository, PlaceRepository, TableRepository
 from base.services.inkassa_service import InkassaService
+from base.services.phone import normalize_uz_phone
 from base.helpers.response import ServiceResponse
 from notifications.handlers.order import OrderNotification
 
@@ -86,6 +87,7 @@ def _serialize_order_list(order):
         'display_id': order.display_id,
         'order_type': order.order_type,
         'phone_number': order.phone_number,
+        'delivery_address': order.delivery_address,
         'description': order.description,
         'cashier': {
             'id': order.cashier.id,
@@ -170,6 +172,7 @@ def _serialize_order_detail(order):
         'display_id': order.display_id,
         'order_type': order.order_type,
         'phone_number': order.phone_number,
+        'delivery_address': order.delivery_address,
         'description': order.description,
         'user': {
             'id': order.user.id,
@@ -454,7 +457,8 @@ class CustomerOrderService:
     @staticmethod
     @transaction.atomic
     def create_order(user_id, items, order_type='HALL', phone_number=None,
-                     description=None, cashier_id=None, delivery_person_id=None,
+                     description=None, delivery_address=None, cashier_id=None,
+                     delivery_person_id=None,
                      place_id=None, table_id=None, customer_id=None):
         if not UserRepository.exists(id=user_id):
             return ServiceResponse.not_found('User not found')
@@ -531,7 +535,8 @@ class CustomerOrderService:
             chef_queue_number=chef_queue_number,
             order_number=order_number,
             order_type=order_type,
-            phone_number=phone_number,
+            phone_number=normalize_uz_phone(phone_number) or None,
+            delivery_address=delivery_address or '',
             description=description,
             status='PREPARING',
             is_paid=False,
@@ -1267,10 +1272,14 @@ class CustomerOrderService:
 
     @staticmethod
     def update_order_details(order_id, phone_number=None, description=None,
-                             delivery_person_id=_UNSET, user_id=None, user_role=None):
-        """Staff edit of an existing order's phone_number / description / courier
-        (order_type has its own endpoint). Only the provided fields change; a
-        cancelled order can't be edited."""
+                             delivery_address=_UNSET,
+                             delivery_person_id=_UNSET, user_id=None,
+                             user_role=None):
+        """Edit contact, structured delivery data, note, or courier.
+
+        Only explicitly supplied fields change. ``None`` is accepted for
+        ``delivery_address`` so callers can intentionally clear it.
+        """
         order = OrderRepository.get_by_id(order_id)
         if not order:
             return ServiceResponse.not_found('Order not found')
@@ -1281,8 +1290,11 @@ class CustomerOrderService:
             return ownership
         update_fields = []
         if phone_number is not None:
-            order.phone_number = phone_number
+            order.phone_number = normalize_uz_phone(phone_number) or None
             update_fields.append('phone_number')
+        if delivery_address is not _UNSET:
+            order.delivery_address = delivery_address or ''
+            update_fields.append('delivery_address')
         if description is not None:
             order.description = description
             update_fields.append('description')

@@ -54,7 +54,7 @@ def test_update_details_phone_description_courier():
         delivery_person_id=c.id, user_id=u.id, user_role='CASHIER')
     assert st == 200
     o.refresh_from_db()
-    assert o.phone_number == '+998901112233' and o.description == 'leave at door'
+    assert o.phone_number == '998901112233' and o.description == 'leave at door'
     assert o.delivery_person_id == c.id
     assert body['data']['delivery_person']['id'] == c.id   # serializer carries it
 

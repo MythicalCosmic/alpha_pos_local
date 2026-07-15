@@ -74,23 +74,38 @@ def create_order(request):
     # phone_number field. Customer.resolve converges by phone (so a returning
     # client is the same row across desktop + Telegram) and creates one even when
     # only a phone — no name — is given. Walk-ins with neither stay client-less.
+    from base.models import Customer
+
     customer_id = data.get('customer_id')
+    cdict = data.get('customer') if isinstance(data.get('customer'), dict) else {}
+    supplied_phone = (
+        data.get('phone_number') or cdict.get('phone') or
+        cdict.get('phone_number') or ''
+    )
+    order_phone = Customer.normalize_phone(supplied_phone) or None
     if not customer_id:
-        cdict = data.get('customer') if isinstance(data.get('customer'), dict) else {}
-        phone = (cdict.get('phone') or cdict.get('phone_number')
-                 or data.get('phone_number') or '').strip()
         name = (cdict.get('name') or '').strip()
-        if phone or name:
-            from base.models import Customer
-            client, _ = Customer.resolve(phone=phone or None, name=name or None)
+        if order_phone or name:
+            client, _ = Customer.resolve(
+                phone=order_phone, name=name or None,
+            )
             customer_id = client.id
+
+    # New clients send a clean note separately while old clients only send
+    # description (historically address + note). Presence, not truthiness,
+    # decides precedence so an explicit empty order_note can clear stale text.
+    description = (
+        data.get('order_note') if 'order_note' in data
+        else data.get('description')
+    )
 
     result, status_code = CustomerOrderService.create_order(
         user_id=user.id,
         items=data['items'],
         order_type=data.get('order_type', 'HALL'),
-        phone_number=data.get('phone_number'),
-        description=data.get('description'),
+        phone_number=order_phone,
+        delivery_address=data.get('delivery_address'),
+        description=description,
         cashier_id=cashier_id,
         delivery_person_id=data.get('delivery_person_id'),
         customer_id=customer_id,
@@ -360,18 +375,23 @@ def assign_courier(request, order_id):
 @login_required
 @role_required(*STAFF_ROLES)
 def update_order_details(request, order_id):
-    """Staff edit of phone_number / description / delivery_person on an existing
-    order. Only the provided fields change (delivery_person_id present => set/clear)."""
+    """Partially edit order contact, delivery address, note, or courier."""
     data, error = parse_json_body(request)
     if error:
         return json_response(error)
     kwargs = {}
     if 'delivery_person_id' in data:
         kwargs['delivery_person_id'] = data.get('delivery_person_id')
+    if 'delivery_address' in data:
+        kwargs['delivery_address'] = data.get('delivery_address')
+    description = (
+        data.get('order_note') if 'order_note' in data
+        else data.get('description')
+    )
     result, status_code = CustomerOrderService.update_order_details(
         order_id,
         phone_number=data.get('phone_number'),
-        description=data.get('description'),
+        description=description,
         user_id=request.user.id, user_role=request.user.role,
         **kwargs,
     )
