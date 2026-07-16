@@ -2,6 +2,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 from decimal import Decimal, ROUND_HALF_UP
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from datetime import timedelta
@@ -17,6 +18,23 @@ _UNSET = object()
 
 
 ALLOWED_STATUSES = ['PREPARING', 'READY', 'CANCELED']
+
+
+def _operational_queue_cutoff():
+    """Keep historical status misses from crowding current KDS work.
+
+    Both display queries have a hard result cap and sort oldest-first.  A
+    missed PREPARING transition must eventually move to history rather than
+    consume that cap forever.  Twenty-four hours safely covers the overnight
+    operating day; deployments can extend it up to one week when needed.
+    """
+    raw_hours = getattr(settings, 'KITCHEN_QUEUE_MAX_AGE_HOURS', 24)
+    try:
+        hours = int(raw_hours)
+    except (TypeError, ValueError):
+        hours = 24
+    hours = max(1, min(hours, 168))
+    return timezone.now() - timedelta(hours=hours)
 
 
 def _schedule_order_notification(event, order_id):
@@ -1318,6 +1336,7 @@ class CustomerOrderService:
     def get_client_display_orders():
         from django.db.models import Count, Q
         five_minutes_ago = timezone.now() - timedelta(minutes=5)
+        queue_cutoff = _operational_queue_cutoff()
 
         # Cap result counts so a busy day doesn't materialize thousands of rows
         # into the kitchen/lobby display response. Annotate item counts in SQL
@@ -1330,7 +1349,8 @@ class CustomerOrderService:
         _has_kitchen_item = Count('items', filter=Q(
             items__product__is_instant=False, items__is_deleted=False))
         processing = OrderRepository.model.objects.filter(
-            status='PREPARING', is_deleted=False
+            status='PREPARING', is_deleted=False,
+            created_at__gte=queue_cutoff,
         ).select_related('user').annotate(
             items_total=Count('items'),
             items_ready=Count('items', filter=Q(items__ready_at__isnull=False)),
@@ -1383,8 +1403,10 @@ class CustomerOrderService:
 
     @staticmethod
     def get_chef_display_orders():
+        queue_cutoff = _operational_queue_cutoff()
         orders = OrderRepository.model.objects.filter(
-            status='PREPARING', is_deleted=False
+            status='PREPARING', is_deleted=False,
+            created_at__gte=queue_cutoff,
         ).select_related('user').prefetch_related('items__product').order_by(
             'created_at'
         )[:CustomerOrderService.DISPLAY_LIMIT]
