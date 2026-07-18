@@ -533,6 +533,159 @@ def test_sync_uses_bounded_retry_then_returns_to_normal_interval(monkeypatch):
     assert state['consecutive_failures'] == 0
 
 
+def test_pull_recovery_backoff_never_exceeds_presence_lease(monkeypatch):
+    from base.services.sync import config as sync_config
+    from base.services.sync.service import SyncService
+
+    pulls = iter([
+        {'success': False, 'message': 'hub restarting'},
+        {'success': False, 'message': 'hub still starting'},
+        {'success': True},
+    ])
+    monkeypatch.setattr(sync_config.SyncConfig, 'is_enabled', lambda: True)
+    monkeypatch.setattr(sync_config, 'is_local_mode', lambda: True)
+    monkeypatch.setattr(sync_config, 'get_cloud_url', lambda: 'https://cloud')
+    monkeypatch.setattr(sync_config, 'get_pull_enabled', lambda: True)
+    monkeypatch.setattr(sync_config, 'get_sync_interval', lambda: 30)
+    monkeypatch.setattr(sync_config, 'get_sync_retry_interval', lambda: 60)
+    monkeypatch.setattr(SyncService, 'pull_from_cloud', lambda: next(pulls))
+    monkeypatch.setattr('django.db.close_old_connections', lambda: None)
+
+    manager = ServerManager()
+    stop = _WaitSequence(iterations=3)
+    manager._pull_loop(stop)
+
+    # Presence has a 95-second lease. Repeated scheduler failures must not grow
+    # the post-recovery probe gap to the former 120/240/.../900 seconds.
+    assert stop.delays == [2, 60, 60, 30]
+    state = manager._worker_state['pull']
+    assert state['last_status'] == 'ok'
+    assert state['consecutive_failures'] == 0
+
+
+def test_pull_lock_contention_keeps_normal_presence_cadence(monkeypatch):
+    from base.services.sync import config as sync_config
+    from base.services.sync.service import SyncService
+
+    pulls = iter([
+        {'success': False, 'message': 'Pull already in progress'},
+        {'success': True},
+    ])
+    monkeypatch.setattr(sync_config.SyncConfig, 'is_enabled', lambda: True)
+    monkeypatch.setattr(sync_config, 'is_local_mode', lambda: True)
+    monkeypatch.setattr(sync_config, 'get_cloud_url', lambda: 'https://cloud')
+    monkeypatch.setattr(sync_config, 'get_pull_enabled', lambda: True)
+    monkeypatch.setattr(sync_config, 'get_sync_interval', lambda: 30)
+    monkeypatch.setattr(sync_config, 'get_sync_retry_interval', lambda: 60)
+    monkeypatch.setattr(SyncService, 'pull_from_cloud', lambda: next(pulls))
+    monkeypatch.setattr('django.db.close_old_connections', lambda: None)
+
+    manager = ServerManager()
+    stop = _WaitSequence(iterations=2)
+    manager._pull_loop(stop)
+
+    assert stop.delays == [2, 30, 30]
+    assert manager._worker_state['pull']['consecutive_failures'] == 0
+
+
+def test_pull_normal_interval_stays_inside_presence_lease(monkeypatch):
+    from base.services.sync import config as sync_config
+    from base.services.sync.service import SyncService
+
+    monkeypatch.setattr(sync_config.SyncConfig, 'is_enabled', lambda: True)
+    monkeypatch.setattr(sync_config, 'is_local_mode', lambda: True)
+    monkeypatch.setattr(sync_config, 'get_cloud_url', lambda: 'https://cloud')
+    monkeypatch.setattr(sync_config, 'get_pull_enabled', lambda: True)
+    monkeypatch.setattr(sync_config, 'get_sync_interval', lambda: 300)
+    monkeypatch.setattr(sync_config, 'get_sync_retry_interval', lambda: 60)
+    monkeypatch.setattr(SyncService, 'pull_from_cloud', lambda: {'success': True})
+    monkeypatch.setattr('django.db.close_old_connections', lambda: None)
+
+    manager = ServerManager()
+    stop = _WaitSequence(iterations=1)
+    manager._pull_loop(stop)
+
+    assert stop.delays == [2, 60]
+    assert manager._worker_state['pull']['last_status'] == 'ok'
+
+
+def test_slow_push_cannot_starve_pull_or_presence(monkeypatch):
+    from base.services.sync import config as sync_config
+    from base.services.sync.service import SyncService
+
+    push_started = threading.Event()
+    release_push = threading.Event()
+    pull_finished = threading.Event()
+
+    def slow_push():
+        push_started.set()
+        assert release_push.wait(2)
+        return {'success': True}
+
+    def quick_pull():
+        pull_finished.set()
+        return {'success': True}
+
+    monkeypatch.setattr(sync_config.SyncConfig, 'is_enabled', lambda: True)
+    monkeypatch.setattr(sync_config, 'is_local_mode', lambda: True)
+    monkeypatch.setattr(sync_config, 'get_cloud_url', lambda: 'https://cloud')
+    monkeypatch.setattr(sync_config, 'get_pull_enabled', lambda: True)
+    monkeypatch.setattr(sync_config, 'get_sync_interval', lambda: 30)
+    monkeypatch.setattr(sync_config, 'get_sync_retry_interval', lambda: 60)
+    monkeypatch.setattr(SyncService, 'push', slow_push)
+    monkeypatch.setattr(SyncService, 'pull_from_cloud', quick_pull)
+    monkeypatch.setattr('django.db.close_old_connections', lambda: None)
+
+    manager = ServerManager()
+    manager._ensure_heartbeat_worker = lambda: None
+    push_thread = threading.Thread(
+        target=manager._sync_loop, args=(_WaitSequence(iterations=1),),
+    )
+    pull_thread = threading.Thread(
+        target=manager._pull_loop, args=(_WaitSequence(iterations=1),),
+    )
+    push_thread.start()
+    assert push_started.wait(1)
+    pull_thread.start()
+    try:
+        assert pull_finished.wait(1), 'pull was starved behind the outbound backlog'
+    finally:
+        release_push.set()
+        push_thread.join(2)
+        pull_thread.join(2)
+
+    assert not push_thread.is_alive()
+    assert not pull_thread.is_alive()
+
+
+def test_background_worker_watchdog_and_shutdown_include_pull(monkeypatch):
+    manager = ServerManager()
+    started = []
+    monkeypatch.setattr(manager, 'is_running', lambda: True)
+    monkeypatch.setattr(manager, 'wants_running', lambda: True)
+    monkeypatch.setattr(
+        manager, '_ensure_heartbeat_worker', lambda: started.append('heartbeat'),
+    )
+    monkeypatch.setattr(
+        manager, '_ensure_sync_worker', lambda: started.append('sync'),
+    )
+    monkeypatch.setattr(
+        manager, '_ensure_pull_worker', lambda: started.append('pull'),
+    )
+
+    manager.ensure_background_workers()
+
+    assert started == ['heartbeat', 'sync', 'pull']
+
+    # The real worker loops are Event-driven; stop must wake the new pull loop
+    # just like the pre-existing push/license workers.
+    assert not manager._pull_stop_event.is_set()
+    result = manager.stop(worker_timeout=0)
+    assert manager._pull_stop_event.is_set()
+    assert result['workers_quiescent'] is True
+    assert manager._worker_state['pull']['last_status'] == 'stopped'
+
+
 def test_automatic_start_respects_operator_stop():
     manager = ServerManager()
     manager._desired_running = False

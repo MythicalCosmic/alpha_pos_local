@@ -13,6 +13,12 @@ from datetime import datetime, timezone
 
 logger = logging.getLogger('desktop.server')
 
+# A recovered hub must be retried before its 95-second device-presence lease can
+# expire. The transport already performs bounded request retries; allowing the
+# scheduler to add a 15-minute backoff made a short restart look like a dead till
+# long after the hub was healthy again.
+_SYNC_RECOVERY_DELAY_MAX_S = 60
+
 
 def _setup_signature_and_schema_current():
     """Return the release/migration fingerprint and live DB migration health.
@@ -66,11 +72,14 @@ class ServerManager:
         self._desired_running = True
         self._sync_thread = None
         self._sync_stop_event = threading.Event()
+        self._pull_thread = None
+        self._pull_stop_event = threading.Event()
         self._hb_thread = None
         self._hb_stop_event = threading.Event()
         self._worker_state = {
             'heartbeat': self._new_worker_state(),
             'sync': self._new_worker_state(),
+            'pull': self._new_worker_state(),
         }
         self._lan_ip_value = '127.0.0.1'
         # ``time.monotonic()`` may still be under 30 seconds just after Windows
@@ -188,9 +197,7 @@ class ServerManager:
 
     # -- Automatic background sync ------------------------------------------
     def _ensure_sync_worker(self):
-        """Start a daemon that pushes (and pulls) every SYNC_INTERVAL whenever
-        sync is enabled, so records reach the cloud hands-free — no button
-        press. Idempotent; the loop self-gates when sync is off."""
+        """Start outbound sync without letting a slow upload starve pulls."""
         with self._worker_lock:
             if not self._desired_running:
                 return
@@ -205,6 +212,35 @@ class ServerManager:
             self._sync_thread.start()
             logger.info('sync worker started')
 
+    def _ensure_pull_worker(self):
+        """Start the inbound sync/presence clock independently of uploads."""
+        with self._worker_lock:
+            if not self._desired_running:
+                return
+            if self._pull_thread is not None and self._pull_thread.is_alive():
+                return
+            self._pull_stop_event = threading.Event()
+            self._pull_thread = threading.Thread(
+                target=self._pull_loop,
+                args=(self._pull_stop_event,),
+                name='sync-pull-worker', daemon=True,
+            )
+            self._pull_thread.start()
+            logger.info('sync pull worker started')
+
+    @staticmethod
+    def _sync_busy(result, leg):
+        """Whether another caller is already making progress on this leg."""
+        message = str((result or {}).get('message') or '').strip().lower()
+        return message == f'{leg} already in progress'
+
+    @staticmethod
+    def _sync_retry_delay(retry, failures):
+        return min(
+            _SYNC_RECOVERY_DELAY_MAX_S,
+            max(10, int(retry)) * (2 ** min(failures - 1, 4)),
+        )
+
     def _sync_loop(self, stop_event=None):
         stop_event = stop_event or self._sync_stop_event
         delay = 2
@@ -218,18 +254,14 @@ class ServerManager:
                 from django.db import close_old_connections
                 from base.services.sync.config import (
                     SyncConfig, get_sync_interval, is_local_mode,
-                    get_pull_enabled, get_cloud_url, get_sync_retry_interval,
+                    get_cloud_url, get_sync_retry_interval,
                 )
                 from base.services.sync.service import SyncService
                 interval = max(10, get_sync_interval())
                 try:
                     if SyncConfig.is_enabled() and is_local_mode() and get_cloud_url():
                         push = SyncService.push()
-                        pull = ({'success': True, 'message': 'Pull disabled'}
-                                if not get_pull_enabled()
-                                else SyncService.pull_from_cloud())
-                        ok = bool(push.get('success')) and bool(pull.get('success'))
-                        if ok:
+                        if push.get('success'):
                             failures = 0
                             delay = interval
                             self._record_worker(
@@ -237,13 +269,21 @@ class ServerManager:
                                 consecutive_failures=0, last_status='ok',
                                 last_error='', next_run_in_s=delay,
                             )
+                        elif self._sync_busy(push, 'push'):
+                            failures = 0
+                            delay = interval
+                            self._record_worker(
+                                'sync', consecutive_failures=0,
+                                last_status='busy', last_error='',
+                                next_run_in_s=delay,
+                            )
                         else:
                             failures += 1
-                            retry = max(10, int(get_sync_retry_interval()))
-                            delay = min(900, retry * (2 ** min(failures - 1, 4)))
+                            delay = self._sync_retry_delay(
+                                get_sync_retry_interval(), failures,
+                            )
                             error = str(
                                 push.get('message') or push.get('errors')
-                                or pull.get('message') or pull.get('errors')
                                 or 'sync failed'
                             )[:300]
                             self._record_worker(
@@ -267,7 +307,10 @@ class ServerManager:
                     close_old_connections()
             except Exception as exc:  # noqa: BLE001 — never kill the scheduler
                 failures += 1
-                delay = min(900, 30 * (2 ** min(failures - 1, 5)))
+                delay = min(
+                    _SYNC_RECOVERY_DELAY_MAX_S,
+                    30 * (2 ** min(failures - 1, 5)),
+                )
                 self._record_worker(
                     'sync', consecutive_failures=failures,
                     last_status='exception', last_error=str(exc)[:300],
@@ -275,11 +318,101 @@ class ServerManager:
                 )
                 logger.exception('sync iteration failed; retrying in %ss', delay)
 
+    def _pull_loop(self, stop_event=None):
+        """Pull changes and refresh presence independently of upload backlog."""
+        stop_event = stop_event or self._pull_stop_event
+        delay = 2
+        failures = 0
+        while not stop_event.wait(delay):
+            self._record_worker(
+                'pull', last_attempt_at=self._utc_now(), next_run_in_s=None,
+            )
+            try:
+                from django.db import close_old_connections
+                from base.services.sync.config import (
+                    SyncConfig, get_sync_interval, is_local_mode,
+                    get_pull_enabled, get_cloud_url, get_sync_retry_interval,
+                )
+                from base.services.sync.service import SyncService
+                # A pull is also the idle till's presence heartbeat. Keep its
+                # normal cadence inside the cloud's 95-second presence lease,
+                # even if an operator configures uploads less frequently.
+                interval = min(
+                    _SYNC_RECOVERY_DELAY_MAX_S,
+                    max(10, get_sync_interval()),
+                )
+                try:
+                    enabled = (
+                        SyncConfig.is_enabled() and is_local_mode()
+                        and get_cloud_url() and get_pull_enabled()
+                    )
+                    if enabled:
+                        pull = SyncService.pull_from_cloud()
+                        if pull.get('success'):
+                            failures = 0
+                            delay = interval
+                            self._record_worker(
+                                'pull', last_success_at=self._utc_now(),
+                                consecutive_failures=0, last_status='ok',
+                                last_error='', next_run_in_s=delay,
+                            )
+                        elif self._sync_busy(pull, 'pull'):
+                            # A concurrent manual pull is already refreshing the
+                            # feed/presence, so lock contention is not an outage.
+                            failures = 0
+                            delay = interval
+                            self._record_worker(
+                                'pull', consecutive_failures=0,
+                                last_status='busy', last_error='',
+                                next_run_in_s=delay,
+                            )
+                        else:
+                            failures += 1
+                            delay = self._sync_retry_delay(
+                                get_sync_retry_interval(), failures,
+                            )
+                            error = str(
+                                pull.get('message') or pull.get('errors')
+                                or 'pull failed'
+                            )[:300]
+                            self._record_worker(
+                                'pull', consecutive_failures=failures,
+                                last_status='failed', last_error=error,
+                                next_run_in_s=delay,
+                            )
+                            logger.warning(
+                                'background pull failed (%s consecutive); '
+                                'retry in %ss: %s', failures, delay, error,
+                            )
+                    else:
+                        failures = 0
+                        delay = interval
+                        self._record_worker(
+                            'pull', consecutive_failures=0,
+                            last_status='disabled', last_error='',
+                            next_run_in_s=delay,
+                        )
+                finally:
+                    close_old_connections()
+            except Exception as exc:  # noqa: BLE001 - never kill the scheduler
+                failures += 1
+                delay = min(
+                    _SYNC_RECOVERY_DELAY_MAX_S,
+                    30 * (2 ** min(failures - 1, 5)),
+                )
+                self._record_worker(
+                    'pull', consecutive_failures=failures,
+                    last_status='exception', last_error=str(exc)[:300],
+                    next_run_in_s=delay,
+                )
+                logger.exception('pull iteration failed; retrying in %ss', delay)
+
     def ensure_background_workers(self):
         """Watchdog entrypoint used by the launcher supervisor."""
         if self.is_running() and self.wants_running():
             self._ensure_heartbeat_worker()
             self._ensure_sync_worker()
+            self._ensure_pull_worker()
 
     # -- Django bootstrap (idempotent) --------------------------------------
     def ensure_django(self):
@@ -472,16 +605,17 @@ class ServerManager:
             self._desired_running = False
             self._hb_stop_event.set()
             self._sync_stop_event.set()
+            self._pull_stop_event.set()
             # Give idle workers an immediate Event-driven exit and bound the
             # wait for an in-flight HTTP call. Destructive reset callers can
             # request a longer timeout; ordinary Stop stays responsive.
             deadline = time.monotonic() + max(0.0, float(worker_timeout))
-            for worker in (self._sync_thread, self._hb_thread):
+            for worker in (self._sync_thread, self._pull_thread, self._hb_thread):
                 if worker is not None and worker.is_alive():
                     worker.join(timeout=max(0.0, deadline - time.monotonic()))
             workers_quiescent = not any(
                 worker is not None and worker.is_alive()
-                for worker in (self._sync_thread, self._hb_thread)
+                for worker in (self._sync_thread, self._pull_thread, self._hb_thread)
             )
             if not workers_quiescent:
                 logger.warning(
@@ -503,6 +637,7 @@ class ServerManager:
                 'heartbeat', next_run_in_s=None, last_status='stopped',
             )
             self._record_worker('sync', next_run_in_s=None, last_status='stopped')
+            self._record_worker('pull', next_run_in_s=None, last_status='stopped')
             return {
                 'running': False, 'message': 'Server stopped',
                 'workers_quiescent': workers_quiescent,
@@ -561,12 +696,16 @@ class ServerManager:
 
     def status(self):
         with self._worker_lock:
+            threads = {
+                'heartbeat': self._hb_thread,
+                'sync': self._sync_thread,
+                'pull': self._pull_thread,
+            }
             workers = {
                 name: {
                     **state,
                     'alive': bool(
-                        (self._hb_thread if name == 'heartbeat' else self._sync_thread)
-                        and (self._hb_thread if name == 'heartbeat' else self._sync_thread).is_alive()
+                        threads[name] and threads[name].is_alive()
                     ),
                 }
                 for name, state in self._worker_state.items()

@@ -9,6 +9,19 @@ from customers.services.order_service import (
 pytestmark = pytest.mark.django_db
 
 
+def _start_active_shift(cashier, branch_id):
+    """Payment contracts require a branch-matched active cashier shift."""
+    from django.utils import timezone
+    from base.models import Shift
+
+    return Shift.objects.create(
+        user=cashier,
+        status='ACTIVE',
+        start_time=timezone.now(),
+        branch_id=branch_id,
+    )
+
+
 class TestCashierOwnershipIDOR:
     """Pre-fix: any logged-in USER could mutate any order whose cashier_id
     was None, including marking it paid. The role-aware check must reject."""
@@ -94,6 +107,7 @@ class TestMarkAsPaidIdempotent:
         self, order_factory, cashier_user, regular_user,
     ):
         order = order_factory(user=regular_user, cashier=cashier_user)
+        _start_active_shift(cashier_user, order.branch_id)
         result1, status1 = CustomerOrderService.mark_as_paid(
             order.id, cashier_id=cashier_user.id,
             user_id=cashier_user.id, user_role='CASHIER',
@@ -122,12 +136,14 @@ class TestCancelPaidOrderReversesCash:
 
         CashRegister.objects.create(current_balance=Decimal('0'))
         order = order_factory(user=regular_user, cashier=cashier_user)
+        _start_active_shift(cashier_user, order.branch_id)
 
-        CustomerOrderService.mark_as_paid(
+        result, status = CustomerOrderService.mark_as_paid(
             order.id, cashier_id=cashier_user.id,
             user_id=cashier_user.id, user_role='CASHIER',
             payment_method='CASH',
         )
+        assert status == 200, result
         register = CashRegister.objects.first()
         assert register.current_balance == Decimal('10.00')
 
@@ -147,12 +163,14 @@ class TestCancelPaidOrderReversesCash:
 
         CashRegister.objects.create(current_balance=Decimal('0'))
         order = order_factory(user=regular_user, cashier=cashier_user)
+        _start_active_shift(cashier_user, order.branch_id)
 
-        CustomerOrderService.mark_as_paid(
+        result, status = CustomerOrderService.mark_as_paid(
             order.id, cashier_id=cashier_user.id,
             user_id=cashier_user.id, user_role='CASHIER',
             payment_method='UZCARD',
         )
+        assert status == 200, result
         register = CashRegister.objects.first()
         # Card payment doesn't touch the cash drawer.
         assert register.current_balance == Decimal('0.00')
@@ -172,6 +190,7 @@ class TestCancelPaidOrderReversesCash:
 
         CashRegister.objects.create(current_balance=Decimal('0'))
         order = order_factory(user=regular_user, cashier=cashier_user)
+        _start_active_shift(cashier_user, order.branch_id)
         result, status = CustomerOrderService.mark_as_paid(
             order.id, cashier_id=cashier_user.id,
             user_id=cashier_user.id, user_role='CASHIER',
@@ -328,9 +347,14 @@ class TestSplitPayment:
 
     def test_split_exact_only_cash_hits_drawer(self, order_factory, cashier_user, regular_user):
         from decimal import Decimal
-        from base.models import CashRegister, OrderPayment
+        from django.utils import timezone
+        from base.models import CashRegister, OrderPayment, Shift
         CashRegister.objects.create(current_balance=Decimal('0'))
         order = order_factory(user=regular_user, cashier=cashier_user)  # total 10.00
+        Shift.objects.create(
+            user=cashier_user, status='ACTIVE', start_time=timezone.now(),
+            branch_id=order.branch_id,
+        )
         result, status = CustomerOrderService.mark_as_paid(
             order.id, cashier_id=cashier_user.id, user_id=cashier_user.id, user_role='CASHIER',
             payments=[{'method': 'HUMO', 'amount': 6}, {'method': 'CASH', 'amount': 4}],
@@ -343,9 +367,14 @@ class TestSplitPayment:
 
     def test_discount_with_cash_change(self, order_factory, cashier_user, regular_user):
         from decimal import Decimal
-        from base.models import CashRegister
+        from django.utils import timezone
+        from base.models import CashRegister, Shift
         CashRegister.objects.create(current_balance=Decimal('0'))
         order = order_factory(user=regular_user, cashier=cashier_user)  # total 10.00
+        Shift.objects.create(
+            user=cashier_user, status='ACTIVE', start_time=timezone.now(),
+            branch_id=order.branch_id,
+        )
         # 10% off -> effective 9; pay 5 HUMO + 10 CASH (6 of the cash is change)
         result, status = CustomerOrderService.mark_as_paid(
             order.id, cashier_id=cashier_user.id, user_id=cashier_user.id, user_role='CASHIER',
@@ -361,6 +390,7 @@ class TestSplitPayment:
 
     def test_shortfall_rejected(self, order_factory, cashier_user, regular_user):
         order = order_factory(user=regular_user, cashier=cashier_user)
+        _start_active_shift(cashier_user, order.branch_id)
         result, status = CustomerOrderService.mark_as_paid(
             order.id, cashier_id=cashier_user.id, user_id=cashier_user.id, user_role='CASHIER',
             payments=[{'method': 'CASH', 'amount': 7}],
@@ -371,6 +401,7 @@ class TestSplitPayment:
 
     def test_noncash_overpay_rejected(self, order_factory, cashier_user, regular_user):
         order = order_factory(user=regular_user, cashier=cashier_user)
+        _start_active_shift(cashier_user, order.branch_id)
         result, status = CustomerOrderService.mark_as_paid(
             order.id, cashier_id=cashier_user.id, user_id=cashier_user.id, user_role='CASHIER',
             payments=[{'method': 'HUMO', 'amount': 12}],
@@ -513,6 +544,7 @@ class TestPaymentAttributesCashier:
 
     def test_pay_sets_cashier_when_unattributed(self, order_factory, cashier_user, regular_user):
         order = order_factory(user=regular_user, cashier=None)
+        _start_active_shift(cashier_user, order.branch_id)
         assert order.cashier_id is None
         res, st = CustomerOrderService.mark_as_paid(
             order.id, cashier_id=cashier_user.id,
@@ -521,11 +553,14 @@ class TestPaymentAttributesCashier:
         order.refresh_from_db()
         assert order.cashier_id == cashier_user.id
 
-    def test_pay_keeps_existing_cashier(self, order_factory, cashier_user, other_cashier_user, regular_user):
-        # If the order already has a cashier, paying doesn't steal attribution.
+    def test_pay_reattributes_to_collecting_cashier(self, order_factory, cashier_user, other_cashier_user, regular_user):
+        # Settlement belongs to the cashier whose active shift collected it,
+        # even when another cashier originally opened the ticket.
         order = order_factory(user=regular_user, cashier=other_cashier_user)
-        CustomerOrderService.mark_as_paid(
+        _start_active_shift(cashier_user, order.branch_id)
+        result, status = CustomerOrderService.mark_as_paid(
             order.id, cashier_id=cashier_user.id,
             user_id=cashier_user.id, user_role='CASHIER', payment_method='CASH')
+        assert status == 200, result
         order.refresh_from_db()
-        assert order.cashier_id == other_cashier_user.id
+        assert order.cashier_id == cashier_user.id
