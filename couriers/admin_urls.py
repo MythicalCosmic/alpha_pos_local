@@ -1,4 +1,7 @@
-"""Back-office courier routes, mounted under /api/admins/couriers/ in config/urls.py."""
+"""POS courier routes mounted under /api/couriers/ in config/urls.py.
+
+List/assign admit POS staff; create/regenerate stay manager-only in the views.
+"""
 from django.urls import path
 
 from couriers import admin_views

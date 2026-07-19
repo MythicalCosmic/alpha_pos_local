@@ -1,6 +1,11 @@
-"""Back-office endpoints the desktop POS calls to dispatch a delivery to a
-courier. Session-auth'd as staff (ADMIN/MANAGER), mounted under
-/api/admins/couriers/."""
+"""Courier provisioning and POS dispatch endpoints.
+
+The picker/assignment endpoints use the new ``Courier`` +
+``DeliveryAssignment`` domain and admit authenticated POS staff.  Provisioning
+and credential rotation remain manager-only.  The legacy ``DeliveryPerson``
+routes under ``/couriers`` and ``/orders/<id>/courier`` are intentionally kept
+separate for old desktop clients.
+"""
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
 from django.views.decorators.csrf import csrf_exempt
@@ -11,16 +16,16 @@ import secrets
 from django.conf import settings
 
 from base.helpers.request import parse_json_body
-from base.security.permissions import manager_required
+from base.security.permissions import manager_required, pos_staff_required
 from base.models import Order, User
 from base.security.hashing import hash_password
 
 from couriers.models import Courier
-from couriers import services
+from couriers import presenters, services
 
 
 @require_GET
-@manager_required
+@pos_staff_required
 def couriers_list(request):
     """Couriers available for assignment (the desktop's picker)."""
     rows = []
@@ -35,11 +40,15 @@ def couriers_list(request):
 
 @csrf_exempt
 @require_POST
-@manager_required
+@pos_staff_required
 def assign_order(request):
-    """POST /api/admins/couriers/assign
+    """POST /api/couriers/assign
     { order_id, courier (code) | courier_id (pk), fee, addr_text, addr_landmark,
-      addr_lat, addr_lng, distance_km } -> emits order.assigned to the courier."""
+      addr_lat, addr_lng, distance_km } -> emits order.assigned to the courier.
+
+    An explicit ``courier_id: null`` clears the current assignment while
+    retaining the declined assignment row as lifecycle evidence.
+    """
     data, error = parse_json_body(request)
     if error:
         return JsonResponse(error[0], status=error[1])
@@ -47,7 +56,33 @@ def assign_order(request):
     order_id = data.get('order_id')
     if not order_id:
         return JsonResponse({'success': False, 'message': 'order_id required'}, status=400)
-    order = get_object_or_404(Order, pk=order_id)
+    order = get_object_or_404(Order, pk=order_id, is_deleted=False)
+
+    if order.status in (Order.Status.CANCELED, Order.Status.COMPLETED):
+        return JsonResponse(
+            {'success': False, 'message': 'Cannot change courier on a terminal order'},
+            status=409,
+        )
+
+    # Presence matters: an omitted identifier is malformed, whereas explicit
+    # null is the POS "Tanlanmagan" action and must be safely idempotent.
+    if 'courier_id' not in data and 'courier' not in data:
+        return JsonResponse(
+            {'success': False, 'message': 'courier_id or courier required'},
+            status=400,
+        )
+    if data.get('courier_id') is None and not data.get('courier'):
+        services.unassign(order, reason='Unassigned by POS staff')
+        return JsonResponse({
+            'success': True,
+            'message': 'unassigned',
+            'data': {
+                'order_id': order.id,
+                'courier': None,
+                'step': None,
+                'courier_assignment': None,
+            },
+        })
 
     courier = None
     if data.get('courier_id'):
@@ -56,6 +91,11 @@ def assign_order(request):
         courier = Courier.objects.filter(code=data['courier']).first()
     if not courier:
         return JsonResponse({'success': False, 'message': 'courier not found'}, status=404)
+    if order.branch_id and courier.branch_id and order.branch_id != courier.branch_id:
+        return JsonResponse(
+            {'success': False, 'message': 'courier is not in this order branch'},
+            status=409,
+        )
 
     assignment = services.assign(
         order, courier,
@@ -66,9 +106,11 @@ def assign_order(request):
         addr_lng=data.get('addr_lng'),
         distance_km=data.get('distance_km'),
     )
+    summary = presenters.assignment_summary(assignment)
     return JsonResponse({'success': True, 'message': 'assigned',
                          'data': {'order_id': order.id, 'courier': courier.code,
-                                  'step': assignment.step}})
+                                  'step': assignment.step,
+                                  'courier_assignment': summary}})
 
 
 # --------------------------------------------------------------------------- #

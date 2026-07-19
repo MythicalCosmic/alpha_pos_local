@@ -1,8 +1,7 @@
 import logging
-
-logger = logging.getLogger(__name__)
 from decimal import Decimal, ROUND_HALF_UP
 from django.conf import settings
+from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 from django.utils import timezone
 from datetime import timedelta
@@ -11,6 +10,8 @@ from base.services.inkassa_service import InkassaService
 from base.services.phone import normalize_uz_phone
 from base.helpers.response import ServiceResponse
 from notifications.handlers.order import OrderNotification
+
+logger = logging.getLogger(__name__)
 
 # Sentinel: distinguishes "delivery_person_id not provided" (leave the courier
 # unchanged) from "delivery_person_id = null/0" (clear it) in a partial order edit.
@@ -98,6 +99,28 @@ def _live_items(order):
     return [item for item in order.items.all() if not item.is_deleted]
 
 
+def _courier_assignment_summary(order):
+    """Serialize new dispatch state without replacing legacy DeliveryPerson."""
+    try:
+        assignment = order.courier_delivery
+    except ObjectDoesNotExist:
+        return None
+    from couriers.presenters import assignment_summary
+    return assignment_summary(assignment)
+
+
+def _get_order_by_id_with_courier(order_id):
+    """Detail queryset with the complete POS courier projection preloaded."""
+    try:
+        return (
+            OrderRepository.get_with_relations()
+            .select_related('courier_delivery__courier__user')
+            .get(pk=order_id, is_deleted=False)
+        )
+    except OrderRepository.model.DoesNotExist:
+        return None
+
+
 def _serialize_order_list(order):
     live_items = _live_items(order)
     return {
@@ -135,6 +158,7 @@ def _serialize_order_list(order):
             'name': f"{order.delivery_person.first_name} {order.delivery_person.last_name or ''}".strip(),
             'phone': order.delivery_person.phone_number,
         } if order.delivery_person_id else None,
+        'courier_assignment': _courier_assignment_summary(order),
         # The list queryset is prefetched with `items__product__category`
         # (OrderRepository.get_with_relations) — iterate the cached items
         # instead of `.values()`, which would issue a fresh query per order
@@ -214,6 +238,7 @@ def _serialize_order_detail(order):
             'name': f"{order.delivery_person.first_name} {order.delivery_person.last_name or ''}".strip(),
             'phone': order.delivery_person.phone_number,
         } if order.delivery_person_id else None,
+        'courier_assignment': _courier_assignment_summary(order),
         'status': _to_api_status(order.status),
         'is_paid': order.is_paid,
         'paid_at': order.paid_at.isoformat() if order.paid_at else None,
@@ -438,6 +463,10 @@ class CustomerOrderService:
             order_by=order_by,
             customer_id=customer_id,
         )
+        # ``DeliveryAssignment`` lives in this local integration app rather
+        # than alpha_pos_core; join it here so /orders does not issue one query
+        # per row while serializing the assigned courier and its user fallback.
+        qs = qs.select_related('courier_delivery__courier__user')
 
         page_obj, paginator = OrderRepository.paginate(qs, page, per_page)
         orders = [_serialize_order_list(o) for o in page_obj.object_list]
@@ -461,7 +490,7 @@ class CustomerOrderService:
 
     @staticmethod
     def get_order_by_id(order_id, user_id=None, user_role=None):
-        order = OrderRepository.get_by_id_with_relations(order_id)
+        order = _get_order_by_id_with_courier(order_id)
         if not order:
             return ServiceResponse.not_found('Order not found')
         # Read-side ownership: staff (ADMIN/CASHIER/MANAGER/WAITER) may read any

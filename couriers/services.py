@@ -92,28 +92,60 @@ def pick_available_courier():
             .order_by('id').first())
 
 
+@transaction.atomic
 def assign(order, courier, *, fee=0, addr_text='', addr_landmark='', addr_lat=None,
            addr_lng=None, distance_km=None):
     """Assign a delivery order to a courier; (re)opens the hold-to-accept window
-    and fires order.assigned + push. Idempotent on the order (OneToOne)."""
-    now = timezone.now()
-    assignment, _ = DeliveryAssignment.objects.update_or_create(
-        order=order,
-        defaults={
-            'courier': courier,
-            'step': DeliveryAssignment.Step.ASSIGNED,
-            'fee': int(fee or 0),
-            'assigned_at': now,
-            'accepted_at': None,
-            'declined_reason': '',
-            'expires_at': now + timedelta(seconds=ACCEPT_WINDOW_SECONDS),
-            'addr_text': addr_text or '',
-            'addr_landmark': addr_landmark or '',
-            'addr_lat': addr_lat,
-            'addr_lng': addr_lng,
-            'distance_km': distance_km,
-        },
+    and fires order.assigned + push. Idempotent on the order (OneToOne).
+
+    Locking the order serializes first assignment, reassignment and clear so two
+    tills cannot create competing dispatch results for the same order.
+    """
+    from base.models import Order
+
+    order = Order.objects.select_for_update().get(pk=order.pk)
+    existing = (
+        DeliveryAssignment.objects.select_for_update()
+        .select_related('courier')
+        .filter(order=order)
+        .first()
     )
+    previous_courier = None
+    if (
+        existing is not None
+        and existing.step != DeliveryAssignment.Step.DECLINED
+        and existing.courier_id != courier.id
+    ):
+        previous_courier = existing.courier
+
+    now = timezone.now()
+    assignment = existing or DeliveryAssignment(order=order)
+    assignment.courier = courier
+    assignment.step = DeliveryAssignment.Step.ASSIGNED
+    assignment.fee = int(fee or 0)
+    assignment.assigned_at = now
+    assignment.accepted_at = None
+    assignment.ready_at = None
+    assignment.picked_at = None
+    assignment.delivered_at = None
+    assignment.declined_reason = ''
+    assignment.expires_at = now + timedelta(seconds=ACCEPT_WINDOW_SECONDS)
+    assignment.addr_text = addr_text or ''
+    assignment.addr_landmark = addr_landmark or ''
+    assignment.addr_lat = addr_lat
+    assignment.addr_lng = addr_lng
+    assignment.distance_km = distance_km
+    assignment.save()
+
+    if previous_courier is not None:
+        _emit(order, 'order.unassigned', {
+            'order_id': order.id,
+            'reason': 'reassigned',
+        }, courier_id=previous_courier.id, to_cashiers=False)
+        notify(previous_courier, icon='scooter', tone='muted',
+               title=f'Order #{order.id} reassigned',
+               body='This delivery was assigned to another courier.', order=order)
+
     addr = presenters._address(order, assignment)
     _emit(order, 'order.assigned', {
         'order_id': order.id,
@@ -133,6 +165,49 @@ def assign(order, courier, *, fee=0, addr_text='', addr_landmark='', addr_lat=No
     notify(courier, icon='scooter', tone='primary',
            title=f'New order #{order.id}',
            body='Assigned — kitchen is preparing.', order=order)
+    return assignment
+
+
+@transaction.atomic
+def unassign(order, *, reason='Unassigned'):
+    """Clear an active assignment without erasing its last-courier evidence.
+
+    The retained ``DECLINED`` row makes the operation auditable and lets a later
+    assignment reuse the OneToOne row.  Repeating a clear is a no-op.
+    """
+    from base.models import Order
+
+    order = Order.objects.select_for_update().get(pk=order.pk)
+    assignment = (
+        DeliveryAssignment.objects.select_for_update()
+        .select_related('courier')
+        .filter(order=order)
+        .first()
+    )
+    if assignment is None or assignment.step == DeliveryAssignment.Step.DECLINED:
+        return assignment
+
+    courier = assignment.courier
+    assignment.step = DeliveryAssignment.Step.DECLINED
+    assignment.declined_reason = (reason or 'Unassigned')[:200]
+    assignment.accepted_at = None
+    assignment.expires_at = None
+    assignment.save(update_fields=[
+        'step', 'declined_reason', 'accepted_at', 'expires_at', 'updated_at',
+    ])
+
+    _emit(order, 'order.unassigned', {
+        'order_id': order.id,
+        'reason': assignment.declined_reason,
+    }, courier_id=courier.id if courier else None, to_cashiers=False)
+    realtime.send_to_cashiers(order.branch_id, 'order.status', {
+        'order_id': order.id,
+        'courier_id': None,
+        'step': None,
+    })
+    notify(courier, icon='scooter', tone='muted',
+           title=f'Order #{order.id} unassigned',
+           body='This delivery is no longer assigned to you.', order=order)
     return assignment
 
 

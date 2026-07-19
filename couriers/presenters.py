@@ -110,6 +110,32 @@ def courier_dict(courier):
     }
 
 
+def assignment_summary(assignment):
+    """Stable POS-facing projection of the current courier assignment.
+
+    ``DeliveryAssignment`` keeps a declined row as lifecycle evidence when a
+    cashier clears a courier.  That historical row is deliberately not exposed
+    as a *current* assignment.
+    """
+    if (
+        assignment is None
+        or not assignment.courier_id
+        or assignment.step == 'DECLINED'
+    ):
+        return None
+    courier = assignment.courier
+    return {
+        # ``id`` remains the stable human-facing code used by the courier app;
+        # ``pk`` is the numeric identifier accepted by /api/couriers/assign.
+        'id': courier.code,
+        'pk': courier.pk,
+        'code': courier.code,
+        'name': courier.full_name,
+        'phone': courier.phone,
+        'step': assignment.step,
+    }
+
+
 def active_order_dict(order, assignment):
     return {
         'id': order.id,
