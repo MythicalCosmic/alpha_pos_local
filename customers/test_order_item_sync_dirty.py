@@ -265,8 +265,12 @@ def test_stock_failure_rolls_back_new_cashier_order(
 ):
     from base.helpers.response import ServiceResponse
     from base.models import Order
+    from core.shifts.service import ShiftService
     from customers.services.order_service import CustomerOrderService
     from stock.services import OrderStatusHandler, StockSettingsService
+
+    shift_result, shift_status = ShiftService.start_shift(cashier_user.id)
+    assert shift_status == 201, shift_result
 
     monkeypatch.setattr(
         StockSettingsService,

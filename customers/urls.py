@@ -44,6 +44,13 @@ urlpatterns = [
 
     path('orders', order_views.list_orders),
     path('orders/create', order_views.create_order),
+    # Durable local outbox for online-order receipt printing. POST claim is a
+    # state mutation; ack/fail are fenced by the opaque claim token.
+    path('orders/print-jobs/claim', order_views.claim_receipt_print),
+    path('orders/print-jobs/<uuid:claim_token>/ack',
+         order_views.acknowledge_receipt_print),
+    path('orders/print-jobs/<uuid:claim_token>/fail',
+         order_views.fail_receipt_print),
     path('orders/client-display', order_views.client_display),
     path('orders/chef-display', order_views.chef_display),
     path('orders/<int:order_id>', order_views.get_order),

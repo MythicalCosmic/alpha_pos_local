@@ -24,8 +24,16 @@ def _auth(user):
     return {'HTTP_AUTHORIZATION': f'Bearer {token}'}
 
 
+def _start_shift(user):
+    from core.shifts.service import ShiftService
+
+    result, status = ShiftService.start_shift(user.id)
+    assert status == 201, result
+
+
 def test_create_returns_structured_address_and_prefers_order_note(
         cashier_user, product):
+    _start_shift(cashier_user)
     client = Client()
     auth = _auth(cashier_user)
     address = 'Tashkent, Amir Temur street 47, apartment 12'
@@ -101,6 +109,7 @@ def test_patch_supports_delivery_address_and_order_note_alias(
 
 def test_phone_variants_reuse_customer_and_backfill_empty_name(
         cashier_user, product):
+    _start_shift(cashier_user)
     existing = Customer.objects.create(
         phone_number='90 777 66 55', name='',
     )

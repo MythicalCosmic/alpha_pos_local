@@ -8,6 +8,11 @@ from base.security.audit import audit
 from base.security.idempotency import idempotent
 from base.security.rate_limit import rate_limit, rate_limit_by
 from base.models import AuditLog
+from customers.services.order_service import (
+    CustomerOrderService, _serialize_order_detail,
+)
+from customers.services import print_service
+from customers.requests.order_requests import create_order_request
 
 # Roles permitted to advance an order beyond the customer's own scope: take
 # payment, mark items / orders ready, force a status transition, or apply a
@@ -15,8 +20,6 @@ from base.models import AuditLog
 # otherwise a customer with their own order can self-issue a CASH receipt
 # (and inflate the cash register) or skip the kitchen workflow.
 STAFF_ROLES = ('ADMIN', 'CASHIER', 'MANAGER', 'WAITER')
-from customers.services.order_service import CustomerOrderService
-from customers.requests.order_requests import create_order_request
 
 
 @csrf_exempt
@@ -55,6 +58,104 @@ def get_order(request, order_id):
         order_id, user_id=request.user.id, user_role=request.user.role,
     )
     return JsonResponse(result, status=status_code)
+
+
+def _print_job_payload(job):
+    if job is None:
+        return None
+    # Use the same authoritative detail projection as GET /orders/<id> so a
+    # printer cannot silently omit modifiers, the structured delivery address,
+    # courier assignment, or the order_origin that authorized auto-printing.
+    order = _serialize_order_detail(job.order)
+    return {
+        'id': job.pk,
+        'claim_token': str(job.claim_token),
+        'attempt': job.attempt_count,
+        'lease_expires_at': job.lease_expires_at.isoformat(),
+        'order': order,
+    }
+
+
+@csrf_exempt
+@require_POST
+@login_required
+@role_required('ADMIN', 'MANAGER', 'CASHIER')
+def claim_receipt_print(request):
+    """Lease the next unprinted Telegram receipt to this authenticated POS.
+
+    Empty queues return HTTP 200 with ``job: null`` so a frontend poller does
+    not need to treat normal idleness as an error. The same session receives
+    the same active claim on retry until it acknowledges, fails, or the lease
+    expires.
+    """
+    job = print_service.claim_next(session_key=request.session_key)
+    return JsonResponse({
+        'success': True,
+        'data': {
+            'job': _print_job_payload(job),
+            'delivery_contract': 'durable-claim-ack-v1',
+        },
+    })
+
+
+@csrf_exempt
+@require_POST
+@login_required
+@role_required('ADMIN', 'MANAGER', 'CASHIER')
+def acknowledge_receipt_print(request, claim_token):
+    """Acknowledge paper/spool success; exact retries are idempotent."""
+    try:
+        job, already_printed = print_service.acknowledge(
+            claim_token=claim_token, session_key=request.session_key,
+        )
+    except print_service.PrintClaimNotFound:
+        return JsonResponse(
+            {'success': False, 'message': 'print claim not found'}, status=404,
+        )
+    except print_service.PrintClaimConflict:
+        return JsonResponse(
+            {'success': False, 'message': 'print claim is no longer owned'},
+            status=409,
+        )
+    return JsonResponse({
+        'success': True,
+        'data': {
+            'job_id': job.pk,
+            'state': job.state,
+            'printed_at': job.printed_at.isoformat(),
+            'already_printed': already_printed,
+        },
+    })
+
+
+@csrf_exempt
+@require_POST
+@login_required
+@role_required('ADMIN', 'MANAGER', 'CASHIER')
+def fail_receipt_print(request, claim_token):
+    """Report definite printer failure and make the job retryable."""
+    data, error = parse_json_body(request)
+    if error:
+        return json_response(error)
+    try:
+        job = print_service.release_failed(
+            claim_token=claim_token,
+            session_key=request.session_key,
+            error=data.get('error') or data.get('message') or '',
+        )
+    except print_service.PrintClaimNotFound:
+        return JsonResponse(
+            {'success': False, 'message': 'print claim not found'}, status=404,
+        )
+    except print_service.PrintClaimConflict:
+        return JsonResponse(
+            {'success': False, 'message': 'print claim is no longer owned'},
+            status=409,
+        )
+    return JsonResponse({
+        'success': True,
+        'data': {'job_id': job.pk, 'state': job.state, 'retryable': True},
+    })
 
 
 @csrf_exempt

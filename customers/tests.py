@@ -132,8 +132,6 @@ class TestCancelPaidOrderReversesCash:
     ):
         from decimal import Decimal
         from base.models import CashRegister
-        from base.services.inkassa_service import InkassaService
-
         CashRegister.objects.create(current_balance=Decimal('0'))
         order = order_factory(user=regular_user, cashier=cashier_user)
         _start_active_shift(cashier_user, order.branch_id)
@@ -500,6 +498,7 @@ class TestInstantProducts:
         )
 
     def test_all_instant_order_is_ready_immediately(self, cashier_user, category):
+        _start_active_shift(cashier_user, cashier_user.branch_id)
         product = self._instant_product(category)
         res, st = CustomerOrderService.create_order(
             user_id=cashier_user.id,
@@ -514,6 +513,7 @@ class TestInstantProducts:
         assert OrderItem.objects.filter(order=order, ready_at__isnull=True).count() == 0
 
     def test_instant_items_excluded_from_chef_display(self, cashier_user, category, product):
+        _start_active_shift(cashier_user, cashier_user.branch_id)
         # Mixed order: one cooked item (fixture product, not instant) + one drink.
         instant = self._instant_product(category, name='Juice')
         res, st = CustomerOrderService.create_order(

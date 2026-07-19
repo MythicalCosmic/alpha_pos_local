@@ -64,7 +64,7 @@ def test_create_returns_one_time_opaque_claim_and_session_expiry():
     )
     assert response.status_code == 200, response.content
     data = response.json()['data']
-    assert data['courier']['phone'] == '+998901112233'
+    assert data['courier']['phone'] == '998901112233'
     assert data['courier']['id'].startswith('CR-')
     assert 'password' not in data
     assert data['qr']['v'] == 2
@@ -72,7 +72,8 @@ def test_create_returns_one_time_opaque_claim_and_session_expiry():
     assert data['qr']['expires_at'] == data['expires_at']
     assert '+998901112233' not in data['qr']['token']
     assert 'kuryer123' not in json.dumps(data)
-    assert Courier.objects.filter(phone='+998901112233').exists()
+    assert Courier.objects.filter(phone='998901112233').exists()
+    assert Courier.objects.get(phone='998901112233').user.role == 'COURIER'
 
     claim = CourierLoginClaim.objects.get()
     assert claim.token_digest == _digest(data['qr']['token'])
@@ -94,6 +95,9 @@ def test_create_returns_one_time_opaque_claim_and_session_expiry():
     assert Session.objects.filter(
         payload=SessionRepository.hash_token(auth['token']),
     ).exists()
+    assert Client().get(
+        '/orders', HTTP_AUTHORIZATION=f"Bearer {auth['token']}",
+    ).status_code == 403
 
     replay = _post('/auth/courier/login/', {'qr': data['qr']['token']})
     assert replay.status_code == 401
@@ -144,10 +148,31 @@ def test_short_manual_password_is_rejected():
     manager = _staff_token()
     response = _post(
         CREATE,
-        {'phone': '+998901234567', 'password': 'ab'},
+        {'phone': '+998901234567', 'password': '1234567'},
         manager,
     )
     assert response.status_code == 400
+    assert 'at least 8' in response.json()['message']
+
+
+def test_login_is_rate_limited_by_credential_without_leaking_qr():
+    from django.core.cache import cache
+
+    cache.clear()
+    qr = 'cq1.' + ('x' * 43)
+    try:
+        for _ in range(10):
+            assert _post('/auth/courier/login/', {'qr': qr}).status_code == 401
+        blocked = _post('/auth/courier/login/', {'qr': qr})
+        assert blocked.status_code == 429
+        assert blocked.json() == {
+            'success': False,
+            'message': 'Too many login attempts. Please wait and try again.',
+        }
+        assert blocked.headers.get('Retry-After')
+        assert qr not in json.dumps(blocked.json())
+    finally:
+        cache.clear()
 
 
 def test_regenerate_rotates_claim_without_changing_manual_password():
@@ -322,6 +347,14 @@ def test_password_reset_revokes_sessions_without_echoing_password():
         'phone': '+998907070707',
         'password': 'first-secret',
     }).json()
+
+    too_short = _post(
+        f"/api/couriers/{created['id']}/regenerate",
+        {'password': '1234567'},
+        manager,
+    )
+    assert too_short.status_code == 400
+    assert 'at least 8' in too_short.json()['message']
 
     response = _post(
         f"/api/couriers/{created['id']}/regenerate",

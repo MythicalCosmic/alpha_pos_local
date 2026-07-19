@@ -3,6 +3,8 @@ import pytest
 from base.models import User, Order, DeliveryPerson
 from base.security.hashing import hash_password
 from customers.services.order_service import CustomerOrderService
+from couriers import services as courier_services
+from couriers.models import Courier, DeliveryAssignment
 
 pytestmark = pytest.mark.django_db
 
@@ -32,23 +34,31 @@ def test_list_couriers_active_only():
 
 
 def test_assign_and_clear_courier():
-    u = _staff(); o = _order(u); c = _courier()
+    u = _staff()
+    o = _order(u)
+    c = _courier()
     _, st = CustomerOrderService.assign_courier(o.id, c.id, user_id=u.id, user_role='CASHIER')
     assert st == 200
-    o.refresh_from_db(); assert o.delivery_person_id == c.id
+    o.refresh_from_db()
+    assert o.delivery_person_id == c.id
     _, st = CustomerOrderService.assign_courier(o.id, None, user_id=u.id, user_role='CASHIER')
     assert st == 200
-    o.refresh_from_db(); assert o.delivery_person_id is None
+    o.refresh_from_db()
+    assert o.delivery_person_id is None
 
 
 def test_assign_courier_blocked_on_cancelled():
-    u = _staff(); o = _order(u, status='CANCELED'); c = _courier()
+    u = _staff()
+    o = _order(u, status='CANCELED')
+    c = _courier()
     _, st = CustomerOrderService.assign_courier(o.id, c.id, user_id=u.id, user_role='CASHIER')
     assert st == 400
 
 
 def test_update_details_phone_description_courier():
-    u = _staff(); o = _order(u); c = _courier()
+    u = _staff()
+    o = _order(u)
+    c = _courier()
     body, st = CustomerOrderService.update_order_details(
         o.id, phone_number='+998901112233', description='leave at door',
         delivery_person_id=c.id, user_id=u.id, user_role='CASHIER')
@@ -60,7 +70,9 @@ def test_update_details_phone_description_courier():
 
 
 def test_update_details_partial_leaves_courier():
-    u = _staff(); o = _order(u); c = _courier()
+    u = _staff()
+    o = _order(u)
+    c = _courier()
     CustomerOrderService.assign_courier(o.id, c.id, user_id=u.id, user_role='CASHIER')
     # edit only phone -> courier unchanged (delivery_person_id not passed = _UNSET)
     CustomerOrderService.update_order_details(o.id, phone_number='+111',
@@ -72,7 +84,54 @@ def test_update_details_partial_leaves_courier():
 def test_waiter_can_edit_own_order_courier():
     """The waiter pay/edit fix: a WAITER may edit an order they own."""
     w = _staff(role='WAITER')
-    o = _order(w); c = _courier()
+    o = _order(w)
+    c = _courier()
     _, st = CustomerOrderService.assign_courier(o.id, c.id, user_id=w.id, user_role='WAITER')
     assert st == 200
-    o.refresh_from_db(); assert o.delivery_person_id == c.id
+    o.refresh_from_db()
+    assert o.delivery_person_id == c.id
+
+
+def test_new_assignment_is_sole_dispatch_authority_and_clears_legacy_projection():
+    cashier = _staff()
+    order = _order(cashier)
+    legacy = _courier('Legacy')
+    order.delivery_person = legacy
+    order.save(update_fields=['delivery_person', 'updated_at'])
+    rider_user = User.objects.create(
+        email='new-rider@t.local', first_name='New', last_name='Rider',
+        role='CASHIER', status=User.UserStatus.ACTIVE,
+        password=hash_password('strong-password'),
+    )
+    rider = Courier.objects.create(
+        user=rider_user, code='CR-AUTHORITY', phone='+998901234500',
+        first_name='New', last_name='Rider', branch_id=order.branch_id,
+    )
+
+    courier_services.assign(order, rider)
+
+    order.refresh_from_db()
+    assert order.delivery_person_id is None
+    assignment = DeliveryAssignment.objects.get(order=order)
+    assert assignment.courier_id == rider.pk
+
+    body, status = CustomerOrderService.assign_courier(
+        order.id, legacy.id, user_id=cashier.id, user_role='CASHIER',
+    )
+    assert status == 409
+    assert body['success'] is False
+    body, status = CustomerOrderService.update_order_details(
+        order.id, delivery_person_id=legacy.id,
+        user_id=cashier.id, user_role='CASHIER',
+    )
+    assert status == 409
+    order.refresh_from_db()
+    assignment.refresh_from_db()
+    assert order.delivery_person_id is None
+    assert assignment.courier_id == rider.pk
+
+    # A stale sync/legacy save cannot resurrect the second dispatch authority.
+    order.delivery_person = legacy
+    order.save(update_fields=['delivery_person', 'updated_at'])
+    order.refresh_from_db()
+    assert order.delivery_person_id is None

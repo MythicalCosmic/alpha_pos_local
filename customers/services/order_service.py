@@ -18,6 +18,25 @@ logger = logging.getLogger(__name__)
 _UNSET = object()
 
 
+def _has_active_delivery_assignment(order):
+    """Whether the new Courier domain already owns dispatch for this order."""
+    from couriers.models import DeliveryAssignment
+
+    return DeliveryAssignment.objects.filter(order_id=order.pk).exclude(
+        step=DeliveryAssignment.Step.DECLINED,
+    ).exists()
+
+
+def _dispatch_authority_conflict():
+    return ({
+        'success': False,
+        'message': (
+            'This order uses the new courier assignment flow; '
+            'change it through /api/couriers/assign'
+        ),
+    }, 409)
+
+
 ALLOWED_STATUSES = ['PREPARING', 'READY', 'CANCELED']
 
 
@@ -127,6 +146,7 @@ def _serialize_order_list(order):
         'id': order.id,
         'display_id': order.display_id,
         'order_type': order.order_type,
+        'order_origin': order.order_origin,
         'phone_number': order.phone_number,
         'delivery_address': order.delivery_address,
         'description': order.description,
@@ -213,6 +233,7 @@ def _serialize_order_detail(order):
         'id': order.id,
         'display_id': order.display_id,
         'order_type': order.order_type,
+        'order_origin': order.order_origin,
         'phone_number': order.phone_number,
         'delivery_address': order.delivery_address,
         'description': order.description,
@@ -543,10 +564,6 @@ class CustomerOrderService:
             if not table:
                 return ServiceResponse.not_found('Table not found')
 
-        display_id = OrderRepository.next_display_id()
-        chef_queue_number = OrderRepository.next_chef_queue_number()
-        order_number = OrderRepository.next_order_number()
-
         product_ids = [item.get('product_id') for item in items]
         products = {p.id: p for p in ProductRepository.filter(id__in=product_ids)}
 
@@ -574,6 +591,31 @@ class CustomerOrderService:
                 'price': product.price,
             })
             total_amount += product.price * quantity
+
+        # A staff-owned ticket must be born inside an ACTIVE shift.  Take the
+        # same Shift row lock used by payment/close before inserting the Order:
+        # if close wins, this re-check observes ENDED and refuses the orphan;
+        # if create wins, close waits and then sees the new unpaid order in its
+        # fail-closed scan.  Customer/waiter/remote orders intentionally have no
+        # cashier yet and remain allowed -- the collecting cashier acquires the
+        # shift lock later in mark_as_paid().
+        if cashier_id:
+            from base.services.order_refund import (
+                SettlementInvariantError, lock_active_cashier_shift,
+            )
+            try:
+                lock_active_cashier_shift(
+                    cashier_id,
+                    branch_id=getattr(settings, 'BRANCH_ID', '') or '',
+                )
+            except SettlementInvariantError as exc:
+                return ServiceResponse.error(str(exc))
+
+        # Allocate visible identifiers only after every validation and shift
+        # guard passed; a rejected/no-shift request must not burn counter rows.
+        display_id = OrderRepository.next_display_id()
+        chef_queue_number = OrderRepository.next_chef_queue_number()
+        order_number = OrderRepository.next_order_number()
 
         order = OrderRepository.create(
             user_id=user_id,
@@ -1295,10 +1337,12 @@ class CustomerOrderService:
         ]})
 
     @staticmethod
+    @transaction.atomic
     def assign_courier(order_id, delivery_person_id, user_id=None, user_role=None):
         """Assign / replace / clear the courier on an EXISTING order (any status
         except CANCELED). A falsy delivery_person_id clears it."""
-        order = OrderRepository.get_by_id(order_id)
+        order = (OrderRepository.model.objects.select_for_update()
+                 .filter(pk=order_id, is_deleted=False).first())
         if not order:
             return ServiceResponse.not_found('Order not found')
         if order.status == 'CANCELED':
@@ -1306,6 +1350,8 @@ class CustomerOrderService:
         ownership = _check_cashier_ownership(order, None, user_id=user_id, user_role=user_role)
         if ownership:
             return ownership
+        if delivery_person_id and _has_active_delivery_assignment(order):
+            return _dispatch_authority_conflict()
         if delivery_person_id:
             dp = DeliveryPersonRepository.get_by_id(delivery_person_id)
             if not dp:
@@ -1318,6 +1364,7 @@ class CustomerOrderService:
             'id': order.id, 'delivery_person_id': order.delivery_person_id})
 
     @staticmethod
+    @transaction.atomic
     def update_order_details(order_id, phone_number=None, description=None,
                              delivery_address=_UNSET,
                              delivery_person_id=_UNSET, user_id=None,
@@ -1327,7 +1374,8 @@ class CustomerOrderService:
         Only explicitly supplied fields change. ``None`` is accepted for
         ``delivery_address`` so callers can intentionally clear it.
         """
-        order = OrderRepository.get_by_id(order_id)
+        order = (OrderRepository.model.objects.select_for_update()
+                 .filter(pk=order_id, is_deleted=False).first())
         if not order:
             return ServiceResponse.not_found('Order not found')
         if order.status == 'CANCELED':
@@ -1335,6 +1383,12 @@ class CustomerOrderService:
         ownership = _check_cashier_ownership(order, None, user_id=user_id, user_role=user_role)
         if ownership:
             return ownership
+        if (
+            delivery_person_id is not _UNSET
+            and delivery_person_id
+            and _has_active_delivery_assignment(order)
+        ):
+            return _dispatch_authority_conflict()
         update_fields = []
         if phone_number is not None:
             order.phone_number = normalize_uz_phone(phone_number) or None
