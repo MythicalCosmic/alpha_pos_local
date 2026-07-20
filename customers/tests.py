@@ -360,7 +360,13 @@ class TestSplitPayment:
         assert status == 200, result
         order.refresh_from_db()
         assert order.is_paid and order.payment_method == 'MIXED'
-        assert OrderPayment.objects.filter(order=order).count() == 2
+        payment_rows = list(OrderPayment.objects.filter(order=order).order_by('line_index'))
+        assert len(payment_rows) == 2
+        assert order.payment_action_id is not None
+        assert {row.payment_action_id for row in payment_rows} == {
+            order.payment_action_id,
+        }
+        assert [row.line_index for row in payment_rows] == [0, 1]
         assert CashRegister.objects.first().current_balance == Decimal('4.00')
 
     def test_discount_with_cash_change(self, order_factory, cashier_user, regular_user):

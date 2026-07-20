@@ -5,6 +5,7 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.db import transaction
 from django.utils import timezone
 from datetime import timedelta
+from uuid import uuid4
 from base.repositories import OrderRepository, OrderItemRepository, ProductRepository, UserRepository, DeliveryPersonRepository, PlaceRepository, TableRepository
 from base.services.inkassa_service import InkassaService
 from base.services.phone import normalize_uz_phone
@@ -1198,7 +1199,9 @@ class CustomerOrderService:
         paid_event_at = timezone.now()
 
         distinct = {m for m, _ in lines}
+        payment_action_id = uuid4()
         order.is_paid = True
+        order.payment_action_id = payment_action_id
         order.payment_method = (next(iter(distinct)) if len(distinct) == 1
                                 else Order.PaymentMethod.MIXED)
         order.paid_at = paid_event_at
@@ -1222,18 +1225,25 @@ class CustomerOrderService:
             order.discount_amount = (Decimal(order.discount_amount or 0)
                                      + (base_total - effective_total))
             order.total_amount = effective_total
-            order.save(update_fields=['is_paid', 'payment_method', 'paid_at',
+            order.save(update_fields=['is_paid', 'payment_action_id',
+                                      'payment_method', 'paid_at',
                                       'accounting_recorded_at',
                                       'discount_percent', 'discount_amount',
                                       'total_amount'] + cashier_fields)
         else:
             order.save(update_fields=[
-                'is_paid', 'payment_method', 'paid_at',
+                'is_paid', 'payment_action_id', 'payment_method', 'paid_at',
                 'accounting_recorded_at',
             ] + cashier_fields)
 
-        for method, amount in lines:
-            OrderPayment.objects.create(order=order, method=method, amount=amount)
+        for line_index, (method, amount) in enumerate(lines):
+            OrderPayment.objects.create(
+                order=order,
+                method=method,
+                amount=amount,
+                payment_action_id=payment_action_id,
+                line_index=line_index,
+            )
 
         # Cash drawer only tracks physical cash kept (net of change). The cash
         # share of the bill = effective_total - non-cash settled externally.
