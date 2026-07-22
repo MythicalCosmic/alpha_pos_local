@@ -1268,6 +1268,44 @@ def test_server_start_waits_for_real_bind_and_stop_joins(monkeypatch):
     assert manager._thread is None
 
 
+def test_server_start_skips_uvicorn_console_logging_without_gui_streams(monkeypatch):
+    import uvicorn
+
+    configs = []
+
+    class FakeServer:
+        def __init__(self, config):
+            configs.append(config)
+            self.started = False
+            self.should_exit = False
+
+        def run(self):
+            self.started = True
+            while not self.should_exit:
+                time.sleep(0.01)
+            self.started = False
+
+    # Keep the real Config constructor: Uvicorn's default log formatter is the
+    # exact component that dereferences sys.stderr in a windowed executable.
+    monkeypatch.setattr(uvicorn, 'Server', FakeServer)
+    manager = ServerManager()
+    manager.ensure_django = lambda: None
+    manager.ensure_background_workers = lambda: None
+    manager.lan_ip = lambda **_kwargs: '192.168.1.20'
+
+    try:
+        with monkeypatch.context() as gui:
+            gui.setattr(sys, 'stdout', None)
+            gui.setattr(sys, 'stderr', None)
+            result = manager.start()
+
+        assert result['running'] is True
+        assert len(configs) == 1
+        assert configs[0].log_config is None
+    finally:
+        manager.stop()
+
+
 def test_server_bind_failure_is_reported_not_false_online(monkeypatch):
     import uvicorn
 

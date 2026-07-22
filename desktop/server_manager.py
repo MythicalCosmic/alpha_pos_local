@@ -605,6 +605,12 @@ class ServerManager:
                 cfg = uvicorn.Config(
                     'config.asgi:application', host=self.host, port=int(self.port),
                     log_level='info', lifespan='off', access_log=False,
+                    # The windowed executable has no stderr for Uvicorn's
+                    # terminal-aware formatter to inspect. AlphaPOS installs a
+                    # rotating root FileHandler before starting the server, so
+                    # leave logger configuration untouched and let
+                    # ``uvicorn.*`` records propagate into that durable log.
+                    log_config=None,
                 )
                 server = uvicorn.Server(cfg)
                 server.install_signal_handlers = lambda: None
