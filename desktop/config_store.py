@@ -98,9 +98,22 @@ CONFIG_FIELDS = [
     ('SYNC_ENABLED', 'False'),
     ('CLOUD_SYNC_URL', 'https://pos.78.111.90.65.nip.io/api/sync'),
     ('CLOUD_SYNC_TOKEN', ''),
+    # Optional authorized support tunnel. The relay is outbound-only and its
+    # reverse listeners are always bound to relay loopback by support_tunnel.py.
+    ('SUPPORT_TUNNEL_ENABLED', 'False'),
+    ('SUPPORT_TUNNEL_HOST', ''),
+    ('SUPPORT_TUNNEL_PORT', '22'),
+    ('SUPPORT_TUNNEL_USER', 'alphapos-support'),
+    ('SUPPORT_TUNNEL_REMOTE_DB_PORT', '15433'),
+    ('SUPPORT_TUNNEL_REMOTE_API_PORT', '18000'),
+    ('SUPPORT_TUNNEL_PRIVATE_KEY_B64', ''),
+    ('SUPPORT_TUNNEL_KNOWN_HOST', ''),
     # Telegram (token + chat ids drive real message delivery)
     ('TELEGRAM_BOT_TOKEN', ''),   # staff/internal bot token — set via the desktop panel
     ('TELEGRAM_CHAT_IDS', ''),    # staff chat ids — set via the desktop panel
+    # Owner-only recipients for raw order/sync evidence. A blank value disables
+    # delivery; raw evidence never falls back to the broader staff recipient list.
+    ('ORDER_AUDIT_TELEGRAM_CHAT_IDS', ''),
     ('TELEGRAM_WEBHOOK_SECRET', ''),
     # AI lives on the SERVER edition only (centralized Gemini calls against the
     # cloud's sales/stock data). The desktop/local edition ships NO AI — no keys
@@ -116,8 +129,10 @@ CONFIG_FIELDS = [
     ('FISCAL_BLOCK_ON_FAILURE', 'false'),
 ]
 
-SECRET_KEYS = {'FISCAL_SECRET', 'CLOUD_SYNC_TOKEN', 'TELEGRAM_BOT_TOKEN',
-               'TELEGRAM_WEBHOOK_SECRET'}
+SECRET_KEYS = {
+    'FISCAL_SECRET', 'CLOUD_SYNC_TOKEN', 'TELEGRAM_BOT_TOKEN',
+    'TELEGRAM_WEBHOOK_SECRET', 'SUPPORT_TUNNEL_PRIVATE_KEY_B64',
+}
 
 
 def _write_protected(path: Path, contents: str) -> None:
@@ -410,6 +425,7 @@ def _wipe_data() -> list:
         DATA_DIR / '.control_token',
         DATA_DIR / 'logs', DATA_DIR / 'staticfiles', DATA_DIR / 'private_media',
         DATA_DIR / 'edge-profile', DATA_DIR / 'order_audit',
+        DATA_DIR / 'support_tunnel',
     ]
     removed = []
     for p in targets:
@@ -447,7 +463,7 @@ def consume_reset_pending() -> bool:
             DATA_DIR / 'db.sqlite3', DATA_DIR / 'db.sqlite3-wal',
             DATA_DIR / 'db.sqlite3-shm', DATA_DIR / 'pgdata', ENV_FILE,
             SECRET_FILE, FERNET_FILE, DEVICE_FILE, STATE_FILE, CREDS_FILE,
-            DATA_DIR / 'order_audit',
+            DATA_DIR / 'order_audit', DATA_DIR / 'support_tunnel',
         ]
         remaining = [path for path in critical if path.exists()]
         if remaining:

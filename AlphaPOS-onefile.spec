@@ -58,7 +58,8 @@ datas = [
     ('desktop/ui', 'desktop/ui'),
     ('desktop/tos.txt', 'desktop'),
 ]
-_tuf_root = os.path.join(SPECPATH, 'update_repo', 'metadata', 'root.json')
+_tuf_root = (os.environ.get('ALPHA_POS_TUF_ROOT')
+             or os.path.join(SPECPATH, 'update_repo', 'metadata', 'root.json'))
 if os.path.exists(_tuf_root):
     datas += [(_tuf_root, 'tuf_root')]
 datas += collect_data_files('webview')
@@ -67,8 +68,11 @@ for app in APPS:
 for _pkg in ('core', 'alpha_pos_core'):
     datas += collect_data_files(_pkg, include_py_files=True)
 # Embedded Postgres (repo or parent workspace).
-_pg_candidates = [os.path.join(SPECPATH, '_pg', 'pgsql'),
-                  os.path.join(SPECPATH, '..', '_pg', 'pgsql')]
+_pg_candidates = [os.environ.get('ALPHA_POS_PGSQL_DIR'),
+                  os.path.join(SPECPATH, '_pg', 'pgsql'),
+                  os.path.join(SPECPATH, '..', '_pg', 'pgsql'),
+                  os.path.join(SPECPATH, '..', '..', '_pg', 'pgsql')]
+_pg_candidates = [c for c in _pg_candidates if c]
 _pgsql = next((c for c in _pg_candidates if os.path.isdir(c)), None)
 # Skip subtrees the embedded server never runs (see AlphaPOS.spec): pgAdmin 4 is a
 # huge web GUI we never launch, with paths deep enough to break Windows MAX_PATH.

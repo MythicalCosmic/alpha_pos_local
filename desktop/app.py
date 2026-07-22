@@ -321,6 +321,12 @@ def _graceful_update_shutdown(httpd):
         force_exit.daemon = True
         force_exit.start()
         try:
+            from desktop import order_audit, support_tunnel
+            support_tunnel.stop(timeout=5)
+            order_audit.stop_background_collector(timeout=8)
+        except Exception:  # noqa: BLE001
+            logger.exception('update shutdown: evidence/support workers stop failed')
+        try:
             control_server._API.stop_server()
         except Exception:  # noqa: BLE001
             logger.exception('update shutdown: POS server stop failed')
@@ -360,9 +366,11 @@ def _boot_worker():
     # Early UI diagnostics use the same method, so they can never win a race and
     # permanently configure settings against fallback SQLite.
     try:
-        from desktop import pg_embedded
+        from desktop import pg_embedded, support_tunnel
         control_server._API.server.ensure_django()
         atexit.register(pg_embedded.stop)
+        support_tunnel.start()
+        atexit.register(support_tunnel.stop)
     except Exception:  # noqa: BLE001
         logger.exception('boot: database/Django bootstrap failed; backend will remain offline')
         return
@@ -453,6 +461,12 @@ def main():
             pass
 
     # Window closed → stop the POS server + embedded Postgres and exit.
+    try:
+        from desktop import order_audit, support_tunnel
+        support_tunnel.stop()
+        order_audit.stop_background_collector(timeout=8)
+    except Exception:  # noqa: BLE001
+        pass
     try:
         control_server._API.stop_server()
     except Exception:  # noqa: BLE001

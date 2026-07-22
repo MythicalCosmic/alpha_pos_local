@@ -87,7 +87,8 @@ datas = [
 # bootstrap trust offline. Guarded: a build made before
 # `python tools/release.py --init` (no update_repo/ yet) still succeeds —
 # self-update simply stays disabled until the root is published.
-_tuf_root = os.path.join(SPECPATH, 'update_repo', 'metadata', 'root.json')
+_tuf_root = (os.environ.get('ALPHA_POS_TUF_ROOT')
+             or os.path.join(SPECPATH, 'update_repo', 'metadata', 'root.json'))
 if os.path.exists(_tuf_root):
     datas += [(_tuf_root, 'tuf_root')]
 else:
@@ -112,8 +113,11 @@ for _pkg in ('core', 'alpha_pos_core'):
 # a private DB (install needs no separate Postgres). Looks for _pg/pgsql in the repo
 # or the parent workspace. LARGE (~hundreds of MB); the build still succeeds without
 # it (the app then expects an external/dev Postgres).
-_pg_candidates = [os.path.join(SPECPATH, '_pg', 'pgsql'),
-                  os.path.join(SPECPATH, '..', '_pg', 'pgsql')]
+_pg_candidates = [os.environ.get('ALPHA_POS_PGSQL_DIR'),
+                  os.path.join(SPECPATH, '_pg', 'pgsql'),
+                  os.path.join(SPECPATH, '..', '_pg', 'pgsql'),
+                  os.path.join(SPECPATH, '..', '..', '_pg', 'pgsql')]
+_pg_candidates = [c for c in _pg_candidates if c]
 _pgsql = next((c for c in _pg_candidates if os.path.isdir(c)), None)
 # Skip subtrees the embedded server never runs. pgAdmin 4 alone is hundreds of MB
 # of a web GUI we never launch, and its very deep template paths blow past Windows'

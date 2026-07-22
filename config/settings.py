@@ -6,11 +6,14 @@ DB_* env. OPEN_LAN is on by default — the till serves the POS to LAN devices.
 """
 import os
 
+from desktop.version import __version__ as DESKTOP_VERSION
+
 os.environ.setdefault('DEPLOYMENT_MODE', 'local')
 # Trusted-LAN appliance: open CORS + drop CSRF host/secure-cookie enforcement so
 # arbitrary LAN devices can reach the POS. Must be set BEFORE importing the base
 # settings, whose middleware/cookie logic reads OPEN_LAN at import time.
 os.environ.setdefault('OPEN_LAN', 'True')
+os.environ.setdefault('ALPHA_POS_CLIENT_VERSION', f'alpha_pos/{DESKTOP_VERSION}')
 
 from alpha_pos_core.settings_base import *  # noqa: F401,F403
 
@@ -20,6 +23,10 @@ EDITION = 'local'
 # (shared, tables-only — its urls are not mounted), so the AUTO_POS attendance row
 # written at cashier login has a table to land in.
 INSTALLED_APPS = build_installed_apps(['customers', 'waiters', 'couriers'])  # noqa: F405
+
+# Local-only request/response evidence. It sits after authentication middleware
+# so cashier identity is available, and never ships on the cloud server edition.
+MIDDLEWARE = [*MIDDLEWARE, 'desktop.order_http_audit.OrderMutationEvidenceMiddleware']  # noqa: F405
 
 ROOT_URLCONF = 'config.urls'
 WSGI_APPLICATION = 'config.wsgi.application'

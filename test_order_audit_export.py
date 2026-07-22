@@ -1,4 +1,5 @@
 import json
+import gzip
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -7,8 +8,10 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
+from django.http import JsonResponse
+from django.test import RequestFactory
 
-from desktop import bridge, order_audit
+from desktop import bridge, order_audit, order_http_audit
 
 
 class Rows(list):
@@ -63,6 +66,142 @@ def test_default_toggle_is_on_when_setting_is_absent(monkeypatch):
     assert order_audit._enabled_from_state() is True
 
 
+def test_default_automatic_delivery_is_on_when_setting_is_absent(monkeypatch):
+    monkeypatch.undo()
+    monkeypatch.setattr(order_audit.config_store, 'read_state', lambda: {})
+    assert order_audit._auto_send_enabled_from_state() is True
+
+
+def test_database_faithful_rows_keep_all_columns_and_redact_credentials():
+    class Field:
+        def __init__(self, name, *, attname=None, is_relation=False):
+            self.name = name
+            self.attname = attname or name
+            self.is_relation = is_relation
+
+    obj = _row(
+        id=17,
+        total_amount=Decimal('639400.00'),
+        provider_payload={'receipt': 'abc', 'api_token': 'must-not-leave'},
+        private_key='must-not-leave-either',
+    )
+    obj._meta = _row(concrete_fields=[
+        Field('id'),
+        Field('total_amount'),
+        Field('provider_payload'),
+        Field('private_key'),
+    ])
+
+    raw = order_audit._concrete_fields(obj)
+    assert raw['id'] == 17
+    assert raw['total_amount'] == '639400.00'
+    assert raw['provider_payload'] == {
+        'receipt': 'abc',
+        'api_token': '[REDACTED]',
+    }
+    assert raw['private_key'] == '[REDACTED]'
+
+
+def test_every_reverse_order_relation_is_captured_with_linked_row():
+    class Field:
+        def __init__(self, name, *, attname=None, is_relation=False):
+            self.name = name
+            self.attname = attname or name
+            self.is_relation = is_relation
+
+    courier = _row(id=9, name='Courier A', phone='998901112233')
+    courier._meta = _row(concrete_fields=[Field('id'), Field('name'), Field('phone')])
+    assignment = _row(id=5, order_id=1, courier_id=9, courier=courier, step='ON_WAY')
+    assignment._meta = _row(
+        label='couriers.DeliveryAssignment',
+        concrete_fields=[
+            Field('id'),
+            Field('order', attname='order_id', is_relation=True),
+            Field('courier', attname='courier_id', is_relation=True),
+            Field('step'),
+        ],
+    )
+    related_model = _row(_meta=assignment._meta)
+
+    class Relation:
+        @staticmethod
+        def get_accessor_name():
+            return 'courier_delivery'
+
+    Relation.related_model = related_model
+
+    order = _row(courier_delivery=assignment)
+    order._meta = _row(related_objects=[Relation()])
+
+    rows = order_audit._all_related_rows(order)
+    captured = rows['courier_delivery']['rows'][0]
+    assert captured['raw'] == {
+        'id': 5,
+        'order_id': 1,
+        'courier_id': 9,
+        'step': 'ON_WAY',
+    }
+    assert captured['linked']['courier']['phone'] == '998901112233'
+
+
+def test_free_text_and_gateway_links_never_export_embedded_credentials():
+    raw = (
+        'provider error Bearer abcdefghijklmnop token=raw-secret '
+        'https://pay.example/checkout/invoice-7?signature=signed-grant&ok=1 '
+        '123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcd'
+    )
+    scrubbed = order_audit._redact_sync_value({'error': raw})
+    rendered = json.dumps(scrubbed)
+    assert 'abcdefghijklmnop' not in rendered
+    assert 'raw-secret' not in rendered
+    assert 'signed-grant' not in rendered
+    assert 'ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcd' not in rendered
+
+    class Field:
+        name = 'link'
+        attname = 'link'
+
+    payment = _row(link='https://pay.example/checkout/grant-7?token=grant-secret')
+    payment._meta = _row(
+        label_lower='couriers.courierpayment', concrete_fields=[Field()],
+    )
+    evidence = order_audit._concrete_fields(payment)['link']
+    assert evidence['host'] == 'pay.example'
+    assert evidence['path_sha256']
+    assert evidence['path_segment_count'] == 2
+    assert evidence['sha256']
+    assert 'grant-7' not in json.dumps(evidence)
+    assert 'grant-secret' not in json.dumps(evidence)
+
+
+@pytest.mark.django_db
+def test_real_order_raw_keys_match_every_database_column_and_no_fake_shift():
+    from base.models import Order, User
+
+    user = User.objects.create(
+        first_name='Raw', last_name='Audit', email='raw-audit@example.local',
+        password='credential-must-be-redacted', role='CASHIER', status='ACTIVE',
+    )
+    order = Order.objects.create(
+        user=user, cashier=user, total_amount=Decimal('1000.00'),
+        subtotal=Decimal('1000.00'), status='PREPARING',
+        phone_number='998901234567', delivery_address='Test address',
+        description='Test note',
+    )
+    snapshot = order_audit.serialize_order(order)
+
+    expected = {field.attname for field in Order._meta.concrete_fields}
+    assert set(snapshot['raw']) == expected
+    assert 'shift_id' not in snapshot
+    assert snapshot['phone_number'] == '998901234567'
+    assert snapshot['delivery_address'] == 'Test address'
+    assert snapshot['description'] == 'Test note'
+    assert snapshot['linked_entities']['user']['password'] == '[REDACTED]'
+    assert set(snapshot['related_rows']) == {
+        relation.get_accessor_name() for relation in Order._meta.related_objects
+    }
+
+
 def test_snapshot_is_complete_append_only_and_deduplicated(tmp_path):
     collector = order_audit.OrderAuditCollector(
         dataset=tmp_path / 'orders.raw.jsonl',
@@ -103,6 +242,47 @@ def test_snapshot_is_complete_append_only_and_deduplicated(tmp_path):
         'CASH': '99000.00',
     }
     assert captured['tender_evidence']['payment_delta'] == '0.00'
+
+
+def test_records_form_a_verifiable_hash_chain(tmp_path):
+    collector = order_audit.OrderAuditCollector(
+        dataset=tmp_path / 'orders.raw.jsonl',
+        index_file=tmp_path / '.index.json',
+    )
+    collector.capture(_order(pk=1))
+    collector.capture(_order(pk=2))
+    rows = [json.loads(line) for line in collector.dataset.read_text().splitlines()]
+    assert rows[0]['integrity']['previous_record_sha256'] is None
+    assert rows[1]['integrity']['previous_record_sha256'] == (
+        rows[0]['integrity']['record_sha256']
+    )
+    for row in rows:
+        claimed = row['integrity'].pop('record_sha256')
+        canonical = json.dumps(
+            row, ensure_ascii=False, sort_keys=True, separators=(',', ':'),
+        ).encode()
+        import hashlib
+        assert hashlib.sha256(canonical).hexdigest() == claimed
+
+
+def test_restart_recovers_raw_chain_head_when_cache_lags_after_crash(tmp_path):
+    dataset = tmp_path / 'orders.raw.jsonl'
+    index = tmp_path / '.index.json'
+    collector = order_audit.OrderAuditCollector(dataset=dataset, index_file=index)
+    collector.capture(_order(pk=1))
+    cached_after_first = json.loads(index.read_text())
+    collector.capture(_order(pk=2))
+    assert json.loads(index.read_text())['record_count'] == cached_after_first['record_count']
+
+    recovered = order_audit.OrderAuditCollector(dataset=dataset, index_file=index)
+    assert recovered.status()['record_count'] == 2
+    assert recovered.status()['order_count'] == 2
+    prior = json.loads(dataset.read_text().splitlines()[-1])
+    recovered.capture(_order(pk=3))
+    latest = json.loads(dataset.read_text().splitlines()[-1])
+    assert latest['integrity']['previous_record_sha256'] == (
+        prior['integrity']['record_sha256']
+    )
 
 
 def test_external_payment_is_separate_from_drawer_but_in_combined_tender(tmp_path):
@@ -174,7 +354,7 @@ def test_direct_telegram_export_uses_local_config_and_never_leaks_token(
         order_audit.config_store, 'read_config',
         lambda: {
             'TELEGRAM_BOT_TOKEN': token,
-            'TELEGRAM_CHAT_IDS': '111111111,-100222222',
+            'ORDER_AUDIT_TELEGRAM_CHAT_IDS': '111111111,-100222222',
             'BRANCH_ID': 'restaurant-1',
         },
     )
@@ -216,12 +396,51 @@ def test_direct_telegram_export_uses_local_config_and_never_leaks_token(
 def test_direct_export_fails_clearly_without_local_credentials(monkeypatch):
     monkeypatch.setattr(
         order_audit.config_store, 'read_config',
-        lambda: {'TELEGRAM_BOT_TOKEN': '', 'TELEGRAM_CHAT_IDS': ''},
+        lambda: {
+            'TELEGRAM_BOT_TOKEN': '',
+            'ORDER_AUDIT_TELEGRAM_CHAT_IDS': '',
+        },
     )
     # Avoid a real Django settings access in the fallback for this unit test.
     monkeypatch.setitem(__import__('sys').modules, 'notifications.models', None)
     with pytest.raises(RuntimeError, match='bot token is not configured locally'):
         order_audit._telegram_credentials()
+
+
+def test_raw_evidence_never_falls_back_to_staff_notification_recipients(monkeypatch):
+    monkeypatch.setattr(
+        order_audit.config_store, 'read_config',
+        lambda: {
+            'TELEGRAM_BOT_TOKEN': '123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcd',
+            'TELEGRAM_CHAT_IDS': 'staff-chat,manager-chat',
+            'ORDER_AUDIT_TELEGRAM_CHAT_IDS': '',
+        },
+    )
+    with pytest.raises(RuntimeError, match='Dedicated order-audit Telegram chat ID'):
+        order_audit._telegram_credentials()
+
+
+def test_delivery_errors_are_per_recipient_and_unchanged_errors_do_not_fsync(
+    tmp_path, monkeypatch,
+):
+    collector = order_audit.OrderAuditCollector(
+        dataset=tmp_path / 'orders.raw.jsonl',
+        index_file=tmp_path / '.index.json',
+    )
+    flushes = []
+    monkeypatch.setattr(
+        collector, '_flush_index',
+        lambda *, force=False: flushes.append(force),
+    )
+    collector.set_auto_send_error('provider down', chat_id='owner-a')
+    collector.set_auto_send_error('provider down', chat_id='owner-a')
+    collector.set_auto_send_error('blocked', chat_id='owner-b')
+    assert len(flushes) == 2
+
+    collector.mark_delivered('owner-a', 100)
+    status = collector.status()
+    assert status['delivery_errors'] == {'owner-b': 'blocked'}
+    assert 'owner-b: blocked' in status['last_auto_send_error']
 
 
 def test_transport_error_redacts_bot_token(tmp_path, monkeypatch):
@@ -236,7 +455,7 @@ def test_transport_error_redacts_bot_token(tmp_path, monkeypatch):
         order_audit.config_store, 'read_config',
         lambda: {
             'TELEGRAM_BOT_TOKEN': token,
-            'TELEGRAM_CHAT_IDS': '111111111',
+            'ORDER_AUDIT_TELEGRAM_CHAT_IDS': '111111111',
             'BRANCH_ID': 'restaurant-1',
         },
     )
@@ -250,6 +469,165 @@ def test_transport_error_redacts_bot_token(tmp_path, monkeypatch):
     assert result['ok'] is False
     assert '[redacted-token]' in result['failed'][0]['error']
     assert token not in json.dumps(result)
+
+
+def test_incremental_export_advances_only_after_explicit_ack(tmp_path):
+    collector = order_audit.OrderAuditCollector(
+        dataset=tmp_path / 'orders.raw.jsonl',
+        index_file=tmp_path / '.index.json',
+    )
+    collector.capture(_order(pk=1))
+    collector.capture(_order(pk=2))
+
+    first, first_meta = collector.prepare_incremental_export('owner', max_bytes=1)
+    assert first is not None
+    with gzip.open(first, 'rb') as source:
+        first_raw = source.read()
+    assert first_raw.endswith(b'\n')
+    assert json.loads(first_raw)['order']['uuid'] == 'order-1'
+    assert collector.delivery_offset('owner') == 0
+
+    collector.mark_delivered('owner', first_meta['end_offset'])
+    assert collector.delivery_offset('owner') == first_meta['end_offset']
+    second, second_meta = collector.prepare_incremental_export('owner', max_bytes=1)
+    assert second is not None
+    with gzip.open(second, 'rb') as source:
+        second_raw = source.read()
+    assert json.loads(second_raw)['order']['uuid'] == 'order-2'
+    assert second_meta['start_offset'] == first_meta['end_offset']
+
+    reloaded = order_audit.OrderAuditCollector(
+        dataset=collector.dataset, index_file=collector.index_file,
+    )
+    assert reloaded.delivery_offset('owner') == first_meta['end_offset']
+
+
+def test_automatic_delivery_failure_retries_same_bytes_then_ack_advances(
+    tmp_path, monkeypatch,
+):
+    collector = order_audit.OrderAuditCollector(
+        dataset=tmp_path / 'orders.raw.jsonl',
+        index_file=tmp_path / '.index.json',
+    )
+    collector.capture(_order())
+    monkeypatch.setattr(order_audit, '_COLLECTOR', collector)
+    monkeypatch.setattr(
+        order_audit, '_telegram_credentials', lambda: ('secret-token', ['owner']),
+    )
+    monkeypatch.setattr(
+        order_audit.config_store, 'read_config',
+        lambda: {'BRANCH_ID': 'restaurant-1'},
+    )
+    monkeypatch.setattr(order_audit, '_STOP', threading.Event())
+
+    attempts = []
+    def fail_once(_token, _chat_id, path, _caption):
+        with gzip.open(path, 'rb') as source:
+            attempts.append(source.read())
+        raise RuntimeError('provider unavailable')
+
+    monkeypatch.setattr(order_audit, '_post_telegram_document', fail_once)
+    assert order_audit._deliver_pending_once() == {
+        'sent': 0, 'failed': 1, 'empty': 0,
+    }
+    assert collector.delivery_offset('owner') == 0
+
+    def succeed(_token, _chat_id, path, _caption):
+        with gzip.open(path, 'rb') as source:
+            attempts.append(source.read())
+
+    monkeypatch.setattr(order_audit, '_post_telegram_document', succeed)
+    assert order_audit._deliver_pending_once() == {
+        'sent': 1, 'failed': 0, 'empty': 0,
+    }
+    assert attempts[0] == attempts[1]
+    assert collector.delivery_offset('owner') == collector.dataset.stat().st_size
+
+
+def test_sync_lifecycle_is_fsynced_and_redacts_credentials_but_preserves_hash(
+    tmp_path, monkeypatch,
+):
+    collector = order_audit.OrderAuditCollector(
+        dataset=tmp_path / 'orders.raw.jsonl',
+        index_file=tmp_path / '.index.json',
+    )
+    monkeypatch.setattr(order_audit, '_COLLECTOR', collector)
+    order_audit._on_sync_evidence('push_http_attempt', {
+        'model_name': 'order',
+        'records': [{
+            'uuid': 'order-1', 'total_amount': '100000',
+            'password': 'never-export-this',
+            'nested': {'authorization': 'Branch secret'},
+        }],
+    })
+    row = json.loads(collector.dataset.read_text())
+    assert row['capture']['reason'] == 'push_http_attempt'
+    copied = row['event']
+    assert copied['payload_sha256']
+    record = copied['payload']['records'][0]
+    assert record['uuid'] == 'order-1'
+    assert record['total_amount'] == '100000'
+    assert record['password'] == '[REDACTED]'
+    assert record['nested']['authorization'] == '[REDACTED]'
+
+
+def test_local_order_http_request_is_fsynced_before_view_and_response_is_kept(
+    tmp_path, monkeypatch,
+):
+    collector = order_audit.OrderAuditCollector(
+        dataset=tmp_path / 'orders.raw.jsonl',
+        index_file=tmp_path / '.index.json',
+    )
+    monkeypatch.setattr(order_audit, '_COLLECTOR', collector)
+    request = RequestFactory().post(
+        '/orders/create',
+        data=json.dumps({
+            'items': [{'product_id': 7, 'quantity': 2}],
+            'total_amount': '639400',
+            'secret_word': 'do-not-export',
+        }),
+        content_type='application/json',
+        HTTP_IDEMPOTENCY_KEY='checkout-action-1',
+    )
+    request.user = _row(
+        is_authenticated=True, pk=4, uuid='cashier-4', role='CASHIER',
+        email='cashier@example.test',
+    )
+
+    def view(_request):
+        first = json.loads(collector.dataset.read_text().splitlines()[0])
+        assert first['capture']['reason'] == 'order_http_request_received'
+        return JsonResponse({'success': False, 'error': {'message': 'declined'}}, status=409)
+
+    response = order_http_audit.OrderMutationEvidenceMiddleware(view)(request)
+    assert response.status_code == 409
+    rows = [json.loads(line) for line in collector.dataset.read_text().splitlines()]
+    assert len(rows) == 2
+    received = rows[0]['event']['payload']
+    completed = rows[1]['event']['payload']
+    assert received['body']['json']['total_amount'] == '639400'
+    assert received['body']['json']['secret_word'] == '[REDACTED]'
+    assert received['idempotency_key']['present'] is True
+    assert received['idempotency_key']['sha256']
+    assert 'checkout-action-1' not in json.dumps(received)
+    assert completed['status_code'] == 409
+    assert completed['user']['id'] == 4
+    assert completed['response']['json']['error']['message'] == 'declined'
+
+
+def test_local_http_path_evidence_masks_qr_and_claim_credentials():
+    qr_token = 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789'
+    qr_request = RequestFactory().post(f'/api/qr/order/{qr_token}/')
+    qr = order_http_audit._path_evidence(qr_request)
+    assert qr['safe_path'] == '/api/qr/order/:opaque/'
+    assert qr['sha256']
+    assert qr_token not in json.dumps(qr)
+
+    claim = 'd9428888-122b-41e1-b85c-61b074fc6f39'
+    claim_request = RequestFactory().post(f'/orders/print-jobs/{claim}/ack')
+    claim_evidence = order_http_audit._path_evidence(claim_request)
+    assert claim_evidence['safe_path'] == '/orders/print-jobs/:opaque/ack'
+    assert claim not in json.dumps(claim_evidence)
 
 
 def test_collector_stop_joins_writer_before_reset(monkeypatch):

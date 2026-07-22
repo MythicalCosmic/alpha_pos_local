@@ -30,6 +30,7 @@ db.sqlite3
 /staticfiles/
 /media/
 /order_audit/
+/DELIVERABLES/*Support-Config.json
 
 # Secrets
 .env

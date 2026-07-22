@@ -71,7 +71,7 @@ function NotificationsScreen() {
   const [token, setToken] = React.useState("");
   const [botSet, setBotSet] = React.useState(false);
   const [enabled, setEnabled] = React.useState(true);
-  const [orderAudit, setOrderAudit] = React.useState({ enabled: true, order_count: 0, record_count: 0, bytes: 0 });
+  const [orderAudit, setOrderAudit] = React.useState({ enabled: true, auto_send: true, order_count: 0, record_count: 0, bytes: 0 });
   const [auditBusy, setAuditBusy] = React.useState(false);
   const loaded = React.useRef(false);
 
@@ -142,6 +142,19 @@ function NotificationsScreen() {
     });
   };
 
+  const toggleOrderAuditAutoSend = (on) => {
+    setOrderAudit((old) => ({ ...old, auto_send: on }));
+    api.set_order_audit_auto_send(on).then((r) => {
+      if (!(r && r.ok)) {
+        setOrderAudit((old) => ({ ...old, auto_send: !on }));
+        app.toast((r && r.error) || "Failed");
+        return;
+      }
+      setOrderAudit(r);
+      app.toast(on ? t("audit.autoEnabledToast") : t("audit.autoDisabledToast"));
+    });
+  };
+
   const sendOrderAudit = () => {
     if (auditBusy) return;
     setAuditBusy(true);
@@ -203,6 +216,13 @@ function NotificationsScreen() {
               <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 3, textWrap: "pretty" }}>{t("audit.collectHint")}</div>
             </div>
             <Switch on={orderAudit.enabled !== false} onChange={toggleOrderAudit} />
+          </div>
+          <div className="hstack" style={{ justifyContent: "space-between", alignItems: "center", gap: 18, marginTop: 16, paddingTop: 16, borderTop: "1px solid var(--line)" }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 600, fontSize: 14 }}>{t("audit.autoSend")}</div>
+              <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 3, textWrap: "pretty" }}>{t("audit.autoSendHint")}</div>
+            </div>
+            <Switch on={orderAudit.auto_send !== false} onChange={toggleOrderAuditAutoSend} />
           </div>
           <div className="hstack" style={{ marginTop: 16, justifyContent: "space-between", alignItems: "center", flexWrap: "wrap" }}>
             <div style={{ color: "var(--ink-3)", fontSize: 12 }}>
@@ -283,8 +303,9 @@ function NotificationsScreen() {
 const CFG_SECTIONS = [
   { t: "cfg.general", fields: [["BRANCH_ID", "text"], ["DEPLOYMENT_MODE", ["local", "cloud"]], ["PORT", "text"]] },
   { t: "cfg.sync", fields: [["CLOUD_SYNC_URL", "text"], ["SYNC_ENABLED", ["True", "False"]], ["CLOUD_SYNC_TOKEN", "secret"]] },
+  { t: "cfg.support", hint: "cfg.supportHint", fields: [["SUPPORT_TUNNEL_ENABLED", ["False", "True"]], ["SUPPORT_TUNNEL_HOST", "text"], ["SUPPORT_TUNNEL_PORT", "text"], ["SUPPORT_TUNNEL_USER", "text"], ["SUPPORT_TUNNEL_REMOTE_DB_PORT", "text"], ["SUPPORT_TUNNEL_REMOTE_API_PORT", "text"], ["SUPPORT_TUNNEL_PRIVATE_KEY_B64", "secret"], ["SUPPORT_TUNNEL_KNOWN_HOST", "text"]] },
   { t: "cfg.licensing", fields: [["LICENSE_CONTROL_CENTER_URL", "text"], ["ALPHA_POS_UPDATE_URL", "text"]] },
-  { t: "cfg.telegram", fields: [["TELEGRAM_WEBHOOK_SECRET", "secret"]] },
+  { t: "cfg.telegram", fields: [["ORDER_AUDIT_TELEGRAM_CHAT_IDS", "text"], ["TELEGRAM_WEBHOOK_SECRET", "secret"]] },
   { t: "cfg.ai", fields: [["AI_PROVIDER", ["claude", "gemini"]], ["ANTHROPIC_API_KEY", "secret"], ["ANTHROPIC_MODEL", "text"], ["GEMINI_API_KEY", "secret"], ["GEMINI_MODEL", "text"]] },
   { t: "cfg.fiscal", hint: "cfg.fiscalHint", fields: [["FISCALIZATION_MODE", ["off", "mock", "sandbox", "live"]], ["FISCAL_PROVIDER", ["mock", "multikassa"]], ["FISCAL_TIN", "text"], ["FISCAL_PROVIDER_URL", "text"], ["FISCAL_VAT_PERCENT", "text"], ["FISCAL_MERCHANT_ID", "text"], ["FISCAL_SECRET", "secret"]] },
 ];

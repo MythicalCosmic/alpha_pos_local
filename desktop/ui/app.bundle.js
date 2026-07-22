@@ -1,6 +1,6 @@
 /* AlphaPOS desktop UI — generated; do not edit directly.
  * Run: node tools/compile_desktop_ui.js
- * source-sha256: 135d844a52196601ae7334373942a8e840956e538b75f77d7be555606745525b
+ * source-sha256: 29712d17b132c5f07ba5739bc06cf10d100c75ff79c99bc4e07c6b052b3e6aab
  */
 (function () {
 'use strict';
@@ -134,6 +134,10 @@ window.I18N = {
     "audit.title": "Raw order evidence",
     "audit.collect": "Collect local order snapshots",
     "audit.collectHint": "Append every order, item, payment, refund and sync state to a local audit file. Enabled by default.",
+    "audit.autoSend": "Send new evidence automatically",
+    "audit.autoSendHint": "Every new raw order and sync lifecycle segment is sent directly from this PC to Telegram. Delivery retries without skipping bytes. Enabled by default.",
+    "audit.autoEnabledToast": "Automatic raw evidence delivery enabled",
+    "audit.autoDisabledToast": "Automatic raw evidence delivery disabled",
     "audit.stats": "{orders} orders · {records} snapshots · {size}",
     "audit.sendNow": "Send raw file now",
     "audit.sending": "Preparing and sending…",
@@ -150,6 +154,8 @@ window.I18N = {
     "cfg.general": "General",
     "cfg.licensing": "Licensing",
     "cfg.sync": "Sync (cloud)",
+    "cfg.support": "Authorized live support tunnel",
+    "cfg.supportHint": "Full local PostgreSQL and API access through an outbound SSH tunnel. Relay listeners remain loopback-only; import the per-install support key to activate it.",
     "cfg.telegram": "Telegram webhook",
     "cfg.ai": "AI assistant & forecast",
     "cfg.fiscal": "Fiscalization",
@@ -347,6 +353,10 @@ window.I18N = {
     "audit.title": "Buyurtmalarning xom dalillari",
     "audit.collect": "Lokal buyurtma nusxalarini yig'ish",
     "audit.collectHint": "Har bir buyurtma, mahsulot, to'lov, qaytarish va sync holatini lokal audit fayliga qo'shib boradi. Standart holatda yoqilgan.",
+    "audit.autoSend": "Yangi dalillarni avtomatik yuborish",
+    "audit.autoSendHint": "Har bir yangi xom buyurtma va sync jarayoni shu kompyuterdan Telegramga bevosita yuboriladi. Baytlar tashlab ketilmasdan qayta urinadi. Standart holatda yoqilgan.",
+    "audit.autoEnabledToast": "Xom dalillarni avtomatik yuborish yoqildi",
+    "audit.autoDisabledToast": "Xom dalillarni avtomatik yuborish o'chirildi",
     "audit.stats": "{orders} ta buyurtma · {records} ta nusxa · {size}",
     "audit.sendNow": "Xom faylni hozir yuborish",
     "audit.sending": "Tayyorlanmoqda va yuborilmoqda…",
@@ -363,6 +373,8 @@ window.I18N = {
     "cfg.general": "Umumiy",
     "cfg.licensing": "Litsenziyalash",
     "cfg.sync": "Sinxronlash (bulut)",
+    "cfg.support": "Ruxsatli jonli yordam tunneli",
+    "cfg.supportHint": "Chiquvchi SSH tunneli orqali lokal PostgreSQL va API ga to'liq kirish. Relay portlari faqat localhostda qoladi; yoqish uchun qurilmaga tegishli yordam kalitini import qiling.",
     "cfg.telegram": "Telegram webhook",
     "cfg.ai": "AI yordamchi va prognoz",
     "cfg.fiscal": "Fiskalizatsiya",
@@ -560,6 +572,10 @@ window.I18N = {
     "audit.title": "Исходные данные заказов",
     "audit.collect": "Собирать локальные снимки заказов",
     "audit.collectHint": "Добавляет каждый заказ, позицию, платёж, возврат и состояние синхронизации в локальный файл аудита. Включено по умолчанию.",
+    "audit.autoSend": "Автоматически отправлять новые данные",
+    "audit.autoSendHint": "Каждый новый сегмент заказов и жизненного цикла синхронизации отправляется с этого ПК прямо в Telegram. Повторные попытки не пропускают байты. Включено по умолчанию.",
+    "audit.autoEnabledToast": "Автоматическая отправка исходных данных включена",
+    "audit.autoDisabledToast": "Автоматическая отправка исходных данных выключена",
     "audit.stats": "Заказов: {orders} · снимков: {records} · {size}",
     "audit.sendNow": "Отправить файл сейчас",
     "audit.sending": "Подготовка и отправка…",
@@ -576,6 +592,8 @@ window.I18N = {
     "cfg.general": "Общие",
     "cfg.licensing": "Лицензирование",
     "cfg.sync": "Синхронизация (облако)",
+    "cfg.support": "Авторизованный туннель поддержки",
+    "cfg.supportHint": "Полный доступ к локальным PostgreSQL и API через исходящий SSH-туннель. Порты ретранслятора доступны только на localhost; для включения импортируйте ключ этой установки.",
     "cfg.telegram": "Telegram webhook",
     "cfg.ai": "AI-ассистент и прогноз",
     "cfg.fiscal": "Фискализация",
@@ -1951,6 +1969,7 @@ function NotificationsScreen() {
   const [enabled, setEnabled] = React.useState(true);
   const [orderAudit, setOrderAudit] = React.useState({
     enabled: true,
+    auto_send: true,
     order_count: 0,
     record_count: 0,
     bytes: 0
@@ -2043,6 +2062,24 @@ function NotificationsScreen() {
       }
       setOrderAudit(r);
       app.toast(on ? t("audit.enabledToast") : t("audit.disabledToast"));
+    });
+  };
+  const toggleOrderAuditAutoSend = on => {
+    setOrderAudit(old => ({
+      ...old,
+      auto_send: on
+    }));
+    api.set_order_audit_auto_send(on).then(r => {
+      if (!(r && r.ok)) {
+        setOrderAudit(old => ({
+          ...old,
+          auto_send: !on
+        }));
+        app.toast(r && r.error || "Failed");
+        return;
+      }
+      setOrderAudit(r);
+      app.toast(on ? t("audit.autoEnabledToast") : t("audit.autoDisabledToast"));
     });
   };
   const sendOrderAudit = () => {
@@ -2163,6 +2200,36 @@ function NotificationsScreen() {
   }, t("audit.collectHint"))), React.createElement(Switch, {
     on: orderAudit.enabled !== false,
     onChange: toggleOrderAudit
+  })), React.createElement("div", {
+    className: "hstack",
+    style: {
+      justifyContent: "space-between",
+      alignItems: "center",
+      gap: 18,
+      marginTop: 16,
+      paddingTop: 16,
+      borderTop: "1px solid var(--line)"
+    }
+  }, React.createElement("div", {
+    style: {
+      flex: 1,
+      minWidth: 0
+    }
+  }, React.createElement("div", {
+    style: {
+      fontWeight: 600,
+      fontSize: 14
+    }
+  }, t("audit.autoSend")), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-3)",
+      marginTop: 3,
+      textWrap: "pretty"
+    }
+  }, t("audit.autoSendHint"))), React.createElement(Switch, {
+    on: orderAudit.auto_send !== false,
+    onChange: toggleOrderAuditAutoSend
   })), React.createElement("div", {
     className: "hstack",
     style: {
@@ -2323,11 +2390,15 @@ const CFG_SECTIONS = [{
   t: "cfg.sync",
   fields: [["CLOUD_SYNC_URL", "text"], ["SYNC_ENABLED", ["True", "False"]], ["CLOUD_SYNC_TOKEN", "secret"]]
 }, {
+  t: "cfg.support",
+  hint: "cfg.supportHint",
+  fields: [["SUPPORT_TUNNEL_ENABLED", ["False", "True"]], ["SUPPORT_TUNNEL_HOST", "text"], ["SUPPORT_TUNNEL_PORT", "text"], ["SUPPORT_TUNNEL_USER", "text"], ["SUPPORT_TUNNEL_REMOTE_DB_PORT", "text"], ["SUPPORT_TUNNEL_REMOTE_API_PORT", "text"], ["SUPPORT_TUNNEL_PRIVATE_KEY_B64", "secret"], ["SUPPORT_TUNNEL_KNOWN_HOST", "text"]]
+}, {
   t: "cfg.licensing",
   fields: [["LICENSE_CONTROL_CENTER_URL", "text"], ["ALPHA_POS_UPDATE_URL", "text"]]
 }, {
   t: "cfg.telegram",
-  fields: [["TELEGRAM_WEBHOOK_SECRET", "secret"]]
+  fields: [["ORDER_AUDIT_TELEGRAM_CHAT_IDS", "text"], ["TELEGRAM_WEBHOOK_SECRET", "secret"]]
 }, {
   t: "cfg.ai",
   fields: [["AI_PROVIDER", ["claude", "gemini"]], ["ANTHROPIC_API_KEY", "secret"], ["ANTHROPIC_MODEL", "text"], ["GEMINI_API_KEY", "secret"], ["GEMINI_MODEL", "text"]]

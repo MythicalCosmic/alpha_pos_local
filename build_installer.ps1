@@ -18,10 +18,11 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $root
 
-# Prefer .venv-build, then a local .venv, then the workspace venv one level up.
-$venv = @('.venv-build', '.venv', '..\.venv') |
+# Prefer .venv-build, then a local .venv, then workspace venvs one or two
+# levels up (the second form is used by isolated git worktrees).
+$venv = @('.venv-build', '.venv', '..\.venv', '..\..\.venv') |
     Where-Object { Test-Path (Join-Path $root "$_\Scripts\python.exe") } | Select-Object -First 1
-if (-not $venv) { throw "No build venv found (.venv-build / .venv / ..\.venv)." }
+if (-not $venv) { throw "No build venv found (.venv-build / .venv / ..\.venv / ..\..\.venv)." }
 Write-Host "Using build venv: $venv" -ForegroundColor DarkCyan
 $py = Join-Path $root "$venv\Scripts\python.exe"
 $pyinstaller = Join-Path $root "$venv\Scripts\pyinstaller.exe"
@@ -32,6 +33,23 @@ $iscc = @("$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
         Where-Object { Test-Path $_ } | Select-Object -First 1
 
 $env:SECRET_KEY = 'build-time-secret'; $env:DEBUG = 'True'
+
+# Resolve large/trusted release inputs explicitly. A successful executable that
+# silently lacks PostgreSQL or the TUF root is not a valid Alpha POS release.
+$pgsql = @((Join-Path $root '_pg\pgsql'),
+           (Join-Path $root '..\_pg\pgsql'),
+           (Join-Path $root '..\..\_pg\pgsql')) |
+         Where-Object { Test-Path $_ -PathType Container } | Select-Object -First 1
+if (-not $pgsql) { throw "Embedded PostgreSQL not found at _pg/pgsql up to two workspace levels above." }
+$tufRoot = @((Join-Path $root 'update_repo\metadata\root.json'),
+             (Join-Path $root '..\alpha_pos_local\update_repo\metadata\root.json'),
+             (Join-Path $root '..\..\alpha_pos_local\update_repo\metadata\root.json')) |
+           Where-Object { Test-Path $_ -PathType Leaf } | Select-Object -First 1
+if (-not $tufRoot) { throw "Trusted TUF root.json not found; refusing to build an app with updates disabled." }
+$env:ALPHA_POS_PGSQL_DIR = (Resolve-Path $pgsql).Path
+$env:ALPHA_POS_TUF_ROOT = (Resolve-Path $tufRoot).Path
+Write-Host "Embedded PostgreSQL: $env:ALPHA_POS_PGSQL_DIR" -ForegroundColor DarkCyan
+Write-Host "Trusted update root: $env:ALPHA_POS_TUF_ROOT" -ForegroundColor DarkCyan
 
 # Keep the Python app, signed update bundle, and Windows installer on exactly
 # the same version. desktop/version.py is the release source of truth; the

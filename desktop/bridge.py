@@ -92,6 +92,12 @@ class Api:
             else:
                 clean[k] = v
         config_store.write_config(clean)
+        if any(str(key).startswith('SUPPORT_TUNNEL_') for key in clean):
+            try:
+                from desktop import support_tunnel
+                support_tunnel.restart()
+            except Exception:  # noqa: BLE001
+                logger.exception('live support tunnel config apply failed')
         try:
             self.server.ensure_django()
             # Fiscal mode is a live cache toggle — applies without a restart.
@@ -167,6 +173,12 @@ class Api:
         if not clean:
             return {'ok': False, 'error': 'No recognised settings in the file'}
         config_store.write_config(clean)
+        if any(str(key).startswith('SUPPORT_TUNNEL_') for key in clean):
+            try:
+                from desktop import support_tunnel
+                support_tunnel.restart()
+            except Exception:  # noqa: BLE001
+                logger.exception('imported support tunnel config apply failed')
         return {'ok': True, 'imported': sorted(clean),
                 'restart_required': self.server.is_running()}
 
@@ -404,6 +416,13 @@ class Api:
         except Exception:  # noqa: BLE001
             logger.exception('stop during factory reset failed')
             return {'ok': False, 'error': 'Could not stop the database safely.'}
+        try:
+            from desktop import support_tunnel
+            if not support_tunnel.stop(timeout=8):
+                return {'ok': False, 'error': 'Support tunnel is still stopping.'}
+        except Exception:  # noqa: BLE001
+            logger.exception('support tunnel stop during factory reset failed')
+            return {'ok': False, 'error': 'Could not stop support tunnel safely.'}
         # The audit collector owns its own thread-local Django connection and
         # can append/recreate evidence independently of uvicorn. It must be
         # fully joined before the destructive wipe can be considered complete.
@@ -433,6 +452,11 @@ class Api:
     @_safe
     def server_status(self):
         return {'ok': True, **self.server.status()}
+
+    @_safe
+    def support_tunnel_status(self):
+        from desktop import support_tunnel
+        return {'ok': True, **support_tunnel.status()}
 
     @_safe
     def test_server_connection(self):
@@ -684,6 +708,14 @@ class Api:
         from desktop import order_audit
         order_audit.start_background_collector()
         return {'ok': True, **order_audit.set_enabled(bool(on))}
+
+    @_safe
+    def set_order_audit_auto_send(self, on):
+        """Persist automatic direct-to-Telegram delivery (default ON)."""
+        self.server.ensure_django()
+        from desktop import order_audit
+        order_audit.start_background_collector()
+        return {'ok': True, **order_audit.set_auto_send(bool(on))}
 
     @_safe
     def send_order_audit_now(self):
