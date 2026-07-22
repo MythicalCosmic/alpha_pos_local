@@ -616,7 +616,10 @@ def test_local_order_http_request_is_fsynced_before_view_and_response_is_kept(
 
 
 def test_local_http_path_evidence_masks_qr_and_claim_credentials():
-    qr_token = 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789'
+    qr_token = (
+        'd9428888-122b-41e1-b85c-61b074fc6f39:'
+        'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789'
+    )
     qr_request = RequestFactory().post(f'/api/qr/order/{qr_token}/')
     qr = order_http_audit._path_evidence(qr_request)
     assert qr['safe_path'] == '/api/qr/order/:opaque/'

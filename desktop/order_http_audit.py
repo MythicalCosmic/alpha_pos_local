@@ -24,7 +24,7 @@ _UUID_PATH_SEGMENT_RE = re.compile(
     r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
     re.IGNORECASE,
 )
-_OPAQUE_PATH_SEGMENT_RE = re.compile(r'^[A-Za-z0-9._~-]{20,}$')
+_OPAQUE_PATH_SEGMENT_RE = re.compile(r'^[A-Za-z0-9._~:-]{20,}$')
 
 
 def _now() -> str:
@@ -43,9 +43,15 @@ def _path_evidence(request) -> dict[str, Any]:
     """Keep route shape and correlation hash, never an opaque URL credential."""
     raw = str(getattr(request, 'path', '') or '')
     safe_segments = []
-    for segment in raw.split('/'):
+    segments = raw.split('/')
+    for index, segment in enumerate(segments):
+        prefix = '/'.join(segments[max(0, index - 3):index]).lower()
+        route_secret = prefix.endswith('api/qr/order') or prefix.endswith(
+            'orders/print-jobs'
+        )
         if (
-            _UUID_PATH_SEGMENT_RE.fullmatch(segment)
+            route_secret
+            or _UUID_PATH_SEGMENT_RE.fullmatch(segment)
             or _OPAQUE_PATH_SEGMENT_RE.fullmatch(segment)
         ):
             safe_segments.append(':opaque')
