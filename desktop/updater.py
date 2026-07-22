@@ -643,16 +643,20 @@ def _install_worker() -> None:
             )
             if not helper_started:
                 raise RuntimeError("The signed update could not be staged for installation.")
-        except Exception as exc:  # noqa: BLE001 - current version must remain usable
+        except (Exception, SystemExit) as exc:  # current version must remain usable
             logger.exception("self-update failed; current install was left intact")
+            detail = str(exc).strip() or (
+                "The signed update process stopped unexpectedly. "
+                "The current version was left intact; try again."
+            )
             state["last_check_ok"] = False
-            state["last_check_error"] = str(exc)
+            state["last_check_error"] = detail
             _save_state(state)
             _clear_pending()
             _set_runtime(
                 active=False,
                 phase="error",
-                message=str(exc),
+                message=detail,
                 retryable=True,
             )
         finally:
@@ -680,12 +684,25 @@ def start_update() -> dict:
             target_version=None,
             retryable=False,
         )
-        _UPDATE_THREAD = threading.Thread(
+        thread = threading.Thread(
             target=_install_worker,
             name="signed-update",
             daemon=True,
         )
-        _UPDATE_THREAD.start()
+        _UPDATE_THREAD = thread
+        try:
+            thread.start()
+        except Exception as exc:  # noqa: BLE001 - do not strand the modal busy
+            _UPDATE_THREAD = None
+            detail = str(exc).strip() or "The update worker could not start."
+            _RUNTIME.update(
+                active=False,
+                phase="error",
+                message=detail,
+                retryable=True,
+            )
+            logger.exception("could not start signed-update worker")
+            return {"started": False, "message": detail, "error": detail}
     return {"started": True, "message": "Update started."}
 
 

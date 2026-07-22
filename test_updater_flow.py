@@ -361,6 +361,57 @@ def test_install_refresh_system_exit_cleans_stage_and_releases_modal(
     assert not (data / updater._PENDING_MARKER).exists()
 
 
+def test_download_system_exit_cleans_stage_and_releases_modal(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    stage = tmp_path / "stage"
+    stage.mkdir()
+
+    class Client:
+        @staticmethod
+        def check_for_updates():
+            return SimpleNamespace(version="2.4.0")
+
+        @staticmethod
+        def download_and_apply_update(**_kwargs):
+            raise SystemExit('target verification aborted')
+
+    monkeypatch.setattr(updater, "_data_dir", lambda: data)
+    monkeypatch.setattr(updater, "_enabled", lambda: (True, "ok"))
+    monkeypatch.setattr(updater, "_new_stage_dir", lambda: stage)
+    monkeypatch.setattr(updater, "_make_client", lambda **_kwargs: Client())
+    monkeypatch.setattr(updater, "_SHUTDOWN_CALLBACK", mock.Mock())
+    updater._set_runtime(active=True)
+
+    updater._install_worker()
+
+    status = updater._runtime_snapshot()
+    assert status["active"] is False
+    assert status["phase"] == "error"
+    assert status["retryable"] is True
+    assert "target verification aborted" in status["message"]
+    assert not stage.exists()
+    assert not (data / updater._PENDING_MARKER).exists()
+
+
+def test_thread_start_failure_does_not_leave_update_modal_busy(monkeypatch):
+    class BrokenThread:
+        @staticmethod
+        def start():
+            raise RuntimeError('thread runtime unavailable')
+
+    monkeypatch.setattr(updater.threading, 'Thread', lambda **_kwargs: BrokenThread())
+
+    result = updater.start_update()
+
+    assert result['started'] is False
+    assert 'thread runtime unavailable' in result['error']
+    status = updater._runtime_snapshot()
+    assert status['active'] is False
+    assert status['phase'] == 'error'
+    assert status['retryable'] is True
+
+
 @pytest.mark.parametrize(
     "failure",
     [

@@ -252,27 +252,41 @@ def _supervisor() -> None:
     global _PROCESS, _LAST_ERROR, _LAST_CONNECTED_AT, _LAST_EXIT_CODE
     backoff = 3
     while not _STOP.is_set():
-        settings = _settings()
-        if not settings['enabled']:
-            _STOP.wait(5)
-            continue
+        connected_started: float | None = None
         try:
+            # Config can be temporarily unavailable while the control panel is
+            # atomically replacing .env or while an operator repairs a damaged
+            # file. Reading it outside this boundary used to kill the supervisor
+            # permanently, so the tunnel never returned until Alpha POS itself
+            # was restarted.
+            settings = _settings()
+            if not settings['enabled']:
+                with _LOCK:
+                    _LAST_ERROR = ''
+                backoff = 3
+                _STOP.wait(5)
+                continue
             process = _hidden_popen(_command(settings))
             with _LOCK:
                 _PROCESS = process
                 _LAST_ERROR = ''
                 _LAST_CONNECTED_AT = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
-            backoff = 3
+                _LAST_EXIT_CODE = None
+            connected_started = time.monotonic()
             while not _STOP.wait(1):
                 code = process.poll()
                 if code is None:
                     continue
-                _LAST_EXIT_CODE = code
                 _, stderr = process.communicate(timeout=1)
-                _LAST_ERROR = str(stderr or f'ssh exited with code {code}')[-500:]
+                with _LOCK:
+                    _LAST_EXIT_CODE = code
+                    _LAST_ERROR = str(
+                        stderr or f'ssh exited with code {code}'
+                    )[-500:]
                 break
         except Exception as exc:  # noqa: BLE001 - reconnect loop owns failures
-            _LAST_ERROR = str(exc)[:500]
+            with _LOCK:
+                _LAST_ERROR = str(exc)[:500]
             logger.warning('support tunnel unavailable: %s', _LAST_ERROR)
         finally:
             with _LOCK:
@@ -286,7 +300,14 @@ def _supervisor() -> None:
                     process.kill()
         if not _STOP.is_set():
             _STOP.wait(backoff)
-            backoff = min(backoff * 2, 60)
+            # Fast authentication/config/forward failures back off instead of
+            # spawning ssh every three seconds forever. A connection that stayed
+            # healthy for a minute resets recovery to the fast first retry.
+            stable = (
+                connected_started is not None
+                and time.monotonic() - connected_started >= 60
+            )
+            backoff = 3 if stable else min(backoff * 2, 60)
 
 
 def start() -> bool:
@@ -320,8 +341,36 @@ def stop(*, timeout: float = 8.0) -> bool:
 
 
 def restart() -> bool:
-    stop()
-    return start()
+    if stop():
+        return start()
+
+    # A config save can arrive while ssh is inside a bounded Windows/OpenSSH
+    # call and outlive the UI's stop timeout. Clearing _STOP immediately would
+    # let the old supervisor keep running with stale ports/credentials; simply
+    # returning leaves support down forever once it eventually exits. Finish the
+    # handoff off the request thread and start exactly one fresh supervisor after
+    # the old one has really quiesced.
+    with _LOCK:
+        old_thread = _THREAD
+
+    def restart_after_join() -> None:
+        global _THREAD
+        if old_thread is not None:
+            old_thread.join(30)
+        if old_thread is not None and old_thread.is_alive():
+            logger.error('support tunnel did not stop; restart was not attempted')
+            return
+        with _LOCK:
+            if _THREAD is old_thread:
+                _THREAD = None
+        start()
+
+    threading.Thread(
+        target=restart_after_join,
+        name='support-tunnel-restart',
+        daemon=True,
+    ).start()
+    return True
 
 
 def status() -> dict[str, Any]:

@@ -2,6 +2,7 @@ import base64
 import os
 import shutil
 import subprocess
+import threading
 
 import pytest
 
@@ -141,3 +142,64 @@ def test_known_host_acl_hardening_failure_removes_pin(tmp_path, monkeypatch):
 
     assert calls == 2
     assert not (tmp_path / 'known_hosts').exists()
+
+
+def test_supervisor_recovers_after_transient_config_read_failure(monkeypatch):
+    class StopAfterDisabledPoll:
+        def __init__(self):
+            self.stopped = False
+            self.waits = []
+
+        def is_set(self):
+            return self.stopped
+
+        def wait(self, delay):
+            self.waits.append(delay)
+            if delay == 5:
+                self.stopped = True
+                return True
+            return False
+
+    attempts = []
+
+    def settings():
+        attempts.append('read')
+        if len(attempts) == 1:
+            raise RuntimeError('temporary .env sharing violation')
+        return {'enabled': False}
+
+    stop = StopAfterDisabledPoll()
+    monkeypatch.setattr(support_tunnel, '_STOP', stop)
+    monkeypatch.setattr(support_tunnel, '_settings', settings)
+    monkeypatch.setattr(support_tunnel, '_PROCESS', None)
+    monkeypatch.setattr(support_tunnel, '_LAST_ERROR', '')
+
+    support_tunnel._supervisor()
+
+    assert attempts == ['read', 'read']
+    assert stop.waits == [3, 5]
+    assert support_tunnel._LAST_ERROR == ''
+
+
+def test_restart_waits_for_slow_old_supervisor_then_restarts(monkeypatch):
+    restarted = threading.Event()
+
+    class SlowOldThread:
+        alive = True
+
+        def join(self, _timeout):
+            self.alive = False
+
+        def is_alive(self):
+            return self.alive
+
+    old = SlowOldThread()
+    monkeypatch.setattr(support_tunnel, '_THREAD', old)
+    monkeypatch.setattr(support_tunnel, 'stop', lambda **_kwargs: False)
+    monkeypatch.setattr(
+        support_tunnel, 'start', lambda: restarted.set() or True,
+    )
+
+    assert support_tunnel.restart() is True
+    assert restarted.wait(1)
+    assert support_tunnel._THREAD is None

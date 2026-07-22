@@ -51,15 +51,11 @@ def _load_or_make_token() -> str:
         from desktop import config_store
         tf = config_store.DATA_DIR / '.control_token'
         if tf.exists():
-            tok = tf.read_text(encoding='utf-8').strip()
+            tok = config_store._read_text(tf, label='control-panel token').strip()
             if tok:
                 return tok
         tok = secrets.token_urlsafe(32)
-        tf.write_text(tok + '\n', encoding='utf-8')
-        try:
-            os.chmod(tf, 0o600)
-        except OSError:
-            pass
+        config_store._write_protected(tf, tok + '\n')
         return tok
     except Exception:  # noqa: BLE001 — never block the panel on token persistence
         return secrets.token_urlsafe(32)

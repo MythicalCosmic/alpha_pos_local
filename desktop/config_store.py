@@ -11,12 +11,16 @@ between installs.
 """
 from __future__ import annotations
 
+import csv
+import io
 import json
 import logging
 import os
 import re
 import secrets
+import shutil
 import string
+import subprocess
 import sys
 import tempfile
 import threading
@@ -32,7 +36,11 @@ class ConfigError(RuntimeError):
 
 
 _IO_LOCK = threading.RLock()
+_ACL_LOCK = threading.RLock()
 _ENV_KEY_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+_WINDOWS_SID_RE = re.compile(r'^S-\d+(?:-\d+)+$', re.IGNORECASE)
+_WINDOWS_SID: str | None = None
+_HARDENED_WINDOWS_PATHS: set[tuple[str, bool, bool]] = set()
 _last_env_error = ''
 _last_env_keys: tuple[str, ...] = ()
 _env_applied = False
@@ -135,6 +143,103 @@ SECRET_KEYS = {
 }
 
 
+def _windows_executable(name: str) -> str:
+    executable = shutil.which(name)
+    if executable:
+        return executable
+    candidate = Path(os.environ.get('WINDIR', r'C:\Windows')) / 'System32' / name
+    if candidate.exists():
+        return str(candidate)
+    raise ConfigError(f'{name} is required to protect desktop secrets')
+
+
+def _hidden_windows_command(command: list[str]) -> subprocess.CompletedProcess:
+    kwargs = {
+        'stdin': subprocess.DEVNULL,
+        'stdout': subprocess.PIPE,
+        'stderr': subprocess.PIPE,
+        'text': True,
+        'timeout': 10,
+        'check': False,
+    }
+    if os.name == 'nt':
+        kwargs['creationflags'] = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    return subprocess.run(command, **kwargs)
+
+
+def _current_windows_sid() -> str:
+    global _WINDOWS_SID
+    with _ACL_LOCK:
+        if _WINDOWS_SID:
+            return _WINDOWS_SID
+        result = _hidden_windows_command([
+            _windows_executable('whoami.exe'), '/user', '/fo', 'csv', '/nh',
+        ])
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or '').strip()[-300:]
+            raise ConfigError(
+                'Could not resolve the Windows account used to protect desktop secrets'
+                + (f': {detail}' if detail else '')
+            )
+        try:
+            sid = str(next(csv.reader(io.StringIO(result.stdout or '')))[1]).strip()
+        except (IndexError, StopIteration, csv.Error) as exc:
+            raise ConfigError(
+                'Could not parse the Windows account used to protect desktop secrets'
+            ) from exc
+        if not _WINDOWS_SID_RE.fullmatch(sid):
+            raise ConfigError('Windows returned an invalid account SID')
+        _WINDOWS_SID = sid
+        return sid
+
+
+def _harden_windows_private_path(
+    path: Path, *, directory: bool = False, recursive: bool = False,
+) -> None:
+    """Restrict packaged desktop data to the Windows account running Alpha POS.
+
+    POS configuration contains the cloud token, Telegram token and the private
+    support-tunnel key. ``chmod(0600)`` does not create a private Windows DACL,
+    so files below a broadly inherited profile directory remained readable by
+    other local accounts. Harden the parent before creating atomic temp files;
+    replacements then inherit the private DACL without spawning ``icacls`` on
+    every order-audit index flush.
+
+    Source checkouts are deliberately excluded so a developer test run cannot
+    rewrite repository ACLs. Packaged installs always live on the user's NTFS
+    LocalAppData volume.
+    """
+    if os.name != 'nt' or not getattr(sys, 'frozen', False):
+        return
+    path = Path(path)
+    if not path.exists():
+        return
+    try:
+        identity = str(path.resolve())
+    except OSError:
+        identity = str(path.absolute())
+    cache_key = (identity.casefold(), bool(directory), bool(recursive))
+    with _ACL_LOCK:
+        if cache_key in _HARDENED_WINDOWS_PATHS:
+            return
+        sid = _current_windows_sid()
+        rights = '(OI)(CI)F' if directory else 'F'
+        command = [
+            _windows_executable('icacls.exe'), str(path),
+            '/inheritance:r', '/grant:r', f'*{sid}:{rights}',
+        ]
+        if recursive:
+            command.extend(['/T', '/C'])
+        result = _hidden_windows_command(command)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or '').strip()[-300:]
+            raise ConfigError(
+                f'Could not restrict access to private Alpha POS data at {path}'
+                + (f': {detail}' if detail else '')
+            )
+        _HARDENED_WINDOWS_PATHS.add(cache_key)
+
+
 def _write_protected(path: Path, contents: str) -> None:
     """Atomically replace a config/secret file with restrictive permissions.
 
@@ -145,6 +250,7 @@ def _write_protected(path: Path, contents: str) -> None:
     retry handles transient Windows antivirus/indexer sharing races.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    _harden_windows_private_path(path.parent, directory=True)
     with _IO_LOCK:
         fd, tmp_name = tempfile.mkstemp(
             prefix=f'.{path.name}.', suffix='.tmp', dir=str(path.parent),
@@ -176,6 +282,8 @@ def _write_protected(path: Path, contents: str) -> None:
 
 def _read_text(path: Path, *, label: str) -> str:
     try:
+        _harden_windows_private_path(path.parent, directory=True)
+        _harden_windows_private_path(path)
         # utf-8-sig also accepts ordinary UTF-8 and strips a BOM produced by
         # common Windows editors. Never ignore decoding errors in credentials.
         return path.read_text(encoding='utf-8-sig')
@@ -660,8 +768,8 @@ def read_admin_creds() -> dict:
     (the GUI exe has no console where the bootstrap banner would appear)."""
     if CREDS_FILE.exists():
         try:
-            return json.loads(CREDS_FILE.read_text(encoding='utf-8'))
-        except (ValueError, OSError):
+            return json.loads(_read_text(CREDS_FILE, label='admin credentials'))
+        except (ValueError, ConfigError):
             return {}
     return {}
 

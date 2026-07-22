@@ -432,6 +432,37 @@ def test_config_write_is_atomic_and_round_trips_sensitive_values(monkeypatch, tm
     assert not list(tmp_path.glob('.*.tmp'))
 
 
+def test_packaged_windows_private_data_uses_owner_only_inheritable_acl(
+        monkeypatch, tmp_path):
+    private = tmp_path / 'private'
+    private.mkdir()
+    calls = []
+    config_store._HARDENED_WINDOWS_PATHS.clear()
+    monkeypatch.setattr(config_store.os, 'name', 'nt')
+    monkeypatch.setattr(config_store.sys, 'frozen', True, raising=False)
+    monkeypatch.setattr(
+        config_store, '_current_windows_sid', lambda: 'S-1-5-21-1234',
+    )
+    monkeypatch.setattr(
+        config_store, '_windows_executable', lambda name: name,
+    )
+    monkeypatch.setattr(
+        config_store, '_hidden_windows_command',
+        lambda command: calls.append(command) or subprocess.CompletedProcess(
+            command, 0, 'processed', '',
+        ),
+    )
+
+    config_store._harden_windows_private_path(
+        private, directory=True, recursive=True,
+    )
+
+    assert calls == [[
+        'icacls.exe', str(private), '/inheritance:r', '/grant:r',
+        '*S-1-5-21-1234:(OI)(CI)F', '/T', '/C',
+    ]]
+
+
 class _WaitSequence:
     def __init__(self, iterations):
         self.iterations = iterations
@@ -913,8 +944,21 @@ def test_django_never_configures_sqlite_when_postgres_verification_fails(monkeyp
     assert manager._django_ready is False
 
 
-def test_postgres_bootstrap_failure_never_starts_django_backend(monkeypatch):
+def test_postgres_bootstrap_failure_retries_without_starting_unsafe_backend(monkeypatch):
     from desktop import app
+
+    class StopAfterRetry:
+        def __init__(self):
+            self.stopped = False
+            self.delays = []
+
+        def is_set(self):
+            return self.stopped
+
+        def wait(self, delay):
+            self.delays.append(delay)
+            self.stopped = True
+            return True
 
     monkeypatch.setattr(
         control_server._API.server, 'ensure_django',
@@ -927,9 +971,83 @@ def test_postgres_bootstrap_failure_never_starts_django_backend(monkeypatch):
         app.threading, 'Thread',
         lambda *args, **kwargs: spawned.append((args, kwargs)),
     )
+    shutdown = StopAfterRetry()
 
-    app._boot_worker()
+    app._boot_worker(shutdown_event=shutdown)
     assert spawned == []
+    assert shutdown.delays == [3]
+
+
+def test_transient_bootstrap_failure_recovers_without_app_restart(monkeypatch):
+    from desktop import app, support_tunnel
+
+    attempts = []
+
+    def ensure_django():
+        attempts.append('django')
+        if len(attempts) == 1:
+            raise pg_embedded.EmbeddedPostgresError('temporary sharing violation')
+
+    class RetryEvent:
+        def __init__(self):
+            self.delays = []
+
+        @staticmethod
+        def is_set():
+            return False
+
+        def wait(self, delay):
+            self.delays.append(delay)
+            return False
+
+    class StartedThread:
+        def __init__(self, *args, **kwargs):
+            self.name = kwargs.get('name')
+
+        def start(self):
+            spawned.append(self.name)
+
+    spawned = []
+    shutdown = RetryEvent()
+    monkeypatch.setattr(control_server._API.server, 'ensure_django', ensure_django)
+    monkeypatch.setattr(app.threading, 'Thread', StartedThread)
+    monkeypatch.setattr(app.atexit, 'register', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(support_tunnel, 'start', lambda: True)
+    monkeypatch.setattr(app.sys, 'argv', ['AlphaPOS.exe', '--no-update'])
+
+    app._boot_worker(shutdown_event=shutdown)
+
+    assert attempts == ['django', 'django']
+    assert shutdown.delays == [3]
+    assert spawned == ['autostart']
+
+
+def test_second_instance_never_opens_unverified_loopback_service(monkeypatch):
+    from desktop import app, single_instance
+
+    monkeypatch.setattr(app, '_configure_boot_logging', lambda: None)
+    monkeypatch.setattr(single_instance, 'acquire', lambda: False)
+    monkeypatch.setattr(control_server, '_our_panel_at', lambda *_args: False)
+    monkeypatch.setattr(
+        app, '_run_pywebview',
+        lambda _url: (_ for _ in ()).throw(
+            AssertionError('unverified loopback URL must not be opened'),
+        ),
+    )
+    monkeypatch.setattr(
+        app, '_run_edge',
+        lambda _url: (_ for _ in ()).throw(
+            AssertionError('unverified loopback URL must not be opened'),
+        ),
+    )
+    monkeypatch.setattr(
+        app.webbrowser, 'open',
+        lambda _url: (_ for _ in ()).throw(
+            AssertionError('unverified loopback URL must not be opened'),
+        ),
+    )
+
+    assert app.main() is None
 
 
 def test_update_shutdown_closes_edge_fallback(monkeypatch):

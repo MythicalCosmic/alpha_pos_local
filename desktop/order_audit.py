@@ -546,6 +546,14 @@ class OrderAuditCollector:
     def __init__(self, *, dataset: Path = RAW_DATASET, index_file: Path = INDEX_FILE):
         self.dataset = Path(dataset)
         self.index_file = Path(index_file)
+        # Raw evidence contains customer/order PII and is deliberately reachable
+        # through the owner support workflow. It must not inherit a broad
+        # Windows profile ACL. Harden old files once on upgrade and let all new
+        # atomic indexes/exports inherit the owner-only directory DACL.
+        self.dataset.parent.mkdir(parents=True, exist_ok=True)
+        config_store._harden_windows_private_path(
+            self.dataset.parent, directory=True, recursive=True,
+        )
         self._lock = threading.RLock()
         self._fingerprints: dict[str, str] = {}
         self._record_count = 0
@@ -933,6 +941,8 @@ class OrderAuditCollector:
 
 _COLLECTOR = OrderAuditCollector()
 _CAPTURE_QUEUE: queue.Queue[tuple[int, str]] = queue.Queue()
+_PENDING_CAPTURE_LOCK = threading.Lock()
+_PENDING_CAPTURES: dict[int, str] = {}
 _SYNC_EVENT_QUEUE: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
 _START_LOCK = threading.Lock()
 _STARTED = False
@@ -1064,7 +1074,19 @@ def capture_order_id(order_id: int, *, reason='model_change') -> bool:
 def request_capture(order_id: int | None, reason: str) -> None:
     if order_id is None or not _enabled_from_state():
         return
-    _CAPTURE_QUEUE.put((int(order_id), str(reason)))
+    order_id = int(order_id)
+    reason = str(reason)
+    # A checkout touches Order, every item, payment, stock row and sometimes a
+    # fiscal/courier sidecar in one commit. Each signal used to enqueue another
+    # full graph serialization for the same final order, producing an unbounded
+    # query backlog on a busy till. Coalesce while queued; once the worker pops
+    # this id, a genuinely later commit can enqueue it again immediately.
+    with _PENDING_CAPTURE_LOCK:
+        if order_id in _PENDING_CAPTURES:
+            _PENDING_CAPTURES[order_id] = reason
+            return
+        _PENDING_CAPTURES[order_id] = reason
+        _CAPTURE_QUEUE.put((order_id, reason))
 
 
 def request_full_sweep(reason='manual_sweep') -> None:
@@ -1231,6 +1253,8 @@ def _collector_worker() -> None:
                     if order_id == -1:
                         capture_all_orders(reason=reason)
                     else:
+                        with _PENDING_CAPTURE_LOCK:
+                            reason = _PENDING_CAPTURES.pop(order_id, reason)
                         capture_order_id(order_id, reason=reason)
                 except Exception:  # noqa: BLE001 - retry/backstop must keep running
                     logger.exception('order audit queued capture failed')
@@ -1392,12 +1416,18 @@ def _post_telegram_document(
             )},
             timeout=(10, 180),
         )
-    if response.status_code != 200:
+    try:
+        body = response.json()
+    except Exception:  # noqa: BLE001 - non-JSON 200 is not a delivery ACK
+        body = None
+    if response.status_code != 200 or not isinstance(body, dict) or body.get('ok') is not True:
         try:
-            detail = (response.json() or {}).get('description')
+            detail = (body or {}).get('description')
         except Exception:  # noqa: BLE001
             detail = None
-        raise RuntimeError(detail or f'Telegram HTTP {response.status_code}')
+        raise RuntimeError(
+            detail or f'Telegram delivery was not acknowledged (HTTP {response.status_code})'
+        )
 
 
 def _deliver_pending_once() -> dict[str, int]:
@@ -1470,7 +1500,7 @@ def _auto_sender_worker() -> None:
 
 
 def _safe_error(exc: Any) -> str:
-    return _TOKEN_RE.sub('[redacted-token]', str(exc))[:500]
+    return _scrub_text(str(exc))[:500]
 
 
 def send_export_now() -> dict[str, Any]:
@@ -1503,12 +1533,24 @@ def send_export_now() -> dict[str, Any]:
                     )},
                     timeout=(10, 180),
                 )
-            if response.status_code != 200:
+            try:
+                body = response.json()
+            except Exception:  # noqa: BLE001 - non-JSON 200 is not a delivery ACK
+                body = None
+            if (
+                response.status_code != 200
+                or not isinstance(body, dict)
+                or body.get('ok') is not True
+            ):
                 try:
-                    detail = (response.json() or {}).get('description')
+                    detail = (body or {}).get('description')
                 except Exception:  # noqa: BLE001
                     detail = None
-                raise RuntimeError(detail or f'Telegram HTTP {response.status_code}')
+                raise RuntimeError(
+                    detail
+                    or f'Telegram delivery was not acknowledged '
+                       f'(HTTP {response.status_code})'
+                )
             sent.append(chat_id)
         except Exception as exc:  # noqa: BLE001
             failed.append({'chat_id': chat_id, 'error': _safe_error(exc)})

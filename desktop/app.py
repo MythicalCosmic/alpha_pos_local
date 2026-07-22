@@ -356,24 +356,44 @@ def _graceful_update_shutdown(httpd):
     ).start()
 
 
-def _boot_worker():
+def _boot_worker(*, shutdown_event=None):
     """Bring the heavy backend up BEHIND the already-painted panel: finish any
     armed factory reset, start embedded Postgres, load config env, supervise the
     POS server, then run a DEFERRED self-update check. None of this is on the
     first-paint path, so the window appears instantly and the panel's existing
     status poller shows 'starting database / server…' until it's ready."""
+    shutdown_event = shutdown_event or _UPDATE_SHUTDOWN
     # One serialized boundary owns env/reset -> verified PostgreSQL -> Django.
     # Early UI diagnostics use the same method, so they can never win a race and
-    # permanently configure settings against fallback SQLite.
+    # permanently configure settings against fallback SQLite. A transient .env
+    # sharing race or PostgreSQL startup failure must not strand the till offline
+    # for the rest of the day: retry this idempotent boundary with bounded
+    # backoff, while keeping the already-painted diagnostics panel responsive.
+    backoff = 3
+    while not shutdown_event.is_set():
+        try:
+            from desktop import pg_embedded, support_tunnel
+            control_server._API.server.ensure_django()
+            break
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                'boot: database/Django bootstrap failed; retrying in %ss',
+                backoff,
+            )
+            if shutdown_event.wait(backoff):
+                return
+            backoff = min(backoff * 2, 60)
+    else:
+        return
+
+    atexit.register(pg_embedded.stop)
     try:
-        from desktop import pg_embedded, support_tunnel
-        control_server._API.server.ensure_django()
-        atexit.register(pg_embedded.stop)
         support_tunnel.start()
         atexit.register(support_tunnel.stop)
     except Exception:  # noqa: BLE001
-        logger.exception('boot: database/Django bootstrap failed; backend will remain offline')
-        return
+        # Support is optional and owns its own reconnect supervisor. It must
+        # never prevent checkout from starting after the database is healthy.
+        logger.exception('boot: support tunnel worker could not start')
 
     # Start + supervise the POS server (its own infinite watchdog loop) on its own
     # thread so this worker can move on to the deferred update check.
@@ -404,9 +424,23 @@ def main():
     from desktop import single_instance
     url = f'http://{control_server.CONTROL_HOST}:{control_server.CONTROL_PORT}/'
     if not single_instance.acquire():
-        logger.info('another AlphaPOS instance is already running — focusing it')
-        if not _run_pywebview(url) and not _run_edge(url):
-            webbrowser.open(url)
+        # If the first instance had to fall back from 8765 because another app
+        # owns it, blindly opening the preferred URL would display that unrelated
+        # (potentially hostile) service. Focus only after the distinctive local
+        # health marker proves this exact endpoint is Alpha POS. During the tiny
+        # first-process startup race it is safer to exit and leave its opening
+        # window alone than to browse an unverified loopback service.
+        if control_server._our_panel_at(
+            control_server.CONTROL_HOST, control_server.CONTROL_PORT,
+        ):
+            logger.info('another AlphaPOS instance is already running — focusing it')
+            if not _run_pywebview(url) and not _run_edge(url):
+                webbrowser.open(url)
+        else:
+            logger.info(
+                'another AlphaPOS instance owns the mutex; preferred panel '
+                'endpoint is not verified, so no window was opened',
+            )
         return
 
     # --selftest brings the backend up synchronously (no window).

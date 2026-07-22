@@ -1,5 +1,6 @@
 import json
 import gzip
+import queue
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -70,6 +71,19 @@ def test_default_automatic_delivery_is_on_when_setting_is_absent(monkeypatch):
     monkeypatch.undo()
     monkeypatch.setattr(order_audit.config_store, 'read_state', lambda: {})
     assert order_audit._auto_send_enabled_from_state() is True
+
+
+def test_repeated_order_signals_coalesce_one_pending_graph_capture(monkeypatch):
+    pending_queue = queue.Queue()
+    monkeypatch.setattr(order_audit, '_CAPTURE_QUEUE', pending_queue)
+    monkeypatch.setattr(order_audit, '_PENDING_CAPTURES', {})
+
+    order_audit.request_capture(42, 'Order.save')
+    order_audit.request_capture(42, 'OrderPayment.save')
+    order_audit.request_capture(42, 'FiscalReceipt.save')
+
+    assert pending_queue.qsize() == 1
+    assert order_audit._PENDING_CAPTURES == {42: 'FiscalReceipt.save'}
 
 
 def test_database_faithful_rows_keep_all_columns_and_redact_credentials():
@@ -469,6 +483,27 @@ def test_transport_error_redacts_bot_token(tmp_path, monkeypatch):
     assert result['ok'] is False
     assert '[redacted-token]' in result['failed'][0]['error']
     assert token not in json.dumps(result)
+
+
+def test_telegram_http_200_without_bot_api_ack_is_not_delivery(tmp_path, monkeypatch):
+    document = tmp_path / 'evidence.jsonl.gz'
+    document.write_bytes(b'evidence')
+
+    class Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {'ok': False, 'description': 'document rejected'}
+
+    import requests
+    monkeypatch.setattr(requests, 'post', lambda *_args, **_kwargs: Response())
+
+    with pytest.raises(RuntimeError, match='document rejected'):
+        order_audit._post_telegram_document(
+            '123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcd',
+            'owner', document, 'caption',
+        )
 
 
 def test_incremental_export_advances_only_after_explicit_ack(tmp_path):
