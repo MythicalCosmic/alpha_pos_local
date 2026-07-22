@@ -71,6 +71,8 @@ function NotificationsScreen() {
   const [token, setToken] = React.useState("");
   const [botSet, setBotSet] = React.useState(false);
   const [enabled, setEnabled] = React.useState(true);
+  const [orderAudit, setOrderAudit] = React.useState({ enabled: true, order_count: 0, record_count: 0, bytes: 0 });
+  const [auditBusy, setAuditBusy] = React.useState(false);
   const loaded = React.useRef(false);
 
   React.useEffect(() => {
@@ -84,6 +86,9 @@ function NotificationsScreen() {
         if (r.recipients && r.recipients.length) setSelId(r.recipients[0].cid);
       }
       loaded.current = true;
+    });
+    api.order_audit_status().then((r) => {
+      if (r && r.ok) setOrderAudit(r);
     });
   }, []);
 
@@ -124,6 +129,43 @@ function NotificationsScreen() {
     });
   };
 
+  const toggleOrderAudit = (on) => {
+    setOrderAudit((old) => ({ ...old, enabled: on }));
+    api.set_order_audit_enabled(on).then((r) => {
+      if (!(r && r.ok)) {
+        setOrderAudit((old) => ({ ...old, enabled: !on }));
+        app.toast((r && r.error) || "Failed");
+        return;
+      }
+      setOrderAudit(r);
+      app.toast(on ? t("audit.enabledToast") : t("audit.disabledToast"));
+    });
+  };
+
+  const sendOrderAudit = () => {
+    if (auditBusy) return;
+    setAuditBusy(true);
+    api.send_order_audit_now().then((r) => {
+      setAuditBusy(false);
+      if (r && (r.ok || r.partial)) {
+        setOrderAudit((old) => ({
+          ...old,
+          order_count: r.orders != null ? r.orders : old.order_count,
+          record_count: r.records != null ? r.records : old.record_count,
+          last_export_at: r.prepared_at || old.last_export_at,
+        }));
+        app.toast(r.partial ? t("audit.sentPartial") : t("audit.sent"));
+      } else {
+        const failure = r && r.failed && r.failed.length ? r.failed[0].error : null;
+        app.toast(failure || (r && r.error) || t("audit.sendFailed"));
+      }
+    });
+  };
+
+  const auditSize = orderAudit.bytes >= 1048576
+    ? (orderAudit.bytes / 1048576).toFixed(1) + " MB"
+    : Math.max(0, Math.round((orderAudit.bytes || 0) / 1024)) + " KB";
+
   return (
     <div className="page" data-screen-label="Notifications">
       <header className="page-head">
@@ -152,6 +194,25 @@ function NotificationsScreen() {
             <Btn variant="primary" onClick={saveBot}>{t("ntf.saveTg")}</Btn>
             <Btn variant="ghost" icon="send" onClick={() => api.telegram_test().then((r) => app.toast(r && r.ok ? t("ntf.testSent") : (r && r.error) || "Failed"))}>{t("ntf.sendTest")}</Btn>
           </div>
+        </Card>
+
+        <Card title={t("audit.title")} action={<Badge tone={orderAudit.enabled ? "ok" : "muted"}>{orderAudit.enabled ? t("common.on") : t("common.off")}</Badge>}>
+          <div className="hstack" style={{ justifyContent: "space-between", alignItems: "center", gap: 18 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 600, fontSize: 14 }}>{t("audit.collect")}</div>
+              <div style={{ fontSize: 12, color: "var(--ink-3)", marginTop: 3, textWrap: "pretty" }}>{t("audit.collectHint")}</div>
+            </div>
+            <Switch on={orderAudit.enabled !== false} onChange={toggleOrderAudit} />
+          </div>
+          <div className="hstack" style={{ marginTop: 16, justifyContent: "space-between", alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ color: "var(--ink-3)", fontSize: 12 }}>
+              {t("audit.stats").replace("{orders}", orderAudit.order_count || 0).replace("{records}", orderAudit.record_count || 0).replace("{size}", auditSize)}
+            </div>
+            <Btn variant="primary" icon="send" disabled={auditBusy} onClick={sendOrderAudit}>
+              {auditBusy ? t("audit.sending") : t("audit.sendNow")}
+            </Btn>
+          </div>
+          <p style={{ margin: "12px 0 0", color: "var(--ink-3)", fontSize: 12, textWrap: "pretty" }}>{t("audit.directHint")}</p>
         </Card>
 
         <Card title={t("ntf.recipients")}>

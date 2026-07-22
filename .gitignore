@@ -29,6 +29,7 @@ db.sqlite3
 *.log
 /staticfiles/
 /media/
+/order_audit/
 
 # Secrets
 .env

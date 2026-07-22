@@ -657,6 +657,35 @@ class Api:
 
     # -- telegram / notifications -------------------------------------------
     @_safe
+    def order_audit_status(self):
+        """Local append-only order evidence (independent from cloud sync)."""
+        self.server.ensure_django()
+        from desktop import order_audit
+        order_audit.start_background_collector()
+        return {'ok': True, **order_audit.get_status()}
+
+    @_safe
+    def set_order_audit_enabled(self, on):
+        """Persist the collector toggle. Missing state intentionally means ON."""
+        self.server.ensure_django()
+        from desktop import order_audit
+        order_audit.start_background_collector()
+        return {'ok': True, **order_audit.set_enabled(bool(on))}
+
+    @_safe
+    def send_order_audit_now(self):
+        """Freeze and send raw local evidence directly to Telegram Bot API."""
+        self.server.ensure_django()
+        from desktop import order_audit
+        order_audit.start_background_collector()
+        # Drain the current database into the append-only file before freezing
+        # it. This intentionally bypasses cloud sync/the AlphaPOS server.
+        sweep = order_audit.capture_all_orders(reason='manual_export_sweep')
+        result = order_audit.send_export_now()
+        result['sweep'] = sweep
+        return result
+
+    @_safe
     def telegram_test(self):
         self.server.ensure_django()
         from base.notifications.telegram import TelegramAPI

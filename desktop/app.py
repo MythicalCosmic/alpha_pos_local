@@ -224,6 +224,7 @@ def _autostart_backend():
     """
     api = control_server._API
     setup_ok = False
+    audit_started = False
     backoff = 3
     while not _UPDATE_SHUTDOWN.is_set():
         # Never bind the POS against a schema whose migration failed. Retry the
@@ -246,6 +247,16 @@ def _autostart_backend():
                 _UPDATE_SHUTDOWN.wait(backoff)
                 backoff = min(backoff * 2, 60)
                 continue
+        # Models and audit tables are safe to query only after migrations have
+        # completed. Keep this diagnostic non-fatal and retry on the next
+        # watchdog loop if startup races a transient database problem.
+        if setup_ok and not audit_started:
+            try:
+                from desktop import order_audit
+                order_audit.start_background_collector()
+                audit_started = True
+            except Exception:  # noqa: BLE001 - diagnostics must never block POS
+                logger.exception('autostart: local order audit collector failed to start')
         try:
             if api.server.wants_running() and not api.server.is_running():
                 # Crash recovery must not override an operator's explicit Stop.

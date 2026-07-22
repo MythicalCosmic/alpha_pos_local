@@ -1,6 +1,6 @@
 /* AlphaPOS desktop UI — generated; do not edit directly.
  * Run: node tools/compile_desktop_ui.js
- * source-sha256: 073cc621b911e9d079c145ddfe169f5bbb4841a0bd17adfccdac95f05face0e3
+ * source-sha256: 135d844a52196601ae7334373942a8e840956e538b75f77d7be555606745525b
  */
 (function () {
 'use strict';
@@ -131,6 +131,18 @@ window.I18N = {
     "ntf.sendTest": "Send test message",
     "ntf.testSent": "Test message sent",
     "ntf.tokenStatus": "Bot token configured · 4 chat IDs",
+    "audit.title": "Raw order evidence",
+    "audit.collect": "Collect local order snapshots",
+    "audit.collectHint": "Append every order, item, payment, refund and sync state to a local audit file. Enabled by default.",
+    "audit.stats": "{orders} orders · {records} snapshots · {size}",
+    "audit.sendNow": "Send raw file now",
+    "audit.sending": "Preparing and sending…",
+    "audit.directHint": "Sent directly from this PC to the configured Telegram chats; the Alpha POS server and cloud sync are not used.",
+    "audit.enabledToast": "Raw order collection enabled",
+    "audit.disabledToast": "Raw order collection disabled",
+    "audit.sent": "Raw order file sent to Telegram",
+    "audit.sentPartial": "File sent to some Telegram chats; one or more failed",
+    "audit.sendFailed": "Could not send the raw order file",
     "ntf.layouts": "Message layouts",
     "ntf.layoutsHint": "Edit how each notification reads. Use only {named} placeholders.",
     "cfg.title": "Configuration",
@@ -332,6 +344,18 @@ window.I18N = {
     "ntf.sendTest": "Test xabar yuborish",
     "ntf.testSent": "Test xabar yuborildi",
     "ntf.tokenStatus": "Bot token sozlangan · 4 ta chat ID",
+    "audit.title": "Buyurtmalarning xom dalillari",
+    "audit.collect": "Lokal buyurtma nusxalarini yig'ish",
+    "audit.collectHint": "Har bir buyurtma, mahsulot, to'lov, qaytarish va sync holatini lokal audit fayliga qo'shib boradi. Standart holatda yoqilgan.",
+    "audit.stats": "{orders} ta buyurtma · {records} ta nusxa · {size}",
+    "audit.sendNow": "Xom faylni hozir yuborish",
+    "audit.sending": "Tayyorlanmoqda va yuborilmoqda…",
+    "audit.directHint": "Fayl shu kompyuterdan sozlangan Telegram chatlariga bevosita yuboriladi; Alpha POS serveri va bulutli sync ishlatilmaydi.",
+    "audit.enabledToast": "Xom buyurtma yig'ish yoqildi",
+    "audit.disabledToast": "Xom buyurtma yig'ish o'chirildi",
+    "audit.sent": "Xom buyurtma fayli Telegramga yuborildi",
+    "audit.sentPartial": "Fayl ayrim Telegram chatlariga yuborildi, ayrimlarida xato bo'ldi",
+    "audit.sendFailed": "Xom buyurtma faylini yuborib bo'lmadi",
     "ntf.layouts": "Xabar shablonlari",
     "ntf.layoutsHint": "Har bir bildirishnoma matnini tahrirlang. Faqat {nomlangan} o'rinbosarlardan foydalaning.",
     "cfg.title": "Sozlamalar",
@@ -533,6 +557,18 @@ window.I18N = {
     "ntf.sendTest": "Отправить тест",
     "ntf.testSent": "Тестовое сообщение отправлено",
     "ntf.tokenStatus": "Токен настроен · 4 ID чатов",
+    "audit.title": "Исходные данные заказов",
+    "audit.collect": "Собирать локальные снимки заказов",
+    "audit.collectHint": "Добавляет каждый заказ, позицию, платёж, возврат и состояние синхронизации в локальный файл аудита. Включено по умолчанию.",
+    "audit.stats": "Заказов: {orders} · снимков: {records} · {size}",
+    "audit.sendNow": "Отправить файл сейчас",
+    "audit.sending": "Подготовка и отправка…",
+    "audit.directHint": "Файл отправляется с этого ПК напрямую в настроенные чаты Telegram; сервер Alpha POS и облачная синхронизация не используются.",
+    "audit.enabledToast": "Сбор исходных данных заказов включён",
+    "audit.disabledToast": "Сбор исходных данных заказов выключен",
+    "audit.sent": "Файл заказов отправлен в Telegram",
+    "audit.sentPartial": "Файл отправлен в часть чатов Telegram; некоторые отправки не удались",
+    "audit.sendFailed": "Не удалось отправить файл заказов",
     "ntf.layouts": "Шаблоны сообщений",
     "ntf.layoutsHint": "Отредактируйте текст каждого уведомления. Используйте только {именованные} плейсхолдеры.",
     "cfg.title": "Настройки",
@@ -1913,6 +1949,13 @@ function NotificationsScreen() {
   const [token, setToken] = React.useState("");
   const [botSet, setBotSet] = React.useState(false);
   const [enabled, setEnabled] = React.useState(true);
+  const [orderAudit, setOrderAudit] = React.useState({
+    enabled: true,
+    order_count: 0,
+    record_count: 0,
+    bytes: 0
+  });
+  const [auditBusy, setAuditBusy] = React.useState(false);
   const loaded = React.useRef(false);
   React.useEffect(() => {
     api.notif_settings().then(r => {
@@ -1929,6 +1972,9 @@ function NotificationsScreen() {
         if (r.recipients && r.recipients.length) setSelId(r.recipients[0].cid);
       }
       loaded.current = true;
+    });
+    api.order_audit_status().then(r => {
+      if (r && r.ok) setOrderAudit(r);
     });
   }, []);
   const persist = list => {
@@ -1981,6 +2027,44 @@ function NotificationsScreen() {
       app.toast(on ? t("common.on") : t("common.off"));
     });
   };
+  const toggleOrderAudit = on => {
+    setOrderAudit(old => ({
+      ...old,
+      enabled: on
+    }));
+    api.set_order_audit_enabled(on).then(r => {
+      if (!(r && r.ok)) {
+        setOrderAudit(old => ({
+          ...old,
+          enabled: !on
+        }));
+        app.toast(r && r.error || "Failed");
+        return;
+      }
+      setOrderAudit(r);
+      app.toast(on ? t("audit.enabledToast") : t("audit.disabledToast"));
+    });
+  };
+  const sendOrderAudit = () => {
+    if (auditBusy) return;
+    setAuditBusy(true);
+    api.send_order_audit_now().then(r => {
+      setAuditBusy(false);
+      if (r && (r.ok || r.partial)) {
+        setOrderAudit(old => ({
+          ...old,
+          order_count: r.orders != null ? r.orders : old.order_count,
+          record_count: r.records != null ? r.records : old.record_count,
+          last_export_at: r.prepared_at || old.last_export_at
+        }));
+        app.toast(r.partial ? t("audit.sentPartial") : t("audit.sent"));
+      } else {
+        const failure = r && r.failed && r.failed.length ? r.failed[0].error : null;
+        app.toast(failure || r && r.error || t("audit.sendFailed"));
+      }
+    });
+  };
+  const auditSize = orderAudit.bytes >= 1048576 ? (orderAudit.bytes / 1048576).toFixed(1) + " MB" : Math.max(0, Math.round((orderAudit.bytes || 0) / 1024)) + " KB";
   return React.createElement("div", {
     className: "page",
     "data-screen-label": "Notifications"
@@ -2048,6 +2132,63 @@ function NotificationsScreen() {
     icon: "send",
     onClick: () => api.telegram_test().then(r => app.toast(r && r.ok ? t("ntf.testSent") : r && r.error || "Failed"))
   }, t("ntf.sendTest")))), React.createElement(Card, {
+    title: t("audit.title"),
+    action: React.createElement(Badge, {
+      tone: orderAudit.enabled ? "ok" : "muted"
+    }, orderAudit.enabled ? t("common.on") : t("common.off"))
+  }, React.createElement("div", {
+    className: "hstack",
+    style: {
+      justifyContent: "space-between",
+      alignItems: "center",
+      gap: 18
+    }
+  }, React.createElement("div", {
+    style: {
+      flex: 1,
+      minWidth: 0
+    }
+  }, React.createElement("div", {
+    style: {
+      fontWeight: 600,
+      fontSize: 14
+    }
+  }, t("audit.collect")), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "var(--ink-3)",
+      marginTop: 3,
+      textWrap: "pretty"
+    }
+  }, t("audit.collectHint"))), React.createElement(Switch, {
+    on: orderAudit.enabled !== false,
+    onChange: toggleOrderAudit
+  })), React.createElement("div", {
+    className: "hstack",
+    style: {
+      marginTop: 16,
+      justifyContent: "space-between",
+      alignItems: "center",
+      flexWrap: "wrap"
+    }
+  }, React.createElement("div", {
+    style: {
+      color: "var(--ink-3)",
+      fontSize: 12
+    }
+  }, t("audit.stats").replace("{orders}", orderAudit.order_count || 0).replace("{records}", orderAudit.record_count || 0).replace("{size}", auditSize)), React.createElement(Btn, {
+    variant: "primary",
+    icon: "send",
+    disabled: auditBusy,
+    onClick: sendOrderAudit
+  }, auditBusy ? t("audit.sending") : t("audit.sendNow"))), React.createElement("p", {
+    style: {
+      margin: "12px 0 0",
+      color: "var(--ink-3)",
+      fontSize: 12,
+      textWrap: "pretty"
+    }
+  }, t("audit.directHint"))), React.createElement(Card, {
     title: t("ntf.recipients")
   }, recipients.length === 0 ? React.createElement("p", {
     style: {
