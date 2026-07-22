@@ -1029,46 +1029,87 @@ def test_selftest_returns_failure_for_structured_setup_error(monkeypatch):
     assert stopped == [True]
 
 
-def test_mock_sync_cleanup_does_not_publish_a_fake_tombstone(monkeypatch):
-    from base.models import Category
+@override_settings(BRANCH_ID='selftest-branch')
+def test_mock_sync_uses_branch_owned_model_and_cleans_up_directly(monkeypatch):
+    from base.models import Customer
     from base.services.sync.receiver import CloudReceiver
     from desktop.bridge import Api
 
     filters = []
     deleted = []
+    received = []
 
     class Readback:
-        pk = 41
+        def __init__(self, record_uuid):
+            self.pk = 41
+            self.uuid = record_uuid
+            self.branch_id = 'selftest-branch'
+            self.name = 'ALPHA POS SYNC SELFTEST'
+            self.sync_version = 1
+            self.is_deleted = False
 
     class FakeQuerySet:
         def __init__(self, criteria):
             self.criteria = criteria
 
         def first(self):
-            return Readback() if 'uuid' in self.criteria else None
+            return Readback(self.criteria['uuid']) if 'uuid' in self.criteria else None
 
         def delete(self):
             deleted.append(self.criteria)
-            return 1, {'base.Category': 1}
+            return 1, {'base.Customer': 1}
 
     class FakeManager:
         def filter(self, **criteria):
             filters.append(criteria)
             return FakeQuerySet(criteria)
 
-    monkeypatch.setattr(Category, 'objects', FakeManager())
-    monkeypatch.setattr(
-        CloudReceiver, 'receive_batch',
-        lambda *_args: {'created': 1, 'errors': []},
-    )
+    def fake_receive(model_name, branch_id, records):
+        received.append((model_name, branch_id, records))
+        return {
+            'success': True, 'created': 1, 'updated': 0,
+            'skipped': 0, 'errors': [],
+        }
+
+    monkeypatch.setattr(Customer, 'objects', FakeManager())
+    monkeypatch.setattr(CloudReceiver, 'receive_batch', fake_receive)
     api = Api()
     api.server.ensure_django = lambda: None
 
     result = api.send_mock_sync()
+
+    assert Customer.SYNC_PULL_SCOPE == 'branch'
+    assert received[0][0:2] == ('customer', 'selftest-branch')
+    assert received[0][2][0]['name'] == 'ALPHA POS SYNC SELFTEST'
     assert result['ok'] is True
     assert result['read_back'] is True
+    assert result['model'] == 'customer'
     assert len(filters) == 2
     assert deleted == [{'pk': 41}]
+
+
+@pytest.mark.django_db
+@override_settings(BRANCH_ID='selftest-branch', DEPLOYMENT_MODE='local')
+def test_mock_sync_roundtrips_through_the_real_receiver():
+    from base.models import Customer
+    from desktop.bridge import Api
+
+    api = Api()
+    api.server.ensure_django = lambda: None
+
+    result = api.send_mock_sync()
+
+    assert result['ok'] is True
+    assert result['read_back'] is True
+    assert result['model'] == 'customer'
+    assert result['received'] == {
+        'success': True,
+        'created': 1,
+        'updated': 0,
+        'skipped': 0,
+        'errors': [],
+    }
+    assert not Customer._base_manager.filter(uuid=result['sent']['uuid']).exists()
 
 
 def test_cloud_push_bridge_does_not_hide_service_failure(monkeypatch):

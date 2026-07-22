@@ -553,24 +553,48 @@ class Api:
         self.server.ensure_django()
         from django.conf import settings
         from base.services.sync.receiver import CloudReceiver
-        from base.models import Category
+        from base.models import Customer
+        # Customer is deliberately branch-owned. Catalog entities such as
+        # Category are globally pulled/cloud-owned and the receiver must refuse
+        # a branch write to them, even when it comes from this diagnostic.
         branch = getattr(settings, 'BRANCH_ID', 'main') or 'main'
         u = str(uuid_mod.uuid4())
         record = {'uuid': u, 'sync_version': 1, 'is_deleted': False,
-                  'name': 'MOCK SYNC TEST', 'branch_id': branch}
-        result = CloudReceiver.receive_batch('category', branch, [record])
-        readback = Category.objects.filter(uuid=u).first()
-        found = readback is not None
+                  'name': 'ALPHA POS SYNC SELFTEST', 'phone_number': '',
+                  'branch_id': branch}
+        result = CloudReceiver.receive_batch('customer', branch, [record])
+        readback = Customer.objects.filter(uuid=u).first()
+        roundtrip_ok = bool(
+            result.get('success') is True
+            and result.get('created') == 1
+            and result.get('updated') == 0
+            and result.get('skipped') == 0
+            and not result.get('errors')
+            and readback is not None
+            and str(readback.uuid) == u
+            and readback.branch_id == branch
+            and readback.name == record['name']
+            and readback.sync_version == record['sync_version']
+            and readback.is_deleted is False
+        )
         if readback:
             # This is diagnostic scratch data, not a real local deletion. The
             # model's hard_delete path correctly publishes a sync tombstone, so
             # invoking it here would leave fake outbound work after a supposedly
             # side-effect-free loopback test. QuerySet.delete performs the direct
             # cleanup without calling the model override.
-            Category.objects.filter(pk=readback.pk).delete()
-        return {'ok': True, 'sent': record, 'received': {
-            'created': result.get('created'), 'errors': result.get('errors'),
-        }, 'read_back': found}
+            Customer.objects.filter(pk=readback.pk).delete()
+        response = {'ok': roundtrip_ok, 'model': 'customer', 'sent': record,
+                    'received': {
+                        'success': result.get('success'),
+                        'created': result.get('created'),
+                        'updated': result.get('updated'),
+                        'skipped': result.get('skipped'),
+                        'errors': result.get('errors'),
+                    }, 'read_back': roundtrip_ok}
+        if not roundtrip_ok:
+            response['error'] = 'mock customer sync did not round-trip exactly'
+        return response
 
     @_safe
     def fetch_mock_sync(self):
