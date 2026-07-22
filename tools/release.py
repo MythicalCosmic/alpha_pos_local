@@ -78,11 +78,25 @@ def publish(bundle: Path):
     # --init. Constructing a bare Repository leaves self.roles=None, so
     # add_bundle's get_latest_archive() blows up — from_config() loads them.
     repo = Repository.from_config()
+
+    target_name = f'{APP_NAME}-{__version__}.tar.gz'
+    advertised_targets = repo.roles.targets.signed.targets
+    if target_name in advertised_targets:
+        print(
+            f"refusing to republish {APP_NAME} {__version__}: {target_name} is "
+            "already advertised by targets metadata. Bump desktop/version.py "
+            "before publishing another build."
+        )
+        return 1
+
     # tufup's make_gztar_archive prompts interactively before overwriting an
     # existing same-version archive, and that input() EOFs in a non-interactive
-    # publish (CI / background). Drop a leftover archive for this version first
-    # so re-running a publish (e.g. after an interrupted one) is clean.
-    stale = REPO_DIR / 'targets' / f'{APP_NAME}-{__version__}.tar.gz'
+    # publish (CI / background). An archive that is not advertised by targets
+    # metadata is an orphan left by an interrupted pre-metadata publish, so it
+    # is safe to replace. The duplicate guard above deliberately runs first:
+    # recreating an already-advertised archive could make its bytes disagree
+    # with the signed length/hash while tufup refuses the same version.
+    stale = REPO_DIR / 'targets' / target_name
     if stale.exists():
         print(f"removing leftover archive: {stale}")
         stale.unlink()
