@@ -13,6 +13,28 @@ import os
 import sys
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files, collect_dynamic_libs
 
+
+def collect_runtime_submodules(package):
+    """Never ship test suites discovered by broad plugin collection."""
+    return collect_submodules(
+        package,
+        filter=lambda name: all(
+            part not in {'test', 'tests'} and not part.startswith('test_')
+            for part in name.split('.')
+        ),
+    )
+
+
+def collect_runtime_data(package, **kwargs):
+    return [
+        row for row in collect_data_files(package, **kwargs)
+        if all(
+            part.lower() not in {'test', 'tests'}
+            and not part.lower().startswith('test_')
+            for part in os.path.normpath(row[0]).split(os.sep)
+        )
+    ]
+
 sys.path.insert(0, SPECPATH)
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
@@ -28,22 +50,22 @@ APPS = [a for a in _dj.INSTALLED_APPS
 
 hiddenimports = []
 for app in APPS:
-    hiddenimports += collect_submodules(app)
+    hiddenimports += collect_runtime_submodules(app)
 for pkg in ('config', 'alpha_pos_core', 'desktop'):
-    hiddenimports += collect_submodules(pkg)
-hiddenimports += collect_submodules('django')
+    hiddenimports += collect_runtime_submodules(pkg)
+hiddenimports += collect_runtime_submodules('django')
 for lib in ('uvicorn', 'channels', 'asgiref', 'websockets', 'h11', 'httptools',
             'python_multipart', 'whitenoise', 'corsheaders', 'cryptography',
             'dateutil', 'requests', 'anthropic'):
     try:
-        hiddenimports += collect_submodules(lib)
+        hiddenimports += collect_runtime_submodules(lib)
     except Exception:
         print(f'onefile: {lib} not collectable — skipped')
-hiddenimports += collect_submodules('google.genai')
+hiddenimports += collect_runtime_submodules('google.genai')
 update_binaries = []
 for _ulib in ('tufup', 'tuf', 'securesystemslib', 'bsdiff4', 'nacl'):
     try:
-        hiddenimports += collect_submodules(_ulib)
+        hiddenimports += collect_runtime_submodules(_ulib)
     except Exception:
         print(f'onefile: {_ulib} not available — self-update omitted')
 for _ulib in ('bsdiff4', 'nacl'):
@@ -51,7 +73,7 @@ for _ulib in ('bsdiff4', 'nacl'):
         update_binaries += collect_dynamic_libs(_ulib)
     except Exception:
         pass
-hiddenimports += collect_submodules('webview') + collect_submodules('clr_loader')
+hiddenimports += collect_runtime_submodules('webview') + collect_runtime_submodules('clr_loader')
 hiddenimports += ['clr', 'pythonnet']
 
 datas = [
@@ -64,9 +86,9 @@ if os.path.exists(_tuf_root):
     datas += [(_tuf_root, 'tuf_root')]
 datas += collect_data_files('webview')
 for app in APPS:
-    datas += collect_data_files(app, include_py_files=True)
+    datas += collect_runtime_data(app, include_py_files=True)
 for _pkg in ('core', 'alpha_pos_core'):
-    datas += collect_data_files(_pkg, include_py_files=True)
+    datas += collect_runtime_data(_pkg, include_py_files=True)
 # Embedded Postgres (repo or parent workspace).
 _pg_candidates = [os.environ.get('ALPHA_POS_PGSQL_DIR'),
                   os.path.join(SPECPATH, '_pg', 'pgsql'),

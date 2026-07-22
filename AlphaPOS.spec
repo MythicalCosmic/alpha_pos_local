@@ -9,6 +9,28 @@ import os
 import sys
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files, collect_dynamic_libs
 
+
+def collect_runtime_submodules(package):
+    """Never ship test suites discovered by broad plugin collection."""
+    return collect_submodules(
+        package,
+        filter=lambda name: all(
+            part not in {'test', 'tests'} and not part.startswith('test_')
+            for part in name.split('.')
+        ),
+    )
+
+
+def collect_runtime_data(package, **kwargs):
+    return [
+        row for row in collect_data_files(package, **kwargs)
+        if all(
+            part.lower() not in {'test', 'tests'}
+            and not part.lower().startswith('test_')
+            for part in os.path.normpath(row[0]).split(os.sep)
+        )
+    ]
+
 # The spec dir (project root) must be importable so `import alpha_pos.settings`
 # works at build time, regardless of the CWD pyinstaller is invoked from.
 # SPECPATH is injected by PyInstaller when it execs this spec.
@@ -35,15 +57,15 @@ APPS = [a for a in _dj.INSTALLED_APPS
 
 hiddenimports = []
 for app in APPS:
-    hiddenimports += collect_submodules(app)
+    hiddenimports += collect_runtime_submodules(app)
 # The edition's config package (settings/urls/asgi/wsgi), the shared settings base,
 # and the desktop launcher package (incl. the lazily-imported pg_embedded).
 for pkg in ('config', 'alpha_pos_core', 'desktop'):
-    hiddenimports += collect_submodules(pkg)
+    hiddenimports += collect_runtime_submodules(pkg)
 # Django + libs imported by string/lazily (middleware paths, etc.). These need
 # their SUBMODULES collected, not just the top package, or import_string() fails
 # at runtime (e.g. whitenoise.middleware, corsheaders.middleware).
-hiddenimports += collect_submodules('django')
+hiddenimports += collect_runtime_submodules('django')
 # ASGI stack: uvicorn + channels replace waitress (so the frozen app serves HTTP
 # *and* websockets). Collect their submodules + the async/ws deps uvicorn lazily
 # imports, or the exe ModuleNotFounds at serve time.
@@ -51,11 +73,11 @@ for lib in ('uvicorn', 'channels', 'asgiref', 'websockets', 'h11', 'httptools',
             'python_multipart', 'whitenoise', 'corsheaders', 'cryptography',
             'dateutil', 'requests', 'anthropic'):
     try:
-        hiddenimports += collect_submodules(lib)
+        hiddenimports += collect_runtime_submodules(lib)
     except Exception:
         print(f'AlphaPOS.spec: {lib} not collectable — skipped')
 # Gemini SDK is lazy-imported in base/services/llm.py — collect it explicitly.
-hiddenimports += collect_submodules('google.genai')
+hiddenimports += collect_runtime_submodules('google.genai')
 # Self-update stack: tufup + its deps (tuf, securesystemslib, bsdiff4, pynacl).
 # updater.py lazy-imports tufup.client, so collect them explicitly or the frozen
 # build ships without the update engine. Guarded so a build made in a venv that
@@ -64,7 +86,7 @@ hiddenimports += collect_submodules('google.genai')
 update_binaries = []
 for _ulib in ('tufup', 'tuf', 'securesystemslib', 'bsdiff4', 'nacl'):
     try:
-        hiddenimports += collect_submodules(_ulib)
+        hiddenimports += collect_runtime_submodules(_ulib)
     except Exception:
         print(f'AlphaPOS.spec: {_ulib} not available — self-update engine omitted from this build.')
 for _ulib in ('bsdiff4', 'nacl'):
@@ -75,7 +97,7 @@ for _ulib in ('bsdiff4', 'nacl'):
 # Native GUI: pywebview + pythonnet/CLR (WebView2). The hook-webview/hook-clr/
 # hook-clr_loader hooks pull the .NET runtime + WebView2 DLLs; we add the
 # submodules + 'clr' so the lazy `import webview` is never missed.
-hiddenimports += collect_submodules('webview') + collect_submodules('clr_loader')
+hiddenimports += collect_runtime_submodules('webview') + collect_runtime_submodules('clr_loader')
 hiddenimports += ['clr', 'pythonnet']
 
 datas = [
@@ -97,7 +119,7 @@ else:
 datas += collect_data_files('webview')  # WebView2 assemblies in webview/lib
 # Ship each app's migrations + templates + static.
 for app in APPS:
-    datas += collect_data_files(app, include_py_files=True)
+    datas += collect_runtime_data(app, include_py_files=True)
 
 # Core's NON-app packages from the (editable / submodule) core: the shared config
 # base (`alpha_pos_core` = settings_base/urls/asgi) and the shims (`core` =
@@ -106,8 +128,8 @@ for app in APPS:
 # bundled) — otherwise the frozen app ModuleNotFounds on `config.settings`'
 # `from alpha_pos_core.settings_base import *` and on `core.shifts`.
 for _pkg in ('core', 'alpha_pos_core'):
-    datas += collect_data_files(_pkg, include_py_files=True)
-    hiddenimports += collect_submodules(_pkg)
+    datas += collect_runtime_data(_pkg, include_py_files=True)
+    hiddenimports += collect_runtime_submodules(_pkg)
 
 # Embedded Postgres: bundle the portable binaries so desktop/pg_embedded.py can run
 # a private DB (install needs no separate Postgres). Looks for _pg/pgsql in the repo
