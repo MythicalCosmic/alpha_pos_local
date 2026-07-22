@@ -1,8 +1,8 @@
 import hashlib
 import http.client
-import os
 import re
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -807,6 +807,74 @@ def test_matching_setup_signature_repairs_empty_or_stale_database(monkeypatch):
     manager.first_time_install()
     assert calls == ['migrate', 'bootstrap_admin', 'seed_templates', 'collectstatic']
     assert state_writes == [{'setup_sig': '1.2.3:abc'}]
+
+
+def test_first_time_install_supplies_streams_without_a_gui_console(monkeypatch):
+    from base.models import User
+    from django.core import management
+    from desktop import server_manager
+
+    calls = []
+    logs = []
+
+    class ExistingUsers:
+        @staticmethod
+        def exists():
+            return True
+
+    def fake_call(command, *_args, **options):
+        stdout = options.get('stdout')
+        stderr = options.get('stderr')
+        assert stdout is not None
+        assert stderr is not None
+        stdout.write(f'{command} output\n')
+        stderr.write(f'{command} warning\n')
+        calls.append(command)
+
+    monkeypatch.setattr(User, 'objects', ExistingUsers())
+    monkeypatch.setattr(
+        server_manager, '_setup_signature_and_schema_current',
+        lambda: ('1.2.3:abc', False),
+    )
+    monkeypatch.setattr(config_store, 'read_state', lambda: {})
+    monkeypatch.setattr(config_store, 'update_state', lambda _values: None)
+    monkeypatch.setattr(management, 'call_command', fake_call)
+    manager = ServerManager()
+    manager.ensure_django = lambda: None
+
+    # A PyInstaller ``--windowed`` executable has no process console.
+    with monkeypatch.context() as gui:
+        gui.setattr(sys, 'stdout', None)
+        gui.setattr(sys, 'stderr', None)
+        manager.first_time_install(log=logs.append)
+
+    assert calls == ['migrate', 'bootstrap_admin', 'seed_templates', 'collectstatic']
+    for command in calls:
+        assert f'  [{command}] {command} output' in logs
+        assert f'  [{command}] {command} warning' in logs
+
+
+def test_management_command_logs_output_before_reraising(monkeypatch):
+    from django.core import management
+
+    logs = []
+
+    def failing_call(_command, *_args, **options):
+        options['stdout'].write('completed step one\n')
+        options['stderr'].write('database unavailable\n')
+        raise RuntimeError('setup failed')
+
+    monkeypatch.setattr(management, 'call_command', failing_call)
+
+    with pytest.raises(RuntimeError, match='setup failed'):
+        ServerManager.run_management_command(
+            'migrate', '--noinput', log=logs.append,
+        )
+
+    assert logs == [
+        '  [migrate] completed step one',
+        '  [migrate] database unavailable',
+    ]
 
 
 def test_django_bootstrap_verifies_postgres_before_settings_setup(monkeypatch):

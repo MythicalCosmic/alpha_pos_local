@@ -6,6 +6,7 @@ self-tests. Start/stop is controlled by the big button in the UI.
 """
 from __future__ import annotations
 
+import io
 import logging
 import threading
 import time
@@ -439,6 +440,48 @@ class ServerManager:
             django.setup()
             self._django_ready = True
 
+    @staticmethod
+    def run_management_command(command, *args, log=None, **options):
+        """Run a Django command safely from the windowed desktop process.
+
+        PyInstaller's Windows GUI subsystem intentionally leaves
+        ``sys.stdout`` and ``sys.stderr`` as ``None``. Django's
+        ``BaseCommand`` otherwise wraps those missing streams and crashes as
+        soon as a command writes progress output. Supplying real text streams
+        at this boundary keeps every desktop-invoked command console-agnostic
+        and gives setup output a durable home in the application log.
+        """
+        from django.core.management import call_command
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        options['stdout'] = stdout
+        options['stderr'] = stderr
+        try:
+            return call_command(command, *args, **options)
+        finally:
+            for stream_name, stream, logger_method in (
+                ('stdout', stdout, logger.info),
+                ('stderr', stderr, logger.warning),
+            ):
+                for line in stream.getvalue().splitlines():
+                    if not line.strip():
+                        continue
+                    message = f'  [{command}] {line}'
+                    logger_method(
+                        'management command %s %s: %s',
+                        command,
+                        stream_name,
+                        line,
+                    )
+                    if log is not None:
+                        try:
+                            log(message)
+                        except Exception:  # noqa: BLE001
+                            logger.exception(
+                                'management command output callback failed',
+                            )
+
     def first_time_install(self, log=lambda m: None):
         """Run migrations, bootstrap the admin, and collect static — the
         'install everything on first run' step. Gated by a setup signature
@@ -457,9 +500,10 @@ class ServerManager:
             return
         if signature_matches:
             log('Saved setup signature matches, but database schema is stale/unknown; repairing.')
-        from django.core.management import call_command
         log('Applying database migrations…')
-        call_command('migrate', '--noinput', verbosity=0)
+        self.run_management_command(
+            'migrate', '--noinput', verbosity=0, log=log,
+        )
         log('Creating admin account (if missing)…')
         try:
             from desktop import config_store
@@ -470,11 +514,16 @@ class ServerManager:
             if not User.objects.exists():
                 email = 'admin@local'
                 password = config_store.generate_password()
-                call_command('bootstrap_admin', email=email, password=password, verbosity=0)
+                self.run_management_command(
+                    'bootstrap_admin', email=email, password=password,
+                    verbosity=0, log=log,
+                )
                 config_store.write_admin_creds(email, password)
                 log(f'  Admin created — email: {email}  (password shown in the panel)')
             else:
-                call_command('bootstrap_admin', verbosity=0)
+                self.run_management_command(
+                    'bootstrap_admin', verbosity=0, log=log,
+                )
         except Exception as exc:  # noqa: BLE001
             log(f'  bootstrap_admin failed: {exc}')
             # Required invariant: never persist setup_sig without a usable admin.
@@ -483,7 +532,9 @@ class ServerManager:
         try:
             # Idempotent (get_or_create) — without this the templates table is
             # empty and automatic Telegram notifications silently no-op.
-            call_command('seed_templates', verbosity=0)
+            self.run_management_command(
+                'seed_templates', verbosity=0, log=log,
+            )
         except Exception as exc:  # noqa: BLE001
             log(f'  seed_templates failed: {exc}')
             # Automatic Telegram notifications depend on these rows. Retrying
@@ -491,7 +542,9 @@ class ServerManager:
             raise
         log('Collecting static files…')
         try:
-            call_command('collectstatic', '--noinput', verbosity=0)
+            self.run_management_command(
+                'collectstatic', '--noinput', verbosity=0, log=log,
+            )
         except Exception as exc:  # noqa: BLE001
             log(f'  (collectstatic skipped: {exc})')
         log('Setup complete.')

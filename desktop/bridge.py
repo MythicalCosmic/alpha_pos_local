@@ -881,8 +881,9 @@ class Api:
         self.server.ensure_django()
         # Make sure the auth tables exist even if Start was never pressed.
         try:
-            from django.core.management import call_command
-            call_command('migrate', '--noinput', verbosity=0)
+            self.server.run_management_command(
+                'migrate', '--noinput', verbosity=0,
+            )
         except Exception:  # noqa: BLE001
             logger.exception('migrate before admin create failed')
         from django.contrib.auth import get_user_model
