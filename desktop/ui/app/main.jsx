@@ -132,7 +132,13 @@ function App() {
       setPhase("off"); refreshServer();
     } else if (phase === "off") {
       setPhase("starting");
-      await api.run_setup();
+      const setup = await api.run_setup();
+      if (!setup || !setup.ok) {
+        setPhase("off");
+        toast((setup && setup.error) || "Setup failed");
+        refreshAll();
+        return;
+      }
       const r = await api.start_server();
       if (r && r.running) { onSinceRef.current = Date.now(); setPhase("on"); toast(t("dash.serverOn")); }
       else { setPhase("off"); toast((r && r.error) || "Start failed"); }
@@ -191,22 +197,32 @@ function App() {
   // last_message on a healthy beat is just an informational note, so it must
   // NOT surface under the red "Last error" row.
   const licStatus = lic && lic.status;
-  const hbHealthy = registered && licStatus === "ACTIVE";
-  const hbIsError = registered && (licStatus === "SUSPENDED" || licStatus === "EXPIRED");
+  const hbWorker = ((srv.workers || {}).heartbeat || {});
+  const hbIsError = licStatus === "SUSPENDED" || licStatus === "EXPIRED";
+  const hbHealthy = registered && !!hbWorker.alive && !hbWorker.last_error;
 
   const ctx = {
     t, lang, toast, nav: setPage,
     cfg: { port: srv.port || 8000, lanIp: srv.lan_ip || "127.0.0.1", controlHost },
-    server: { phase, toggle: toggleServer, uptimeStr: fmtUptime(uptime) },
+    server: {
+      phase,
+      toggle: toggleServer,
+      uptimeStr: fmtUptime(uptime),
+      error: ((srv.environment || {}).error
+        || (srv.database || {}).error
+        || (srv.database || {}).warning
+        || srv.last_error || ""),
+    },
     hb: {
       online: hbHealthy,
       hasBeat: !!lastBeat,
       canSync: registered,            // a manual heartbeat doesn't need the local server
       status: licStatus,
       pending: sync.pending_count || 0,
-      nextIn: 30 - (tick % 30),
+      alive: !!hbWorker.alive,
+      nextIn: hbWorker.next_run_in_s,
       lastBeatStr: lastBeat ? fmtClock(lastBeat) : "—",
-      lastError: hbIsError ? lastMessage : "",
+      lastError: hbWorker.last_error || (hbIsError ? lastMessage : ""),
       warn: !!(lic && lic.warn),
       syncNow: heartbeatNow,
     },
@@ -227,12 +243,24 @@ function App() {
     updates: {
       version: upd.version, url: upd.update_url, pending: upd.pending, frozen: upd.frozen,
       enabled: upd.enabled, reason: upd.reason,
+      active: !!upd.active, phase: upd.phase || "idle", progress: Number(upd.progress || 0),
+      message: upd.message || "", bytesDownloaded: Number(upd.bytes_downloaded || 0),
+      bytesTotal: Number(upd.bytes_total || 0), targetVersion: upd.target_version,
+      retryable: !!upd.retryable,
       lastCheckAt: upd.last_check_at, lastCheckOk: upd.last_check_ok, lastCheckError: upd.last_check_error,
       lastUpdateAt: upd.last_update_at, lastUpdateVersion: upd.last_update_version,
       available: upd.available, history: upd.history || [],
-      checkOnly: async () => { const r = await api.check_updates_only(); refreshUpdates(); if (r && r.available && r.available !== upd.version) toast(t("upd.newAvailable")); else toast(t("upd.upToDate")); return r; },
-      install: async () => { const r = await api.check_updates_now(); toast((r && r.message) || ""); refreshUpdates(); return r; },
-      check: async () => { const r = await api.check_updates_now(); toast((r && r.message) || ""); refreshUpdates(); },
+      checkOnly: async () => {
+        const r = await api.check_updates_only();
+        await refreshUpdates();
+        if (r && r.error) toast(r.error);
+        else if (r && r.busy) toast(t("upd.checking"));
+        else if (r && r.available && r.available !== upd.version) toast(t("upd.newAvailable"));
+        else if (r && r.enabled !== false) toast(t("upd.upToDate"));
+        return r;
+      },
+      install: async () => { const r = await api.check_updates_now(); await refreshUpdates(); return r; },
+      refresh: refreshUpdates,
     },
     activateLicense, deactivateLicense, refreshAll,
   };
@@ -245,7 +273,7 @@ function App() {
         {/* Brand strip only — the native OS window already provides the
             minimize / maximize / close controls, so we don't draw our own. */}
         <div className="titlebar">
-          <div className="tb-app"><span className="tb-glyph">α</span>Alpha POS Backend</div>
+          <div className="tb-app"><img className="tb-logo" src="AlphaPOS.png" alt="" />Alpha POS Backend</div>
           <div className="tb-spacer"></div>
           <SyncPill sync={sync} busy={syncBusy} onSync={cloudSyncNow} sl={sl}></SyncPill>
         </div>
@@ -253,8 +281,11 @@ function App() {
         <div className="frame">
           <aside className="sidebar">
             <div className="wordmark">
-              <div className="wm-name">Alpha POS</div>
-              <div className="wm-sub">Backend</div>
+              <img className="wm-logo" src="AlphaPOS.png" alt="Alpha POS" />
+              <div className="wm-copy">
+                <div className="wm-name">Alpha POS</div>
+                <div className="wm-sub">Backend</div>
+              </div>
             </div>
             <nav className="nav">
               {NAV.map((n) => (

@@ -29,6 +29,45 @@ logger = logging.getLogger('desktop.app')
 _NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 
 
+def _configure_boot_logging():
+    """Persist failures that happen before Django configures normal logging.
+
+    The packaged executable has no console, so an unreadable .env or embedded
+    Postgres failure during the first seconds previously vanished completely.
+    Django later takes over with app.log/error.log; this small rotating boot log
+    is specifically for the path leading up to django.setup().
+    """
+    root = logging.getLogger()
+    if any(getattr(handler, '_alphapos_boot', False) for handler in root.handlers):
+        return
+    try:
+        from logging.handlers import RotatingFileHandler
+        from desktop import config_store
+        # On the first boot after Factory Reset this file would lock the logs
+        # directory before consume_reset_pending can erase it on Windows.
+        if config_store.RESET_FLAG.exists():
+            return
+        log_dir = config_store.DATA_DIR / 'logs'
+        log_dir.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(
+            log_dir / 'desktop_boot.log', maxBytes=2 * 1024 * 1024,
+            backupCount=2, encoding='utf-8',
+        )
+        handler._alphapos_boot = True
+        handler.setFormatter(logging.Formatter(
+            '%(asctime)s %(levelname)s %(name)s [%(process)d] %(message)s',
+        ))
+        handler.setLevel(logging.INFO)
+        root.addHandler(handler)
+        if root.level > logging.INFO:
+            root.setLevel(logging.INFO)
+    except Exception:  # noqa: BLE001 — logging must never block first paint
+        pass
+_UPDATE_SHUTDOWN = threading.Event()
+_BACKEND_READY = threading.Event()
+_EDGE_PROC = None
+
+
 def _find_edge() -> str | None:
     candidates = [
         r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
@@ -41,8 +80,10 @@ def _find_edge() -> str | None:
 
 
 def _profile_dir() -> str:
-    base = os.environ.get('LOCALAPPDATA') or str(Path.home())
-    p = Path(base) / 'AlphaPOS' / 'edge-profile'
+    # Share config_store's canonical fallback so Startup/manual launches reuse
+    # the same browser cache even when LOCALAPPDATA is absent.
+    from desktop import config_store
+    p = config_store.DATA_DIR / 'edge-profile'
     p.mkdir(parents=True, exist_ok=True)
     return str(p)
 
@@ -53,20 +94,62 @@ def _selftest():
     import json
     from desktop.bridge import Api
     api = Api()
-    print('get_state :', json.dumps(api.get_state())[:80])
-    api.run_setup()
-    print('start     :', api.start_server().get('running'))
-    print('conn      :', api.test_server_connection().get('status'))
-    api.fiscal_set_mode('mock')
-    print('mock sync :', api.send_mock_sync().get('read_back'))
-    print('fiscal    :', api.fiscal_test().get('fiscal_sign'))
-    api.stop_server()
+    original_fiscal_mode = None
     try:
-        import webview  # noqa: F401 — confirms the native-GUI backend bundled
-        print('webview   : importable (native window available)')
+        state = api.get_state()
+        print('get_state :', json.dumps(state)[:80])
+        if not state.get('ok'):
+            raise RuntimeError(state.get('error') or 'get_state failed')
+
+        setup = api.run_setup()
+        print('setup     :', setup.get('ok'))
+        if not setup.get('ok'):
+            raise RuntimeError(setup.get('error') or 'setup/migrations failed')
+
+        started = api.start_server()
+        print('start     :', started.get('running'))
+        if not started.get('ok') or not started.get('running'):
+            raise RuntimeError(started.get('error') or 'server failed to bind')
+
+        connection = api.test_server_connection()
+        print('conn      :', connection.get('status'))
+        if not connection.get('ok') or connection.get('status') != 200:
+            raise RuntimeError(connection.get('error') or 'health check failed')
+
+        fiscal_status = api.fiscal_status()
+        if not fiscal_status.get('ok'):
+            raise RuntimeError(fiscal_status.get('error') or 'fiscal status failed')
+        original_fiscal_mode = (
+            ((fiscal_status.get('fiscal') or {}).get('config') or {}).get('mode')
+        )
+        fiscal_mode = api.fiscal_set_mode('mock')
+        if not fiscal_mode.get('ok'):
+            raise RuntimeError(fiscal_mode.get('error') or 'mock fiscal setup failed')
+        mock_sync = api.send_mock_sync()
+        print('mock sync :', mock_sync.get('read_back'))
+        if not mock_sync.get('ok') or not mock_sync.get('read_back'):
+            raise RuntimeError(mock_sync.get('error') or 'mock sync round-trip failed')
+
+        fiscal = api.fiscal_test()
+        print('fiscal    :', fiscal.get('fiscal_sign'))
+        if not fiscal.get('ok') or not fiscal.get('fiscal_sign'):
+            raise RuntimeError(fiscal.get('error') or 'mock fiscalization failed')
+
+        try:
+            import webview  # noqa: F401 — confirms the native-GUI backend bundled
+            print('webview   : importable (native window available)')
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f'native GUI backend missing: {exc}') from exc
     except Exception as exc:  # noqa: BLE001
-        print('webview   : MISSING —', exc)
+        logger.exception('desktop selftest failed')
+        print('SELFTEST FAILED:', exc)
+        return 1
+    finally:
+        if original_fiscal_mode and original_fiscal_mode != 'mock':
+            api.fiscal_set_mode(original_fiscal_mode)
+        api.stop_server()
     print('SELFTEST OK')
+    return 0
 
 
 def _run_pywebview(url: str) -> bool:
@@ -95,15 +178,40 @@ def _run_edge(url: str) -> bool:
     edge = _find_edge()
     if not edge:
         return False
+    global _EDGE_PROC
     proc = subprocess.Popen([
         edge, f'--app={url}', f'--user-data-dir={_profile_dir()}',
         '--no-first-run', '--no-default-browser-check', '--window-size=1040,740',
     ], creationflags=_NO_WINDOW)
+    _EDGE_PROC = proc
     try:
         proc.wait()
     except KeyboardInterrupt:
         pass
+    finally:
+        if _EDGE_PROC is proc:
+            _EDGE_PROC = None
     return True
+
+
+def _close_edge_fallback():
+    """Close the Edge --app child before an updater relaunch reuses its profile."""
+    global _EDGE_PROC
+    proc = _EDGE_PROC
+    _EDGE_PROC = None
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            logger.warning('Edge fallback did not exit during update shutdown')
+    except Exception:  # noqa: BLE001
+        logger.exception('could not close Edge fallback during update shutdown')
 
 
 def _autostart_backend():
@@ -115,30 +223,120 @@ def _autostart_backend():
     makes every boot/login come up serving with no button press.
     """
     api = control_server._API
-    try:
-        api.run_setup()  # migrate + bootstrap admin + collectstatic (idempotent)
-    except Exception:  # noqa: BLE001 — still try to start with whatever exists
-        logger.exception('autostart: first-run setup failed')
-
+    setup_ok = False
     backoff = 3
-    while True:
+    while not _UPDATE_SHUTDOWN.is_set():
+        # Never bind the POS against a schema whose migration failed. Retry the
+        # idempotent setup with backoff; a later transient DB recovery can still
+        # bring the app online without an operator restart.
+        if not setup_ok:
+            try:
+                setup_result = api.run_setup()  # migrate + bootstrap admin + collectstatic
+                # Bridge methods return structured errors through @_safe rather
+                # than raising. Treat that exactly like an exception; otherwise
+                # a failed migration would still be marked setup_ok and bind.
+                if not setup_result.get('ok'):
+                    raise RuntimeError(
+                        setup_result.get('error') or 'desktop setup failed'
+                    )
+                setup_ok = True
+                backoff = 3
+            except Exception:  # noqa: BLE001
+                logger.exception('autostart: first-run setup failed; backend remains offline')
+                _UPDATE_SHUTDOWN.wait(backoff)
+                backoff = min(backoff * 2, 60)
+                continue
         try:
-            if not api.server.is_running():
-                res = api.start_server()
+            if api.server.wants_running() and not api.server.is_running():
+                # Crash recovery must not override an operator's explicit Stop.
+                res = api.server.start(automatic=True)
                 if res.get('running'):
                     logger.info('autostart: POS server up — LAN %s', api.server.url())
+                    if setup_ok:
+                        _BACKEND_READY.set()
                     backoff = 3
                 else:
                     logger.error('autostart: start failed: %s', res.get('error'))
-                    time.sleep(backoff)
+                    _UPDATE_SHUTDOWN.wait(backoff)
                     backoff = min(backoff * 2, 60)
                     continue
+            elif api.server.is_running():
+                if setup_ok:
+                    _BACKEND_READY.set()
+                # Independent watchdog: if both daemons ever exit, the server
+                # supervisor still notices and resurrects them.
+                api.server.ensure_background_workers()
         except Exception:  # noqa: BLE001 — never let the supervisor die
             logger.exception('autostart: start raised')
-            time.sleep(backoff)
+            _UPDATE_SHUTDOWN.wait(backoff)
             backoff = min(backoff * 2, 60)
             continue
-        time.sleep(5)  # watchdog poll — restart promptly if the server stops
+        # Wake immediately for an update so the watchdog cannot restart uvicorn
+        # while the launcher is releasing its files.
+        _UPDATE_SHUTDOWN.wait(5)
+
+
+def _confirm_update_start_when_ready(*, ready_event=None, shutdown_event=None,
+                                     updater_module=None):
+    """Clear the update's pending marker only after a real backend bind.
+
+    This runs independently from metadata refresh. If migrations, config, the
+    database, or uvicorn never become healthy, the marker deliberately remains
+    for the updater's recovery policy instead of blessing a broken release just
+    because its control-panel window painted.
+    """
+    ready_event = ready_event or _BACKEND_READY
+    shutdown_event = shutdown_event or _UPDATE_SHUTDOWN
+    while not shutdown_event.is_set():
+        if ready_event.wait(0.5):
+            if updater_module is None:
+                from desktop import updater as updater_module
+            updater_module.mark_started_ok()
+            logger.info('update launch confirmed after POS backend became ready')
+            return True
+    return False
+
+
+def _graceful_update_shutdown(httpd):
+    """Release app-owned resources before the external helper swaps files."""
+    if _UPDATE_SHUTDOWN.is_set():
+        return
+    _UPDATE_SHUTDOWN.set()
+
+    def stop_everything():
+        # Bound shutdown too: the helper has its own 45-second parent wait, and
+        # neither side is allowed to retry a locked application forever.
+        force_exit = threading.Timer(20.0, lambda: os._exit(0))
+        force_exit.daemon = True
+        force_exit.start()
+        try:
+            control_server._API.stop_server()
+        except Exception:  # noqa: BLE001
+            logger.exception('update shutdown: POS server stop failed')
+        try:
+            from django.db import connections
+            connections.close_all()
+        except Exception:  # noqa: BLE001
+            logger.debug('update shutdown: Django connection close failed', exc_info=True)
+        try:
+            from desktop import pg_embedded
+            pg_embedded.stop()
+        except Exception:  # noqa: BLE001
+            logger.exception('update shutdown: embedded Postgres stop failed')
+        _close_edge_fallback()
+        try:
+            httpd.shutdown()
+            httpd.server_close()
+        except Exception:  # noqa: BLE001
+            logger.debug('update shutdown: panel server close failed', exc_info=True)
+        logging.shutdown()
+        os._exit(0)
+
+    threading.Thread(
+        target=stop_everything,
+        name='update-shutdown',
+        daemon=True,
+    ).start()
 
 
 def _boot_worker():
@@ -147,53 +345,38 @@ def _boot_worker():
     POS server, then run a DEFERRED self-update check. None of this is on the
     first-paint path, so the window appears instantly and the panel's existing
     status poller shows 'starting database / server…' until it's ready."""
-    # Factory reset MUST complete before embedded Postgres opens the cluster — if
-    # a reset left the cluster locked, starting the old DB first would re-lock it
-    # and the wipe would silently fail, leaving the prior owner's data live.
-    try:
-        from desktop import config_store
-        config_store.consume_reset_pending()
-    except Exception:  # noqa: BLE001
-        logger.exception('boot: factory-reset consume failed; continuing')
-
-    # Embedded Postgres (packaged build); no-op against an external/dev DB.
+    # One serialized boundary owns env/reset -> verified PostgreSQL -> Django.
+    # Early UI diagnostics use the same method, so they can never win a race and
+    # permanently configure settings against fallback SQLite.
     try:
         from desktop import pg_embedded
-        pg_embedded.start()
+        control_server._API.server.ensure_django()
         atexit.register(pg_embedded.stop)
     except Exception:  # noqa: BLE001
-        logger.exception('boot: embedded Postgres bootstrap failed; continuing')
-
-    # Load saved config + baked defaults (sync URL, update URL, telegram…) into
-    # the process env AFTER PG so its DB_* env stays authoritative.
-    try:
-        from desktop import config_store
-        config_store.apply_env_to_process()
-    except Exception:  # noqa: BLE001
-        logger.exception('boot: env load failed; continuing')
+        logger.exception('boot: database/Django bootstrap failed; backend will remain offline')
+        return
 
     # Start + supervise the POS server (its own infinite watchdog loop) on its own
     # thread so this worker can move on to the deferred update check.
     threading.Thread(target=_autostart_backend, name='autostart', daemon=True).start()
 
-    # Self-update check — DEFERRED here, AFTER the window is painted + PG is up, so
-    # the ~800ms tufup import + blocking HTTPS round-trip never delays first paint.
-    # In a configured frozen build it may apply an update + restart the process.
+    # Confirm an applied update only after the autostart thread reports a real
+    # uvicorn bind. Metadata refresh is independent and may happen meanwhile.
     if '--no-update' not in sys.argv:
         try:
             from desktop import updater
-            # Clear any pending marker from an update applied on the PREVIOUS launch
-            # FIRST, before checking for a new one. check_and_apply() restarts the
-            # process when it applies an update, so it never returns — a
-            # mark_started_ok() AFTER it would never run, leaving the marker set and
-            # re-applying the same staged bundle in an endless restart loop.
-            updater.mark_started_ok()
-            updater.check_and_apply()
+            threading.Thread(
+                target=_confirm_update_start_when_ready,
+                kwargs={'updater_module': updater},
+                name='update-start-confirmer', daemon=True,
+            ).start()
+            updater.check_only()
         except Exception:  # noqa: BLE001
             logger.exception('boot: self-update check failed; continuing')
 
 
 def main():
+    _configure_boot_logging()
     os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
 
     # 1) SINGLE-INSTANCE LOCK FIRST — before any embedded-Postgres / data-dir work.
@@ -211,12 +394,13 @@ def main():
     if '--selftest' in sys.argv:
         try:
             from desktop import config_store, pg_embedded
-            config_store.consume_reset_pending()
+            config_store.apply_env_to_process()
             pg_embedded.start()
             atexit.register(pg_embedded.stop)
-            config_store.apply_env_to_process()
         except Exception:  # noqa: BLE001
             logger.exception('selftest backend bootstrap failed')
+            print('SELFTEST FAILED: backend bootstrap failed')
+            return 1
         return _selftest()
 
     # 2) Bind the lightweight control-panel server and PAINT THE WINDOW IMMEDIATELY.
@@ -234,7 +418,12 @@ def main():
     url = f'http://{control_server.CONTROL_HOST}:{control_server.CONTROL_PORT}/'
     threading.Thread(target=httpd.serve_forever, name='control', daemon=True).start()
 
-    # 3) Boot the backend (PG → env → POS server → deferred update) off the paint path.
+    # The update engine asks the launcher to close uvicorn, Django, Postgres and
+    # the panel socket. Only then does its out-of-process helper replace files.
+    from desktop import updater
+    updater.set_shutdown_callback(lambda: _graceful_update_shutdown(httpd))
+
+    # 3) Boot the backend (env/reset → PG → POS server → update check) off paint path.
     threading.Thread(target=_boot_worker, name='boot', daemon=True).start()
 
     # 4) FIRST PAINT — nothing slow upstream. Prefer the native window; fall back so
@@ -267,4 +456,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main() or 0)

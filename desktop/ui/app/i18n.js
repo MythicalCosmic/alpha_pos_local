@@ -788,3 +788,37 @@ window.tr = function (lang, key) {
   var d = window.I18N[lang] || window.I18N.en;
   return d[key] != null ? d[key] : (window.I18N.en[key] != null ? window.I18N.en[key] : key);
 };
+
+// --- Smooth updater progress window ---
+(function () {
+  var extra = {
+    en: {
+      "common.close": "Close",
+      "upd.installing": "Installing…", "upd.secureUpdate": "SECURE UPDATE",
+      "upd.modalTitle": "Installing your update", "upd.modalChecking": "Checking signatures…",
+      "upd.modalPreparing": "Preparing the verified update…", "upd.modalRestarting": "Restarting Alpha POS",
+      "upd.modalFailed": "Update could not finish", "upd.modalCurrent": "You’re up to date",
+      "upd.signedVerified": "Cryptographically verified", "upd.tryAgain": "Try again",
+      "upd.keepOpen": "You can keep this window open. Alpha POS will restart automatically."
+    },
+    uz: {
+      "common.close": "Yopish",
+      "upd.installing": "O‘rnatilmoqda…", "upd.secureUpdate": "XAVFSIZ YANGILANISH",
+      "upd.modalTitle": "Yangilanish o‘rnatilmoqda", "upd.modalChecking": "Imzolar tekshirilmoqda…",
+      "upd.modalPreparing": "Tasdiqlangan yangilanish tayyorlanmoqda…", "upd.modalRestarting": "Alpha POS qayta ishga tushmoqda",
+      "upd.modalFailed": "Yangilanish tugallanmadi", "upd.modalCurrent": "Dastur dolzarb",
+      "upd.signedVerified": "Kriptografik tasdiqlangan", "upd.tryAgain": "Qayta urinish",
+      "upd.keepOpen": "Bu oynani ochiq qoldiring. Alpha POS avtomatik qayta ishga tushadi."
+    },
+    ru: {
+      "common.close": "Закрыть",
+      "upd.installing": "Установка…", "upd.secureUpdate": "БЕЗОПАСНОЕ ОБНОВЛЕНИЕ",
+      "upd.modalTitle": "Установка обновления", "upd.modalChecking": "Проверка подписей…",
+      "upd.modalPreparing": "Подготовка проверенного обновления…", "upd.modalRestarting": "Перезапуск Alpha POS",
+      "upd.modalFailed": "Не удалось завершить обновление", "upd.modalCurrent": "Установлена последняя версия",
+      "upd.signedVerified": "Криптографически проверено", "upd.tryAgain": "Повторить",
+      "upd.keepOpen": "Оставьте это окно открытым. Alpha POS перезапустится автоматически."
+    }
+  };
+  for (var l in extra) { window.I18N[l] = Object.assign(window.I18N[l] || {}, extra[l]); }
+})();

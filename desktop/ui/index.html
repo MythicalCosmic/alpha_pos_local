@@ -4,11 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Alpha POS Backend</title>
-<!-- Fonts load when online; the CSS specifies system-font fallbacks so the
-     panel still looks right on an offline till. -->
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous">
-<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400..700;1,6..72,400..700&family=Hanken+Grotesk:wght@400..700&family=Space+Grotesk:wght@400..700&family=Archivo:wght@400..800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="icon" type="image/png" href="AlphaPOS.png">
+<!-- Fully local first paint: a render-blocking Google Fonts request made the
+     window appear blank/slow whenever a till's internet or DNS was degraded.
+     themes.css uses polished native system-font stacks instead. -->
 <link rel="stylesheet" href="themes.css">
 </head>
 <body>
@@ -18,20 +17,11 @@
      on every /api call so a stray browser page can't drive the panel. -->
 <script>window.__CONTROL_TOKEN__ = "{{CONTROL_TOKEN}}";</script>
 
-<!-- React + Babel are vendored locally (no CDN) so the panel runs fully offline
-     on a LAN-only POS terminal. JSX is compiled in-browser at launch. -->
+<!-- React is vendored for offline tills. JSX is compiled once at release time,
+     not by a 3.1 MB Babel runtime on every operator launch. Regenerate with:
+       node tools/compile_desktop_ui.js -->
 <script src="vendor/react.production.min.js"></script>
 <script src="vendor/react-dom.production.min.js"></script>
-<script src="vendor/babel.min.js"></script>
-
-<script src="app/bridge.js"></script>
-<script src="app/i18n.js"></script>
-<script type="text/babel" src="app/ui.jsx"></script>
-<script type="text/babel" src="app/screens-main.jsx"></script>
-<script type="text/babel" src="app/screens-admin.jsx"></script>
-<script type="text/babel" src="app/screens-ops.jsx"></script>
-<script type="text/babel" src="app/screens-updates.jsx"></script>
-<script type="text/babel" src="app/screens-logs.jsx"></script>
-<script type="text/babel" src="app/main.jsx"></script>
+<script src="app.bundle.js"></script>
 </body>
 </html>

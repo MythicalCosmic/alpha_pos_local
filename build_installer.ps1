@@ -50,25 +50,37 @@ Write-Host "Building Alpha POS $version" -ForegroundColor DarkCyan
 # the top-level `alpha_pos_core` package -> the frozen app ModuleNotFounds at launch
 # on `from alpha_pos_core.settings_base import *`. Force a normal reinstall here so a
 # clean checkout (or a dev box left on an editable core) always builds correctly.
-Write-Host '== 0/4  Ensuring non-editable core install ==' -ForegroundColor Cyan
+Write-Host '== 0/5  Ensuring non-editable core install ==' -ForegroundColor Cyan
 if (-not (Test-Path (Join-Path $root 'alpha_pos_core\pyproject.toml'))) {
     throw "core submodule missing - run: git submodule update --init --recursive"
 }
 & $py -m pip install --quiet --no-deps --force-reinstall (Join-Path $root 'alpha_pos_core')
 if ($LASTEXITCODE -ne 0) { throw "core install failed ($LASTEXITCODE)" }
 
-Write-Host '== 1/4  Generating icon ==' -ForegroundColor Cyan
-& $py 'desktop\make_icon.py'
+Write-Host '== 1/5  Precompiling desktop UI ==' -ForegroundColor Cyan
+$nodeCommand = Get-Command node -ErrorAction SilentlyContinue
+if (-not $nodeCommand) {
+    throw "Node.js is required to precompile the desktop UI. Install Node.js, then rerun the build."
+}
+$node = $nodeCommand.Source
+& $node 'tools\compile_desktop_ui.js'
+if ($LASTEXITCODE -ne 0) { throw "desktop UI compilation failed ($LASTEXITCODE)" }
+& $node 'tools\compile_desktop_ui.js' '--check'
+if ($LASTEXITCODE -ne 0) { throw "desktop UI bundle freshness check failed ($LASTEXITCODE)" }
 
-Write-Host '== 2/4  Building onedir (auto-updating app) ==' -ForegroundColor Cyan
+Write-Host '== 2/5  Generating icon ==' -ForegroundColor Cyan
+& $py 'desktop\make_icon.py'
+if ($LASTEXITCODE -ne 0) { throw "icon generation failed ($LASTEXITCODE)" }
+
+Write-Host '== 3/5  Building onedir (auto-updating app) ==' -ForegroundColor Cyan
 & $pyinstaller --noconfirm --clean 'AlphaPOS.spec'
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller (onedir) failed ($LASTEXITCODE)" }
 
-Write-Host '== 3/4  Building portable one-file ==' -ForegroundColor Cyan
+Write-Host '== 4/5  Building portable one-file ==' -ForegroundColor Cyan
 & $pyinstaller --noconfirm 'AlphaPOS-onefile.spec'
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller (onefile) failed ($LASTEXITCODE)" }
 
-Write-Host '== 4/4  Compiling Setup installer (Inno Setup) ==' -ForegroundColor Cyan
+Write-Host '== 5/5  Compiling Setup installer (Inno Setup) ==' -ForegroundColor Cyan
 if ($iscc) {
     & $iscc "/DAppVersion=$version" 'installer\AlphaPOS.iss'
     if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed ($LASTEXITCODE)" }
@@ -84,10 +96,14 @@ if ($iscc) {
         throw "Inno Setup succeeded but expected installer is missing: $installer"
     }
     Copy-Item $installer "$deliv\AlphaPOS-Setup.exe" -Force
+    Copy-Item $installer "$deliv\AlphaPOS-$version-Setup.exe" -Force
 }
-if (Test-Path "$root\dist\AlphaPOS.exe") {
-    Copy-Item "$root\dist\AlphaPOS.exe" "$deliv\AlphaPOS-Portable.exe" -Force
+$portable = Join-Path $root 'dist\AlphaPOS.exe'
+if (-not (Test-Path $portable)) {
+    throw "PyInstaller succeeded but expected portable executable is missing: $portable"
 }
+Copy-Item $portable "$deliv\AlphaPOS-Portable.exe" -Force
+Copy-Item $portable "$deliv\AlphaPOS-$version-Portable.exe" -Force
 
 Write-Host ''
 Write-Host "DONE. Deliverables in $deliv :" -ForegroundColor Green

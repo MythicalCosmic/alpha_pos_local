@@ -1,117 +1,178 @@
-# Desktop self-update (tufup)
+# Desktop self-update (tufup + smooth Windows handoff)
 
-Goal: **fix a bug → publish → every POS updates itself on next launch.** No
-reinstalling, no rebuilding the installer each time, and updates are
-cryptographically signed so a compromised server can't push arbitrary code.
-
-Pieces:
+Goal: **publish a signed build → let every POS update without replacing its
+business data.** Releases remain cryptographically authenticated through TUF.
 
 | Piece | File | Role |
 |-------|------|------|
-| Version | `desktop/version.py` | single source of truth; bump per release |
-| Client | `desktop/updater.py` | checks + applies updates at launch (fail-safe) |
-| Publisher | `tools/release.py` | builds & signs a bundle, updates the repo |
-| Wiring | `desktop/app.py` `main()` | calls `updater.check_and_apply()` first |
+| Version | `desktop/version.py` | release source of truth |
+| Client | `desktop/updater.py` | async signed download and progress state |
+| Swap helper | `desktop/update_helper.ps1` | bounded atomic swap, rollback and relaunch |
+| Publisher | `tools/release.py` | bundles, signs and updates the repository |
+| Launcher | `desktop/app.py` | background check and graceful shutdown callback |
 
-The client is a **guaranteed no-op** unless it's a frozen build, `tufup` is
-installed, `ALPHA_POS_UPDATE_URL` is set, and a trusted `tuf_root/root.json` is
-bundled. Any failure falls back to "run the current version" — updating can
-never brick the app. `--no-update` skips the check.
+The client is a guaranteed no-op unless it is a frozen Windows build, `tufup`
+is installed, `ALPHA_POS_UPDATE_URL` is set, and both a trusted
+`tuf_root/root.json` and the WPF helper are bundled. `--no-update` skips the
+background metadata check.
 
----
+Startup checks only; it never closes a working till by surprise. The operator
+chooses **Install now**, sees live download progress, and the app releases
+uvicorn, Django and embedded Postgres before the helper replaces files and
+relaunches it.
+
+## Why there is a custom Windows helper
+
+tufup's default Windows installer starts a visible `cmd.exe` and invokes
+robocopy without `/R`. Windows then defaults to one million retries. If the
+still-running app holds its EXE, Python DLLs, WebView or another bundle file,
+that produces the old terminal/retry loop.
+
+Alpha POS instead provides:
+
+- a styled progress window and no console process;
+- a rendered-window handshake before the live POS is allowed to close;
+- a maximum 45-second wait for the parent process;
+- 12 bounded rename attempts (no unbounded copy loop);
+- same-volume, near-atomic directory activation;
+- preservation of Inno Setup's `unins*` files;
+- rollback to the previous directory when activation fails;
+- a 120-second backend-health confirmation window after launch;
+- automatic rollback/relaunch of the previous version if the new process
+  exits early or never becomes healthy; and
+- automatic relaunch after a successful swap.
 
 ## One-time setup
 
-### 1. Create signing keys + the repo (on your build machine, ONCE)
+### 1. Create signing keys and the repository
 
-```bash
+```powershell
 pip install -r requirements-desktop.txt
 python tools/release.py --init
 ```
 
 This creates:
-- `update_keys/` — **PRIVATE signing keys. Back these up offline; never commit
-  or upload them.** (Already gitignored.) Losing the root key means clients
-  can't trust a new key set without a reinstall.
-- `update_repo/` — the metadata + targets you publish to the server.
 
-### 2. Bundle the trusted root into the installer
+- `update_keys/`: private signing keys. Back them up offline and never publish
+  them. Losing the root key requires reinstalling clients to establish trust.
+- `update_repo/`: public metadata and targets served to clients.
 
-Clients bootstrap trust from a `root.json` shipped *inside* the build (not the
-network). Add it to `AlphaPOS.spec` `datas` so PyInstaller bundles it as
-`tuf_root/root.json`:
+### 2. Bundle the trust root and helper
+
+`AlphaPOS.spec` includes both:
 
 ```python
-# AlphaPOS.spec
-datas += [('update_repo/metadata/root.json', 'tuf_root')]
+datas += [
+    ('update_repo/metadata/root.json', 'tuf_root'),
+    ('desktop/update_helper.ps1', 'desktop'),
+]
 ```
 
-`updater._bundled_root()` looks for it in `sys._MEIPASS/tuf_root/root.json` and
-next to the exe.
+### 3. Configure the update repository URL
 
-### 3. Point the app at the update server
+Set this in the desktop Configuration page / `.env`:
 
-Set on each POS (desktop Configuration tab / env), e.g.:
-
-```
-ALPHA_POS_UPDATE_URL = https://control.<server-ip>.nip.io/updates
+```text
+ALPHA_POS_UPDATE_URL=https://control.<server-ip>.nip.io/updates
 ```
 
-The update repo is hosted on the **POS Control Center** (`pos_control`), NOT on
-the POS app server (`pos.<ip>`). Its Caddy maps `/updates/*` to the uploaded repo
-(`handle_path /updates/* { root * /srv/updates; file_server }`, bind-mounted from
-`/srv/alpha_pos_updates`), so it answers `…/updates/metadata/…` and
-`…/updates/targets/…`. See `pos_control/deploy.sh`. (If you run pos_control on the
-SAME host as alpha_pos, see RELEASES.md — one Caddy must serve both `pos.` and
-`control.`; two Caddy stacks can't both bind :80/:443.)
-
----
+The Control Center host serves `metadata/` and `targets/` under that path.
 
 ## Each release
 
-```bash
-# 1. Bump the version
-#    desktop/version.py  ->  __version__ = "1.0.1"
+```powershell
+# 1. Bump desktop/version.py
+# 2. Build the onedir app and installer
+powershell -ExecutionPolicy Bypass -File build_installer.ps1
 
-# 2. Build the onedir PyInstaller bundle (must be onedir, not onefile, so tufup
-#    can swap files):
-pyinstaller AlphaPOS.spec        # produces dist/AlphaPOS/
+# 3. Sign the onedir bundle
+..\.venv\Scripts\python.exe tools/release.py --publish --bundle dist/AlphaPOS
 
-# 3. Sign + add it to the repo
-python tools/release.py --publish --bundle dist/AlphaPOS
-
-# 4. Push the repo to the server path behind ALPHA_POS_UPDATE_URL
-#    (the control center host; that dir is what Caddy serves at /updates)
-rsync -a update_repo/ <control-server>:/srv/alpha_pos_updates/
+# 4. Promote update_repo/ to /srv/alpha_pos_updates/ on the control host
 ```
 
-Next time each POS launches it sees the new signed version, downloads the delta,
-verifies signatures, applies it and restarts. No operator action on the tills.
+Upload and hash-check the new target archive in a staging directory first.
+Promote the target, then `targets.json`, then `snapshot.json`, and
+`timestamp.json` **last**.  Do not copy the whole repository in arbitrary
+filesystem order: publishing metadata before its referenced archive can make a
+valid update temporarily impossible to download.  `root.json` is unchanged for
+an ordinary release and should not be replaced.
 
----
+On the next launch, each POS refreshes signed metadata. The Updates page offers
+the signed version. **Install now** downloads it with live byte progress,
+verifies and extracts it, closes Alpha POS safely, swaps it, and opens the new
+version automatically.
 
-## Health check & rollback
+## First rollout from the legacy updater
 
-`updater.py` writes `update_pending.flag` just before applying and clears it once
-the new version starts cleanly (`mark_started_ok()`). If a launch finds the flag
-still set, the previous update didn't confirm a clean start and it logs an error.
+Builds predating this helper still contain tufup's old cmd/robocopy installer.
+They cannot acquire the replacement logic until one update has completed. Use
+the new Setup installer for that one in-place upgrade. It keeps all business
+data under `%LOCALAPPDATA%\AlphaPOS`; every later release uses the smooth flow.
 
-To roll back, publish the previous version again (bump `version.py` to a higher
-number containing the old code, or re-`--publish` the prior bundle). tufup also
-retains downloaded archives under the per-user update dir
-(`%LOCALAPPDATA%/AlphaPOS/update/`) for manual recovery.
+If the old Updates button must be used for this first hop, close the old Alpha
+POS window when its legacy terminal appears so it releases the install files.
+The Setup installer is the preferred and predictable migration path.
 
----
+## Health, rollback and cleanup
 
-## Notes / caveats
+`updater.py` writes `update_pending.flag` only after download, signature
+verification and extraction. The new process records success only when the
+marker version exactly matches its running version **and** migrations/database
+startup have progressed far enough for the POS backend to bind successfully.
+It then deletes the old rollback directory asynchronously. If an old or broken
+process starts instead, it preserves both the marker and rollback directory and
+surfaces the mismatch; it never destroys the recovery copy.
 
-- Built and wired but **not yet validated end-to-end** (needs a Windows build +
-  a hosted repo). Treat the first release as a dry run: publish to a staging URL
-  and point one POS at it before rolling out.
-- tufup's `Repository` / `Client` API shifts between versions. This targets
-  `tufup ~0.9`; if you bump the pin, re-check the calls in `updater.py` and
-  `tools/release.py`.
-- Updates require the **onedir** PyInstaller layout (file-swap). A onefile
-  `.exe` can't be updated in place — keep `AlphaPOS.spec` (onedir) for releases
-  that use auto-update; `AlphaPOS-onefile.spec` is for standalone distribution
-  without updates.
+Signed metadata refresh is mandatory. A network failure or invalid/unsigned
+metadata is shown as an update error and can be retried; it is never reported
+as "up to date" and never reaches the install helper.
+
+The helper restores the previous directory immediately if activation fails. It
+also removes the pending marker so reopening the previous app cannot be
+misreported as a successful update. After launching the new executable, it
+keeps the rollback copy until the new app confirms a successfully bound POS
+backend. A crash or two-minute readiness timeout stops the failed process tree,
+restores that copy, and reopens the previous version. The helper log is stored
+at:
+
+```text
+%LOCALAPPDATA%\AlphaPOS\update\update-helper.log
+```
+
+To ship old behavior again, publish it under a higher semantic version; TUF
+correctly prevents downgrade metadata from silently replacing a newer build.
+
+## Safe helper smoke test
+
+The helper has a release-only headless mode for disposable same-volume folders.
+The automated success, failure, rollback and no-console contracts run with:
+
+```powershell
+$env:DEBUG='True'; $env:SECRET_KEY='test'
+..\.venv\Scripts\python.exe -m pytest test_updater_flow.py -q
+```
+
+For a manual dummy run, create sibling `current` and `staged` directories under
+`$env:TEMP`, put harmless files in them, then run:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File desktop\update_helper.ps1 `
+  -ParentPid 2147483646 -Source "$env:TEMP\AlphaPOS-sim\staged" `
+  -Destination "$env:TEMP\AlphaPOS-sim\current" -Version 9.9.9 `
+  -MarkerPath "$env:TEMP\AlphaPOS-sim\pending.flag" `
+  -LogPath "$env:TEMP\AlphaPOS-sim\helper.log" -Headless -SkipRelaunch
+```
+
+Add `-TestFailAfterBackup` to force failure after moving `current`. It must
+return exit code 1, restore `current`, and remove the pending marker. Never point
+a simulation at the real install directory.
+
+## Caveats
+
+- Updates require the onedir PyInstaller layout. The one-file portable cannot
+  update itself in place.
+- Success and forced rollback are tested against disposable Windows folders;
+  still canary one hosted signed update before a fleet rollout.
+- This implementation targets tufup 0.10. Recheck `Client` and `Repository`
+  calls whenever the dependency is upgraded.

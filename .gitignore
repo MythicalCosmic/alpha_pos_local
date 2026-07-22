@@ -33,6 +33,11 @@ db.sqlite3
 # Secrets
 .env
 *.pem
+.secret_key
+.license_fernet_key
+.device_id
+.legacy_env_migrated
+.legacy_pgdata_migrated
 
 # Embedded Postgres data (local PG lives under %LOCALAPPDATA% at runtime, but ignore any here)
 /pgdata/

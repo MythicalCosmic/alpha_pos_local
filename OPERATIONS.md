@@ -28,8 +28,8 @@ cd /c/Users/mythi/OneDrive/Desktop/AlphaPOS-Split/alpha_pos_local
 
 # 1. Edit desktop/version.py -> bump __version__ (e.g. "1.0.2" -> "1.0.3"). Must go UP.
 
-# 2. Build the app (via Bash, NOT the PowerShell Tee trick):
-SECRET_KEY=x DEBUG=True ../.venv/Scripts/pyinstaller.exe --noconfirm --clean AlphaPOS.spec
+# 2. Build the app + precompiled UI + icon + versioned deliverables:
+powershell -ExecutionPolicy Bypass -File build_installer.ps1
 
 # 3. Sign + package it:
 ../.venv/Scripts/python.exe tools/release.py --publish --bundle dist/AlphaPOS
@@ -86,7 +86,9 @@ ssh -i /tmp/alpha_pos_key root@78.111.91.113 \
   "docker exec -i pos_control-web-1 python manage.py seed_plans"
 ```
 Check: `curl https://control.78.111.91.113.nip.io/api/v1/plans`. Edit prices at
-`https://control.78.111.91.113.nip.io/admin/billing/subscriptionplan/` (admin / root1234).
+`https://control.78.111.91.113.nip.io/admin/billing/subscriptionplan/`.
+Use an individually provisioned administrator account; production credentials
+must never be stored in this repository.
 
 ---
 
