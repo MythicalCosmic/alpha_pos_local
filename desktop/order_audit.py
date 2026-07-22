@@ -478,6 +478,7 @@ _CAPTURE_QUEUE: queue.Queue[tuple[int, str]] = queue.Queue()
 _START_LOCK = threading.Lock()
 _STARTED = False
 _STOP = threading.Event()
+_THREAD: threading.Thread | None = None
 
 
 def get_status() -> dict[str, Any]:
@@ -516,6 +517,11 @@ def capture_all_orders(*, reason='full_sweep', recent_hours: int | None = None) 
         return {'seen': 0, 'captured': 0}
     seen = captured = 0
     for order in _order_queryset(recent_hours=recent_hours).iterator(chunk_size=200):
+        # Factory Reset must be able to quiesce this worker before deleting the
+        # database and evidence directory.  Bound shutdown even during a large
+        # first-run backfill instead of waiting for every historical row.
+        if _STOP.is_set():
+            break
         seen += 1
         if _COLLECTOR.capture(order, reason=reason):
             captured += 1
@@ -577,47 +583,94 @@ def _register_signals() -> None:
 def _collector_worker() -> None:
     # A full asynchronous bootstrap makes the file immediately useful for
     # historical comparison without delaying the POS window or checkout path.
-    request_full_sweep('startup_backfill')
-    next_sweep = time.monotonic() + _SWEEP_SECONDS
-    while not _STOP.is_set():
-        timeout = max(0.1, min(1.0, next_sweep - time.monotonic()))
+    try:
+        request_full_sweep('startup_backfill')
+        next_sweep = time.monotonic() + _SWEEP_SECONDS
+        while not _STOP.is_set():
+            timeout = max(0.1, min(1.0, next_sweep - time.monotonic()))
+            try:
+                order_id, reason = _CAPTURE_QUEUE.get(timeout=timeout)
+            except queue.Empty:
+                order_id = None
+                reason = ''
+            if order_id is not None:
+                try:
+                    if order_id == -1:
+                        capture_all_orders(reason=reason)
+                    else:
+                        capture_order_id(order_id, reason=reason)
+                except Exception:  # noqa: BLE001 - retry/backstop must keep running
+                    logger.exception('order audit queued capture failed')
+                finally:
+                    _CAPTURE_QUEUE.task_done()
+            if time.monotonic() >= next_sweep:
+                try:
+                    capture_all_orders(
+                        reason='periodic_backstop', recent_hours=_RECENT_HOURS,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception('order audit periodic sweep failed')
+                next_sweep = time.monotonic() + _SWEEP_SECONDS
+    finally:
+        _COLLECTOR.flush()
+        # Django connections are thread-local. Closing them from the bridge's
+        # request thread is not enough; release this worker's own DB handle so
+        # Factory Reset can remove the embedded cluster on Windows.
         try:
-            order_id, reason = _CAPTURE_QUEUE.get(timeout=timeout)
-        except queue.Empty:
-            order_id = None
-            reason = ''
-        if order_id is not None:
-            try:
-                if order_id == -1:
-                    capture_all_orders(reason=reason)
-                else:
-                    capture_order_id(order_id, reason=reason)
-            except Exception:  # noqa: BLE001 - retry/backstop must keep running
-                logger.exception('order audit queued capture failed')
-            finally:
-                _CAPTURE_QUEUE.task_done()
-        if time.monotonic() >= next_sweep:
-            try:
-                capture_all_orders(reason='periodic_backstop', recent_hours=_RECENT_HOURS)
-            except Exception:  # noqa: BLE001
-                logger.exception('order audit periodic sweep failed')
-            next_sweep = time.monotonic() + _SWEEP_SECONDS
-    _COLLECTOR.flush()
+            from django.db import connections
+            connections.close_all()
+        except Exception:  # noqa: BLE001 - shutdown remains best effort here
+            logger.debug('order audit: worker DB close failed', exc_info=True)
 
 
 def start_background_collector() -> bool:
-    global _STARTED
+    global _STARTED, _THREAD
     with _START_LOCK:
         if _STARTED:
             return False
+        _STOP.clear()
         _register_signals()
         thread = threading.Thread(
             target=_collector_worker, name='order-audit', daemon=True,
         )
-        thread.start()
+        _THREAD = thread
         _STARTED = True
+        try:
+            thread.start()
+        except Exception:
+            _THREAD = None
+            _STARTED = False
+            raise
         logger.info('local order audit collector started (enabled=%s)', _enabled_from_state())
         return True
+
+
+def stop_background_collector(*, timeout=35.0) -> bool:
+    """Stop and join the writer before destructive install maintenance.
+
+    Factory Reset is the important caller: it must never report success while
+    this thread can recreate ``order_audit/`` or still owns a Postgres handle.
+    """
+    global _STARTED, _THREAD
+    with _START_LOCK:
+        thread = _THREAD
+        if not _STARTED or thread is None:
+            _COLLECTOR.flush()
+            _STARTED = False
+            _THREAD = None
+            return True
+        _STOP.set()
+    if thread is not threading.current_thread():
+        thread.join(timeout=max(0.0, float(timeout)))
+    stopped = not thread.is_alive()
+    if not stopped:
+        logger.error('order audit collector did not stop within %.1f seconds', timeout)
+        return False
+    with _START_LOCK:
+        if _THREAD is thread:
+            _THREAD = None
+            _STARTED = False
+    return True
 
 
 def _parse_chat_ids(value: Any) -> list[str]:

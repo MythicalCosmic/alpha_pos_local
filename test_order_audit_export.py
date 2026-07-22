@@ -1,4 +1,6 @@
 import json
+import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -6,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from desktop import order_audit
+from desktop import bridge, order_audit
 
 
 class Rows(list):
@@ -248,3 +250,47 @@ def test_transport_error_redacts_bot_token(tmp_path, monkeypatch):
     assert result['ok'] is False
     assert '[redacted-token]' in result['failed'][0]['error']
     assert token not in json.dumps(result)
+
+
+def test_collector_stop_joins_writer_before_reset(monkeypatch):
+    started = threading.Event()
+
+    def worker():
+        started.set()
+        order_audit._STOP.wait(5)
+
+    monkeypatch.setattr(order_audit, '_collector_worker', worker)
+    monkeypatch.setattr(order_audit, '_register_signals', lambda: None)
+    monkeypatch.setattr(order_audit, '_STARTED', False)
+    monkeypatch.setattr(order_audit, '_THREAD', None)
+    monkeypatch.setattr(order_audit, '_STOP', threading.Event())
+
+    assert order_audit.start_background_collector() is True
+    assert started.wait(1)
+    thread = order_audit._THREAD
+    assert thread is not None and thread.is_alive()
+    assert order_audit.stop_background_collector(timeout=1) is True
+    assert not thread.is_alive()
+    assert order_audit._STARTED is False
+    assert order_audit._THREAD is None
+
+
+def test_factory_reset_aborts_when_audit_writer_cannot_quiesce(monkeypatch):
+    api = bridge.Api.__new__(bridge.Api)
+    api.server = _row(stop=lambda **kwargs: {
+        'workers_quiescent': True,
+    })
+    monkeypatch.setattr(sys, 'frozen', True, raising=False)
+    monkeypatch.setattr(
+        order_audit, 'stop_background_collector', lambda **kwargs: False,
+    )
+    reset_called = []
+    monkeypatch.setattr(
+        bridge.config_store, 'factory_reset', lambda: reset_called.append(True),
+    )
+
+    result = api.factory_reset(True)
+
+    assert result['ok'] is False
+    assert 'audit' in result['error'].lower()
+    assert reset_called == []

@@ -381,6 +381,37 @@ def test_locked_factory_reset_stays_armed_and_backend_refuses_to_boot(
     assert config_store.ENV_FILE.exists()
 
 
+def test_factory_reset_removes_raw_order_audit_and_exports(monkeypatch, tmp_path):
+    _config_paths(monkeypatch, tmp_path)
+    audit_dir = tmp_path / 'order_audit'
+    exports = audit_dir / 'exports'
+    exports.mkdir(parents=True)
+    (audit_dir / 'orders.raw.jsonl').write_text('raw order\n', encoding='utf-8')
+    (audit_dir / '.orders.raw.index.json').write_text('{}\n', encoding='utf-8')
+    (exports / 'raw-export.jsonl').write_text('export\n', encoding='utf-8')
+    monkeypatch.setattr(pg_embedded, 'stop', lambda: None)
+
+    removed = config_store._wipe_data()
+
+    assert str(audit_dir) in removed
+    assert not audit_dir.exists()
+
+
+def test_pending_reset_refuses_completion_if_order_audit_survives(
+        monkeypatch, tmp_path):
+    _config_paths(monkeypatch, tmp_path)
+    audit_dir = tmp_path / 'order_audit'
+    audit_dir.mkdir(parents=True)
+    (audit_dir / 'orders.raw.jsonl').write_text('private\n', encoding='utf-8')
+    config_store.RESET_FLAG.write_text('1\n', encoding='utf-8')
+    monkeypatch.setattr(config_store, '_wipe_data', lambda: [])
+
+    with pytest.raises(config_store.ConfigError, match='order_audit'):
+        config_store.consume_reset_pending()
+    assert config_store.RESET_FLAG.exists()
+    assert audit_dir.exists()
+
+
 def test_invalid_existing_fernet_key_is_never_silently_rotated(monkeypatch, tmp_path):
     _config_paths(monkeypatch, tmp_path)
     config_store.FERNET_FILE.write_text('broken\n', encoding='utf-8')

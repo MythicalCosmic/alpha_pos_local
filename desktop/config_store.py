@@ -409,7 +409,7 @@ def _wipe_data() -> list:
         ENV_FILE, SECRET_FILE, FERNET_FILE, DEVICE_FILE, STATE_FILE, CREDS_FILE,
         DATA_DIR / '.control_token',
         DATA_DIR / 'logs', DATA_DIR / 'staticfiles', DATA_DIR / 'private_media',
-        DATA_DIR / 'edge-profile',
+        DATA_DIR / 'edge-profile', DATA_DIR / 'order_audit',
     ]
     removed = []
     for p in targets:
@@ -447,6 +447,7 @@ def consume_reset_pending() -> bool:
             DATA_DIR / 'db.sqlite3', DATA_DIR / 'db.sqlite3-wal',
             DATA_DIR / 'db.sqlite3-shm', DATA_DIR / 'pgdata', ENV_FILE,
             SECRET_FILE, FERNET_FILE, DEVICE_FILE, STATE_FILE, CREDS_FILE,
+            DATA_DIR / 'order_audit',
         ]
         remaining = [path for path in critical if path.exists()]
         if remaining:

@@ -404,6 +404,19 @@ class Api:
         except Exception:  # noqa: BLE001
             logger.exception('stop during factory reset failed')
             return {'ok': False, 'error': 'Could not stop the database safely.'}
+        # The audit collector owns its own thread-local Django connection and
+        # can append/recreate evidence independently of uvicorn. It must be
+        # fully joined before the destructive wipe can be considered complete.
+        try:
+            from desktop import order_audit
+            if not order_audit.stop_background_collector(timeout=35):
+                return {
+                    'ok': False,
+                    'error': 'Order audit is still finishing. Wait a moment and retry.',
+                }
+        except Exception:  # noqa: BLE001
+            logger.exception('order audit stop during factory reset failed')
+            return {'ok': False, 'error': 'Could not stop order audit safely.'}
         try:
             from django.db import connections
             connections.close_all()
