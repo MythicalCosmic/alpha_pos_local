@@ -16,7 +16,9 @@ def test_build_passes_version_to_inno_and_collects_its_output():
     script = (ROOT / "build_installer.ps1").read_text(encoding="utf-8")
     assert "from desktop.version import __version__" in script
     assert '"/DAppVersion=$version"' in script
-    assert '"installer\\Output\\AlphaPOS-$version-Setup.exe"' in script
+    assert '"AlphaPOS-$version-Setup.exe"' in script
+    assert '"AlphaPOS-$version-Private-Setup.exe"' in script
+    assert '"installer\\Output\\$installerName"' in script
     assert "'..\\..\\.venv'" in script
     assert 'ALPHA_POS_PGSQL_DIR' in script
     assert 'ALPHA_POS_TUF_ROOT' in script

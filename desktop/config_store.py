@@ -19,6 +19,7 @@ import os
 import re
 import secrets
 import shutil
+import stat
 import string
 import subprocess
 import sys
@@ -204,6 +205,123 @@ def _current_windows_sid() -> str:
         return sid
 
 
+def _windows_private_path_identity(path: Path) -> str:
+    """Return a stable cache identity without resolving a possible link."""
+    return os.path.normcase(os.path.abspath(os.fspath(path)))
+
+
+def _windows_path_is_reparse_point(path: Path) -> bool:
+    """Identify links/junctions without following them.
+
+    ``Path.resolve()`` and recursive ``icacls /T`` both cross directory
+    junctions. Private-data ACL repair must stay inside the directory selected
+    by Alpha POS, so every path is inspected with no-follow metadata first.
+    """
+    try:
+        if path.is_symlink():
+            return True
+        is_junction = getattr(path, 'is_junction', None)
+        if callable(is_junction) and is_junction():
+            return True
+        metadata = path.lstat()
+    except OSError as exc:
+        raise ConfigError(
+            f'Could not inspect private Alpha POS data at {path}: {exc}'
+        ) from exc
+    attributes = int(getattr(metadata, 'st_file_attributes', 0) or 0)
+    return bool(
+        attributes & int(getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0) or 0)
+    )
+
+
+def _windows_entry_kind(entry: os.DirEntry) -> bool:
+    """Return whether *entry* is a directory, refusing every reparse point."""
+    path = Path(entry.path)
+    try:
+        if entry.is_symlink():
+            raise ConfigError(
+                f'Refusing to traverse reparse point in private Alpha POS data: {path}'
+            )
+        is_junction = getattr(entry, 'is_junction', None)
+        if callable(is_junction) and is_junction():
+            raise ConfigError(
+                f'Refusing to traverse reparse point in private Alpha POS data: {path}'
+            )
+        metadata = entry.stat(follow_symlinks=False)
+        attributes = int(getattr(metadata, 'st_file_attributes', 0) or 0)
+        if attributes & int(
+            getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0) or 0
+        ):
+            raise ConfigError(
+                f'Refusing to traverse reparse point in private Alpha POS data: {path}'
+            )
+        return entry.is_dir(follow_symlinks=False)
+    except ConfigError:
+        raise
+    except OSError as exc:
+        raise ConfigError(
+            f'Could not inspect private Alpha POS data at {path}: {exc}'
+        ) from exc
+
+
+def _apply_windows_private_acl(
+    path: Path, *, directory: bool, sid: str,
+) -> None:
+    """Apply an owner-only DACL to exactly one filesystem object."""
+    rights = '(OI)(CI)F' if directory else 'F'
+    command = [
+        _windows_executable('icacls.exe'), str(path),
+        '/inheritance:r', '/grant:r', f'*{sid}:{rights}',
+    ]
+    result = _hidden_windows_command(command)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or '').strip()[-300:]
+        raise ConfigError(
+            f'Could not restrict access to private Alpha POS data at {path}'
+            + (f': {detail}' if detail else '')
+        )
+
+
+def _repair_windows_private_descendants(root: Path, *, sid: str) -> None:
+    """Repair existing descendants without crossing links or junctions.
+
+    Directories receive inheritable rights and ordinary files receive file
+    rights. Applying ``(OI)(CI)F`` recursively to files is unsafe: when
+    inheritance is removed from an existing file, inheritance-only flags do
+    not grant that file access and can leave it with an empty DACL.
+    """
+    pending = [root]
+    while pending:
+        current = pending.pop()
+        try:
+            with os.scandir(current) as iterator:
+                entries = sorted(iterator, key=lambda item: item.name.casefold())
+        except OSError as exc:
+            raise ConfigError(
+                f'Could not inspect private Alpha POS data at {current}: {exc}'
+            ) from exc
+
+        child_directories: list[Path] = []
+        for entry in entries:
+            child = Path(entry.path)
+            child_is_directory = _windows_entry_kind(entry)
+            child_key = (
+                _windows_private_path_identity(child),
+                child_is_directory,
+                False,
+            )
+            if child_key not in _HARDENED_WINDOWS_PATHS:
+                _apply_windows_private_acl(
+                    child, directory=child_is_directory, sid=sid,
+                )
+                _HARDENED_WINDOWS_PATHS.add(child_key)
+            if child_is_directory:
+                child_directories.append(child)
+
+        # Reverse the sorted list for a deterministic depth-first walk.
+        pending.extend(reversed(child_directories))
+
+
 def _harden_windows_private_path(
     path: Path, *, directory: bool = False, recursive: bool = False,
 ) -> None:
@@ -223,32 +341,27 @@ def _harden_windows_private_path(
     if os.name != 'nt' or not getattr(sys, 'frozen', False):
         return
     path = Path(path)
-    if not path.exists():
+    if not os.path.lexists(path):
         return
-    try:
-        identity = str(path.resolve())
-    except OSError:
-        identity = str(path.absolute())
-    cache_key = (identity.casefold(), bool(directory), bool(recursive))
+    if recursive and not directory:
+        raise ConfigError('Recursive private-data ACL repair requires a directory')
+    if _windows_path_is_reparse_point(path):
+        raise ConfigError(
+            f'Refusing to traverse reparse point in private Alpha POS data: {path}'
+        )
+    identity = _windows_private_path_identity(path)
+    object_key = (identity, bool(directory), False)
+    cache_key = (identity, bool(directory), bool(recursive))
     with _ACL_LOCK:
         if cache_key in _HARDENED_WINDOWS_PATHS:
             return
         sid = _current_windows_sid()
-        rights = '(OI)(CI)F' if directory else 'F'
-        command = [
-            _windows_executable('icacls.exe'), str(path),
-            '/inheritance:r', '/grant:r', f'*{sid}:{rights}',
-        ]
+        if object_key not in _HARDENED_WINDOWS_PATHS:
+            _apply_windows_private_acl(path, directory=directory, sid=sid)
+            _HARDENED_WINDOWS_PATHS.add(object_key)
         if recursive:
-            command.extend(['/T', '/C'])
-        result = _hidden_windows_command(command)
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout or '').strip()[-300:]
-            raise ConfigError(
-                f'Could not restrict access to private Alpha POS data at {path}'
-                + (f': {detail}' if detail else '')
-            )
-        _HARDENED_WINDOWS_PATHS.add(cache_key)
+            _repair_windows_private_descendants(path, sid=sid)
+            _HARDENED_WINDOWS_PATHS.add(cache_key)
 
 
 def _write_protected(path: Path, contents: str) -> None:

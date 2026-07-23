@@ -6,7 +6,8 @@
 Service-level tests (the local-edition convention — see customers/tests). The
 waiters app is only installed on the local edition, so the whole module is
 skipped where it isn't (e.g. a core-only or server test run)."""
-from datetime import timedelta
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from django.apps import apps
@@ -16,6 +17,16 @@ pytestmark = pytest.mark.skipif(
     not apps.is_installed('waiters'),
     reason='waiters app — runs on the local edition',
 )
+
+
+@pytest.fixture
+def operating_now(monkeypatch):
+    """Keep "today" stats tests out of the intentional 03:00-07:00 quiet gap."""
+    fixed = datetime(
+        2026, 7, 23, 12, 0, tzinfo=ZoneInfo('Asia/Tashkent'),
+    )
+    monkeypatch.setattr(timezone, 'now', lambda: fixed)
+    return fixed
 
 
 def _waiter(email='waiter1@test.local'):
@@ -141,6 +152,7 @@ class TestRequestPayment:
 
 
 @pytest.mark.django_db
+@pytest.mark.usefixtures('operating_now')
 class TestWaiterStats:
     def test_counts_and_sales(self):
         from waiters.services.waiter_service import WaiterService
@@ -377,6 +389,7 @@ class TestMarkReadyIdempotent:
 
 
 @pytest.mark.django_db
+@pytest.mark.usefixtures('operating_now')
 class TestStatsExcludesCancelledPaid:
     def test_paid_then_cancelled_not_in_sales(self):
         """A paid order that is later cancelled keeps is_paid=True (the drawer is

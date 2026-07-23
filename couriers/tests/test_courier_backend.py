@@ -10,6 +10,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 import pytest
+from django.db import connection
 from django.test import Client
 from django.utils import timezone
 
@@ -26,6 +27,10 @@ from couriers.models import (
 )
 
 pytestmark = pytest.mark.django_db
+requires_row_locks = pytest.mark.skipif(
+    not connection.features.has_select_for_update,
+    reason='the cutoff ordering assertion requires PostgreSQL SELECT FOR UPDATE',
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -850,6 +855,7 @@ def test_legacy_refunded_status_keeps_gross_and_refund_in_same_window():
     assert snap['cash_in_hand'] == 0
 
 
+@requires_row_locks
 def test_late_economic_refund_rolls_into_post_settlement_cursor_window():
     c = _courier()
     order, _ = _order(c)

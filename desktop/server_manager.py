@@ -68,6 +68,13 @@ class ServerManager:
         self.host = '0.0.0.0'
         self.port = 8000
         self._django_lock = threading.RLock()
+        # ``django.setup()`` only builds the model registry; it does not make an
+        # upgraded database safe to query. The control-panel UI paints before
+        # the backend and issues model-backed status calls immediately, so every
+        # public Django boundary must also wait for migrations and required
+        # bootstrap steps to complete.
+        self._setup_lock = threading.RLock()
+        self._setup_ready = False
         self._lifecycle_lock = threading.RLock()
         self._worker_lock = threading.RLock()
         self._desired_running = True
@@ -467,7 +474,8 @@ class ServerManager:
             self._ensure_pull_worker()
 
     # -- Django bootstrap (idempotent) --------------------------------------
-    def ensure_django(self):
+    def _ensure_django_bootstrapped(self):
+        """Load Django against verified PostgreSQL without claiming schema readiness."""
         if self._django_ready:
             return
         # The boot worker and a fast operator click can arrive here together.
@@ -490,6 +498,21 @@ class ServerManager:
             import django
             django.setup()
             self._django_ready = True
+
+    def ensure_django(self, log=lambda m: None):
+        """Return only when Django and the installed schema are ready.
+
+        A fast UI poll and the boot worker can arrive concurrently on an
+        upgraded install. Exactly one performs the required setup while every
+        other model-touching caller waits on the same lock. A failed setup does
+        not publish readiness, so the boot watchdog can retry safely.
+        """
+        with self._setup_lock:
+            if self._setup_ready:
+                return
+            self._setup_ready = False
+            self._run_first_time_install(log=log)
+            self._setup_ready = True
 
     @staticmethod
     def run_management_command(command, *args, log=None, **options):
@@ -534,6 +557,13 @@ class ServerManager:
                             )
 
     def first_time_install(self, log=lambda m: None):
+        """Force a live setup check, including after a database rebuild."""
+        with self._setup_lock:
+            self._setup_ready = False
+            self._run_first_time_install(log=log)
+            self._setup_ready = True
+
+    def _run_first_time_install(self, log=lambda m: None):
         """Run migrations, bootstrap the admin, and collect static — the
         'install everything on first run' step. Gated by a setup signature
         (app version + a hash of the on-disk migration graph) persisted in
@@ -542,7 +572,7 @@ class ServerManager:
         signature changes whenever a migration is added (any release), so a
         post-update launch always re-runs migrate — it can never be skipped
         when the schema actually changed. Safe to re-run."""
-        self.ensure_django()
+        self._ensure_django_bootstrapped()
         from desktop import config_store
         sig, schema_current = _setup_signature_and_schema_current()
         signature_matches = config_store.read_state().get('setup_sig') == sig

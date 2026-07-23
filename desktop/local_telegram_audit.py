@@ -346,6 +346,13 @@ def cleanup_stale_reports(*, now: float | None = None) -> int:
 
 def _connect() -> sqlite3.Connection:
     OUTBOX_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # The durable outbox contains recipient IDs plus order names/totals, and
+    # sibling crash-recovery reports contain the same private business data.
+    # Repair legacy descendants before SQLite performs its first open; later
+    # calls are cheap because config_store caches the completed recursive ACL.
+    config_store._harden_windows_private_path(
+        OUTBOX_PATH.parent, directory=True, recursive=True,
+    )
     connection = sqlite3.connect(str(OUTBOX_PATH), timeout=15)
     connection.row_factory = sqlite3.Row
     connection.execute('PRAGMA journal_mode=WAL')

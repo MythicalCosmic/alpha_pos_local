@@ -170,7 +170,9 @@ a = Analysis(
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
-    runtime_hooks=[],
+    runtime_hooks=[
+        os.path.join(SPECPATH, 'desktop', 'private_release_bootstrap.py'),
+    ],
     # tkinter: unused GUI toolkit. PIL/Pillow: only used at BUILD time to make
     # the icon (make_icon.py) — nothing in the app imports it at runtime (no
     # ImageField / qrcode), so it's dead weight (~11 MB) in the shipped bundle.

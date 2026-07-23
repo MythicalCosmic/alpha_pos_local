@@ -252,17 +252,21 @@ def _autostart_backend():
         # watchdog loop if startup races a transient database problem.
         if setup_ok:
             try:
-                from desktop import local_telegram_audit, order_audit
+                from desktop import order_audit
                 if not order_audit_started:
                     order_audit.start_background_collector()
                     order_audit_started = True
+            except Exception:  # noqa: BLE001 - optional evidence must not block POS
+                logger.exception('autostart: local order evidence worker failed to start')
+            try:
+                from desktop import local_telegram_audit
                 # This call is intentionally part of every five-second watchdog
                 # pass. It is a no-op while healthy and recreates the notifier if
                 # an unexpected thread-level failure ever escaped its own retry
                 # boundary.
                 local_telegram_audit.start_background_notifier()
-            except Exception:  # noqa: BLE001 - diagnostics must never block POS
-                logger.exception('autostart: local evidence worker failed to start')
+            except Exception:  # noqa: BLE001 - notifier must retry independently
+                logger.exception('autostart: local Telegram worker failed to start')
         try:
             if api.server.wants_running() and not api.server.is_running():
                 # Crash recovery must not override an operator's explicit Stop.
@@ -314,6 +318,33 @@ def _confirm_update_start_when_ready(*, ready_event=None, shutdown_event=None,
     return False
 
 
+def _stop_optional_workers(*, context='shutdown', support_timeout=None):
+    """Stop independent desktop workers without failure coupling.
+
+    Importing ``desktop.order_audit`` can itself fail when its local evidence
+    store is unreadable. That must not skip support-tunnel or local-Telegram
+    cleanup during an updater handoff or ordinary exit.
+    """
+    try:
+        from desktop import support_tunnel
+        if support_timeout is None:
+            support_tunnel.stop()
+        else:
+            support_tunnel.stop(timeout=support_timeout)
+    except Exception:  # noqa: BLE001 - continue releasing unrelated workers
+        logger.exception('%s: support tunnel stop failed', context)
+    try:
+        from desktop import order_audit
+        order_audit.stop_background_collector(timeout=8)
+    except Exception:  # noqa: BLE001 - audit is optional and independently owned
+        logger.exception('%s: order evidence worker stop failed', context)
+    try:
+        from desktop import local_telegram_audit
+        local_telegram_audit.stop_background_notifier(timeout=8)
+    except Exception:  # noqa: BLE001 - continue the enclosing shutdown
+        logger.exception('%s: local Telegram worker stop failed', context)
+
+
 def _graceful_update_shutdown(httpd):
     """Release app-owned resources before the external helper swaps files."""
     if _UPDATE_SHUTDOWN.is_set():
@@ -326,13 +357,7 @@ def _graceful_update_shutdown(httpd):
         force_exit = threading.Timer(20.0, lambda: os._exit(0))
         force_exit.daemon = True
         force_exit.start()
-        try:
-            from desktop import local_telegram_audit, order_audit, support_tunnel
-            support_tunnel.stop(timeout=5)
-            order_audit.stop_background_collector(timeout=8)
-            local_telegram_audit.stop_background_notifier(timeout=8)
-        except Exception:  # noqa: BLE001
-            logger.exception('update shutdown: evidence/support workers stop failed')
+        _stop_optional_workers(context='update shutdown', support_timeout=5)
         try:
             control_server._API.stop_server()
         except Exception:  # noqa: BLE001
@@ -502,13 +527,7 @@ def main():
             pass
 
     # Window closed → stop the POS server + embedded Postgres and exit.
-    try:
-        from desktop import local_telegram_audit, order_audit, support_tunnel
-        support_tunnel.stop()
-        order_audit.stop_background_collector(timeout=8)
-        local_telegram_audit.stop_background_notifier(timeout=8)
-    except Exception:  # noqa: BLE001
-        pass
+    _stop_optional_workers(context='application shutdown')
     try:
         control_server._API.stop_server()
     except Exception:  # noqa: BLE001

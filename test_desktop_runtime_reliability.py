@@ -441,6 +441,12 @@ def test_packaged_windows_private_data_uses_owner_only_inheritable_acl(
         monkeypatch, tmp_path):
     private = tmp_path / 'private'
     private.mkdir()
+    raw = private / 'orders.raw.jsonl'
+    raw.write_text('preserve this evidence\n', encoding='utf-8')
+    nested = private / 'exports'
+    nested.mkdir()
+    export = nested / 'shift.txt'
+    export.write_text('preserve this report\n', encoding='utf-8')
     calls = []
     config_store._HARDENED_WINDOWS_PATHS.clear()
     monkeypatch.setattr(config_store.os, 'name', 'nt')
@@ -461,11 +467,124 @@ def test_packaged_windows_private_data_uses_owner_only_inheritable_acl(
     config_store._harden_windows_private_path(
         private, directory=True, recursive=True,
     )
+    first_launch_calls = list(calls)
+
+    # A packaged process starts with an empty in-memory ACL cache. Repeating
+    # startup must repair existing files as files, never apply directory-only
+    # inheritance flags to them through ``icacls /T``.
+    config_store._HARDENED_WINDOWS_PATHS.clear()
+    config_store._harden_windows_private_path(
+        private, directory=True, recursive=True,
+    )
+    second_launch_calls = calls[len(first_launch_calls):]
+
+    expected = [
+        [
+            'icacls.exe', str(private), '/inheritance:r', '/grant:r',
+            '*S-1-5-21-1234:(OI)(CI)F',
+        ],
+        [
+            'icacls.exe', str(nested), '/inheritance:r', '/grant:r',
+            '*S-1-5-21-1234:(OI)(CI)F',
+        ],
+        [
+            'icacls.exe', str(raw), '/inheritance:r', '/grant:r',
+            '*S-1-5-21-1234:F',
+        ],
+        [
+            'icacls.exe', str(export), '/inheritance:r', '/grant:r',
+            '*S-1-5-21-1234:F',
+        ],
+    ]
+    assert first_launch_calls == expected
+    assert second_launch_calls == expected
+    assert all('/T' not in command and '/C' not in command for command in calls)
+    assert raw.read_text(encoding='utf-8') == 'preserve this evidence\n'
+    assert export.read_text(encoding='utf-8') == 'preserve this report\n'
+    config_store._HARDENED_WINDOWS_PATHS.clear()
+
+
+def test_packaged_windows_private_data_refuses_reparse_traversal(
+        monkeypatch, tmp_path):
+    private = tmp_path / 'private'
+    private.mkdir()
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+    evidence = outside / 'must-not-be-touched.txt'
+    evidence.write_text('outside evidence\n', encoding='utf-8')
+    link = private / '00-outside-link'
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f'symlink creation is unavailable: {exc}')
+
+    calls = []
+    config_store._HARDENED_WINDOWS_PATHS.clear()
+    monkeypatch.setattr(config_store.os, 'name', 'nt')
+    monkeypatch.setattr(config_store.sys, 'frozen', True, raising=False)
+    monkeypatch.setattr(
+        config_store, '_current_windows_sid', lambda: 'S-1-5-21-1234',
+    )
+    monkeypatch.setattr(
+        config_store, '_windows_executable', lambda name: name,
+    )
+    monkeypatch.setattr(
+        config_store, '_hidden_windows_command',
+        lambda command: calls.append(command) or subprocess.CompletedProcess(
+            command, 0, 'processed', '',
+        ),
+    )
+
+    with pytest.raises(config_store.ConfigError, match='reparse point'):
+        config_store._harden_windows_private_path(
+            private, directory=True, recursive=True,
+        )
 
     assert calls == [[
         'icacls.exe', str(private), '/inheritance:r', '/grant:r',
-        '*S-1-5-21-1234:(OI)(CI)F', '/T', '/C',
+        '*S-1-5-21-1234:(OI)(CI)F',
     ]]
+    assert evidence.read_text(encoding='utf-8') == 'outside evidence\n'
+    config_store._HARDENED_WINDOWS_PATHS.clear()
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='requires Windows icacls')
+def test_real_windows_acl_repair_preserves_files_across_two_launches(
+        monkeypatch, tmp_path):
+    private = tmp_path / 'private'
+    private.mkdir()
+    nested = private / 'nested'
+    nested.mkdir()
+    raw = private / 'orders.raw.jsonl'
+    raw.write_text('order evidence\n', encoding='utf-8')
+    index = nested / '.orders.raw.index.json'
+    index.write_text('{"record_count": 1}\n', encoding='utf-8')
+    monkeypatch.setattr(config_store.sys, 'frozen', True, raising=False)
+
+    try:
+        sid = config_store._current_windows_sid()
+        # Recreate the exact pre-fix second-launch command. It removes each
+        # file's inherited ACE and grants directory-inheritance flags through
+        # /T, producing the protected empty file DACL seen in the field.
+        old_command = [
+            config_store._windows_executable('icacls.exe'), str(private),
+            '/inheritance:r', '/grant:r', f'*{sid}:(OI)(CI)F', '/T', '/C',
+        ]
+        old_result = config_store._hidden_windows_command(old_command)
+        assert old_result.returncode == 0, old_result.stderr
+
+        for _launch in range(2):
+            config_store._HARDENED_WINDOWS_PATHS.clear()
+            config_store._harden_windows_private_path(
+                private, directory=True, recursive=True,
+            )
+            assert raw.read_text(encoding='utf-8') == 'order evidence\n'
+            assert index.read_text(encoding='utf-8') == '{"record_count": 1}\n'
+            # Full control must remain effective for both read and append.
+            with raw.open('a', encoding='utf-8') as handle:
+                handle.write('')
+    finally:
+        config_store._HARDENED_WINDOWS_PATHS.clear()
 
 
 class _WaitSequence:
@@ -783,11 +902,12 @@ def test_failed_required_setup_never_persists_setup_signature(monkeypatch):
     monkeypatch.setattr(config_store, 'read_state', lambda: {})
     monkeypatch.setattr(config_store, 'update_state', lambda value: writes.append(value))
     manager = ServerManager()
-    manager.ensure_django = lambda: None
+    manager._ensure_django_bootstrapped = lambda: None
 
     with pytest.raises(RuntimeError, match='temporary bootstrap failure'):
         manager.first_time_install()
     assert writes == []
+    assert manager._setup_ready is False
 
 
 def test_matching_setup_signature_skips_only_when_live_schema_is_current(monkeypatch):
@@ -807,7 +927,7 @@ def test_matching_setup_signature_skips_only_when_live_schema_is_current(monkeyp
         ),
     )
     manager = ServerManager()
-    manager.ensure_django = lambda: None
+    manager._ensure_django_bootstrapped = lambda: None
 
     manager.first_time_install(log=logs.append)
     assert logs == ['Setup already current — skipping migrate/seed/collectstatic.']
@@ -838,7 +958,7 @@ def test_matching_setup_signature_repairs_empty_or_stale_database(monkeypatch):
         lambda command, *_args, **_kwargs: calls.append(command),
     )
     manager = ServerManager()
-    manager.ensure_django = lambda: None
+    manager._ensure_django_bootstrapped = lambda: None
 
     manager.first_time_install()
     assert calls == ['migrate', 'bootstrap_admin', 'seed_templates', 'collectstatic']
@@ -876,7 +996,7 @@ def test_first_time_install_supplies_streams_without_a_gui_console(monkeypatch):
     monkeypatch.setattr(config_store, 'update_state', lambda _values: None)
     monkeypatch.setattr(management, 'call_command', fake_call)
     manager = ServerManager()
-    manager.ensure_django = lambda: None
+    manager._ensure_django_bootstrapped = lambda: None
 
     # A PyInstaller ``--windowed`` executable has no process console.
     with monkeypatch.context() as gui:
@@ -924,7 +1044,7 @@ def test_django_bootstrap_verifies_postgres_before_settings_setup(monkeypatch):
     monkeypatch.setattr(django, 'setup', lambda: calls.append('django'))
     manager = ServerManager()
 
-    manager.ensure_django()
+    manager._ensure_django_bootstrapped()
     assert calls == ['env', 'postgres', 'django']
     assert manager._django_ready is True
 
@@ -944,9 +1064,72 @@ def test_django_never_configures_sqlite_when_postgres_verification_fails(monkeyp
     manager = ServerManager()
 
     with pytest.raises(pg_embedded.EmbeddedPostgresError):
-        manager.ensure_django()
+        manager._ensure_django_bootstrapped()
     assert calls == ['env']
     assert manager._django_ready is False
+
+
+def test_model_backed_bridge_status_waits_for_migrations(monkeypatch):
+    from desktop import bridge, server_manager
+    from licensing.models import License
+    from base.models import User
+
+    events = []
+
+    class ExistingUsers:
+        @staticmethod
+        def exists():
+            events.append('users')
+            return True
+
+    class FakeLicense:
+        status = 'ACTIVE'
+        org_name = 'Test'
+        plan_name = ''
+        email = ''
+        expires_at = None
+        last_heartbeat_at = None
+        balance = None
+        days_remaining = None
+        warn = False
+        last_message = ''
+
+    manager = ServerManager()
+    monkeypatch.setattr(
+        manager, '_ensure_django_bootstrapped',
+        lambda: events.append('django'),
+    )
+    monkeypatch.setattr(
+        server_manager, '_setup_signature_and_schema_current',
+        lambda: ('new-release:new-schema', False),
+    )
+    monkeypatch.setattr(config_store, 'read_state', lambda: {})
+    monkeypatch.setattr(config_store, 'update_state', lambda _values: None)
+    monkeypatch.setattr(User, 'objects', ExistingUsers())
+    monkeypatch.setattr(
+        manager, 'run_management_command',
+        lambda command, *_args, **_kwargs: events.append(command),
+    )
+    monkeypatch.setattr(
+        License, 'load',
+        staticmethod(lambda: events.append('license_query') or FakeLicense()),
+    )
+    api = bridge.Api()
+    api.server = manager
+
+    result = api.license_status()
+
+    assert result['ok'] is True
+    assert events == [
+        'django', 'migrate', 'users', 'bootstrap_admin',
+        'seed_templates', 'collectstatic', 'license_query',
+    ]
+    assert manager._setup_ready is True
+
+    # Subsequent UI polls use the readiness fast path and only query status.
+    assert api.license_status()['ok'] is True
+    assert events[-1] == 'license_query'
+    assert events.count('migrate') == 1
 
 
 def test_postgres_bootstrap_failure_retries_without_starting_unsafe_backend(monkeypatch):
@@ -1176,6 +1359,99 @@ def test_autostart_watchdog_restarts_local_telegram_worker(monkeypatch):
 
     assert order_starts == [True]
     assert telegram_starts == [True, True]
+
+
+def test_order_audit_failure_does_not_block_telegram_or_uvicorn(monkeypatch):
+    from desktop import app, local_telegram_audit, order_audit
+
+    class StopAfterOneLoop:
+        stopped = False
+
+        def is_set(self):
+            return self.stopped
+
+        def wait(self, _delay):
+            self.stopped = True
+            return True
+
+    class FakeServer:
+        start_calls = 0
+
+        @staticmethod
+        def wants_running():
+            return True
+
+        @staticmethod
+        def is_running():
+            return False
+
+        def start(self, **_kwargs):
+            self.start_calls += 1
+            return {'running': True}
+
+        @staticmethod
+        def url():
+            return 'http://127.0.0.1:8000'
+
+    class FakeApi:
+        server = FakeServer()
+
+        @staticmethod
+        def run_setup():
+            return {'ok': True}
+
+    telegram_starts = []
+    monkeypatch.setattr(app, '_UPDATE_SHUTDOWN', StopAfterOneLoop())
+    monkeypatch.setattr(app, '_BACKEND_READY', threading.Event())
+    monkeypatch.setattr(control_server, '_API', FakeApi())
+    monkeypatch.setattr(
+        order_audit,
+        'start_background_collector',
+        lambda: (_ for _ in ()).throw(PermissionError('audit ACL denied')),
+    )
+    monkeypatch.setattr(
+        local_telegram_audit,
+        'start_background_notifier',
+        lambda: telegram_starts.append(True),
+    )
+
+    app._autostart_backend()
+
+    assert telegram_starts == [True]
+    assert FakeApi.server.start_calls == 1
+    assert app._BACKEND_READY.is_set()
+
+
+def test_order_audit_failure_does_not_skip_other_worker_cleanup(
+        monkeypatch, caplog):
+    from desktop import app, local_telegram_audit, order_audit, support_tunnel
+
+    stopped = []
+    monkeypatch.setattr(
+        support_tunnel, 'stop',
+        lambda **kwargs: stopped.append(('support', kwargs.get('timeout'))),
+    )
+    monkeypatch.setattr(
+        order_audit, 'stop_background_collector',
+        lambda **_kwargs: (_ for _ in ()).throw(
+            PermissionError('audit ACL denied'),
+        ),
+    )
+    monkeypatch.setattr(
+        local_telegram_audit, 'stop_background_notifier',
+        lambda **kwargs: stopped.append(('telegram', kwargs.get('timeout'))),
+    )
+
+    with caplog.at_level('ERROR', logger='desktop.app'):
+        app._stop_optional_workers(
+            context='test update shutdown', support_timeout=5,
+        )
+
+    assert stopped == [('support', 5), ('telegram', 8)]
+    assert any(
+        'test update shutdown: order evidence worker stop failed' in message
+        for message in caplog.messages
+    )
 
 
 def test_selftest_returns_failure_for_structured_setup_error(monkeypatch):

@@ -346,7 +346,7 @@ class Api:
     @_safe
     def run_setup(self):
         logs = []
-        self.server.first_time_install(log=logs.append)
+        self.server.ensure_django(log=logs.append)
         return {'ok': True, 'logs': logs}
 
     @_safe

@@ -119,7 +119,9 @@ a = Analysis(
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
-    runtime_hooks=[],
+    runtime_hooks=[
+        os.path.join(SPECPATH, 'desktop', 'private_release_bootstrap.py'),
+    ],
     excludes=['tkinter', 'PIL', 'PIL._imaging', 'PIL.Image'],
     cipher=block_cipher,
 )
