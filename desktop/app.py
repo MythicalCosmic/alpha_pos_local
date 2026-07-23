@@ -224,7 +224,7 @@ def _autostart_backend():
     """
     api = control_server._API
     setup_ok = False
-    audit_started = False
+    order_audit_started = False
     backoff = 3
     while not _UPDATE_SHUTDOWN.is_set():
         # Never bind the POS against a schema whose migration failed. Retry the
@@ -250,13 +250,19 @@ def _autostart_backend():
         # Models and audit tables are safe to query only after migrations have
         # completed. Keep this diagnostic non-fatal and retry on the next
         # watchdog loop if startup races a transient database problem.
-        if setup_ok and not audit_started:
+        if setup_ok:
             try:
-                from desktop import order_audit
-                order_audit.start_background_collector()
-                audit_started = True
+                from desktop import local_telegram_audit, order_audit
+                if not order_audit_started:
+                    order_audit.start_background_collector()
+                    order_audit_started = True
+                # This call is intentionally part of every five-second watchdog
+                # pass. It is a no-op while healthy and recreates the notifier if
+                # an unexpected thread-level failure ever escaped its own retry
+                # boundary.
+                local_telegram_audit.start_background_notifier()
             except Exception:  # noqa: BLE001 - diagnostics must never block POS
-                logger.exception('autostart: local order audit collector failed to start')
+                logger.exception('autostart: local evidence worker failed to start')
         try:
             if api.server.wants_running() and not api.server.is_running():
                 # Crash recovery must not override an operator's explicit Stop.
@@ -321,9 +327,10 @@ def _graceful_update_shutdown(httpd):
         force_exit.daemon = True
         force_exit.start()
         try:
-            from desktop import order_audit, support_tunnel
+            from desktop import local_telegram_audit, order_audit, support_tunnel
             support_tunnel.stop(timeout=5)
             order_audit.stop_background_collector(timeout=8)
+            local_telegram_audit.stop_background_notifier(timeout=8)
         except Exception:  # noqa: BLE001
             logger.exception('update shutdown: evidence/support workers stop failed')
         try:
@@ -496,9 +503,10 @@ def main():
 
     # Window closed → stop the POS server + embedded Postgres and exit.
     try:
-        from desktop import order_audit, support_tunnel
+        from desktop import local_telegram_audit, order_audit, support_tunnel
         support_tunnel.stop()
         order_audit.stop_background_collector(timeout=8)
+        local_telegram_audit.stop_background_notifier(timeout=8)
     except Exception:  # noqa: BLE001
         pass
     try:

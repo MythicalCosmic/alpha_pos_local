@@ -19,8 +19,11 @@ function ObservabilityCard({ obs }) {
   const auditError = audit.delivery_state === "error" || audit.delivery_state === "configuration_required";
   const auditTone = auditError ? "danger" : ((audit.enabled !== false && audit.auto_send !== false) ? "ok" : "muted");
   const auditLabel = auditError ? t("obs.needsAttention") : ((audit.enabled !== false && audit.auto_send !== false) ? t("obs.telegramActive") : t("obs.paused"));
-  const tunnelError = tunnel.last_error || (tunnel.enabled && !tunnel.ready ? tunnel.last_probe_error : "");
+  const tunnelError = tunnel.configuration_error || tunnel.last_error || (tunnel.enabled && !tunnel.ready ? tunnel.last_probe_error : "");
   const auditErrorText = audit.last_auto_send_error || audit.last_error || "";
+  const retryState = tunnel.next_retry_at
+    ? ((tunnel.retry_backoff_seconds || 0) + "s · " + tunnel.next_retry_at)
+    : t("obs.noRetry");
 
   return (
     <Card
@@ -40,11 +43,20 @@ function ObservabilityCard({ obs }) {
             <Switch on={!!tunnel.enabled} onChange={obs.toggleTunnel}></Switch>
           </div>
           <div className="kv" style={{ marginTop: 14 }}>
+            <KRow l={t("obs.dbReadiness")} v={tunnel.db_label || tunnel.db_status || "—"} badge={<Badge tone={tunnel.db_ready ? "ok" : (tunnel.enabled ? "warn" : "muted")}>{tunnel.db_label || tunnel.db_status || t("obs.notVerified")}</Badge>}></KRow>
+            <KRow l={t("obs.backendReadiness")} v={tunnel.backend_label || tunnel.backend_status || "—"} badge={<Badge tone={tunnel.backend_ready ? "ok" : (tunnel.enabled ? "warn" : "muted")}>{tunnel.backend_label || tunnel.backend_status || t("obs.notVerified")}</Badge>}></KRow>
             <KRow l={t("obs.dbQuery")} v={tunnel.local_db_query_verified ? t("obs.verified") : t("obs.notVerified")} badge={<Badge tone={tunnel.local_db_query_verified ? "ok" : "muted"}>{tunnel.local_db_query_verified ? t("obs.verified") : t("obs.notVerified")}</Badge>}></KRow>
             <KRow l={t("obs.secureSession")} v={tunnel.session_verified ? t("common.online") : t("common.offline")}></KRow>
+            <KRow l={t("obs.relayHost")} v={tunnel.relay_host || "—"} mono dim={!tunnel.relay_host}></KRow>
             <KRow l={t("obs.relayDb")} v={tunnel.remote_db || "—"} mono dim={!tunnel.remote_db}></KRow>
-            <KRow l={t("obs.localApi")} v={tunnel.local_api_reachable ? t("common.online") : t("common.offline")}></KRow>
+            <KRow l={t("obs.relayApi")} v={tunnel.remote_api || "—"} mono dim={!tunnel.remote_api}></KRow>
+            <KRow l={t("obs.hostFingerprint")} v={tunnel.pinned_host_fingerprint || "—"} mono dim={!tunnel.pinned_host_fingerprint}></KRow>
+            <KRow l={t("obs.connectorArtifact")} v={tunnel.connector_artifact || "—"} mono dim={!tunnel.connector_artifact}></KRow>
+            <KRow l={t("obs.operatorDb")} v={tunnel.operator_db || "—"} mono dim={!tunnel.operator_db}></KRow>
+            <KRow l={t("obs.operatorApi")} v={tunnel.operator_api || "—"} mono dim={!tunnel.operator_api}></KRow>
+            <KRow l={t("obs.retryState")} v={retryState} mono dim={!tunnel.next_retry_at}></KRow>
           </div>
+          {tunnel.operator_readiness_instruction ? <div style={{ marginTop: 12, padding: "10px 12px", borderRadius: 9, background: "var(--surface-2)", color: "var(--ink-2)", fontSize: 12, lineHeight: 1.55 }}><strong>{t("obs.operatorInstruction")}:</strong> {tunnel.operator_readiness_instruction}</div> : null}
           {tunnelError ? <div style={{ marginTop: 12, color: "var(--danger)", fontSize: 12, wordBreak: "break-word" }}>{tunnelError}</div> : null}
           {!tunnel.configured && tunnel.enabled ? <div style={{ marginTop: 12, color: "var(--warn)", fontSize: 12 }}>{t("obs.tunnelConfigure")}</div> : null}
           <p style={{ margin: "12px 0 0", color: "var(--ink-3)", fontSize: 11.5, textWrap: "pretty" }}>{t("obs.tunnelHint")}</p>

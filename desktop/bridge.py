@@ -136,6 +136,10 @@ class Api:
                 logger.exception('live support tunnel config apply failed')
         try:
             self.server.ensure_django()
+            if any(str(key).startswith('LOCAL_TELEGRAM_') for key in clean):
+                from desktop import local_telegram_audit
+                local_telegram_audit.start_background_notifier()
+                local_telegram_audit.wake()
             # Fiscal mode is a live cache toggle — applies without a restart.
             from fiscalization.config import FiscalConfig
             mode = clean.get('FISCALIZATION_MODE')
@@ -210,6 +214,25 @@ class Api:
                 clean[k] = v
         if not clean:
             return {'ok': False, 'error': 'No recognised settings in the file'}
+        local_keys = {
+            key for key in clean
+            if str(key).startswith('LOCAL_TELEGRAM_')
+        }
+        if local_keys:
+            # Support JSON follows the exact same validation and OFF-interval
+            # watermark rules as the dedicated screen. Directly writing these
+            # values used to make a re-enabled install replay every order that
+            # occurred while owner notifications were intentionally disabled.
+            from desktop import local_telegram_audit
+            local_values = (
+                local_telegram_audit.configuration_values_from_environment({
+                    key: clean[key] for key in local_keys
+                })
+            )
+            clean.update(local_telegram_audit.prepare_configuration_update(
+                local_values,
+                current=current,
+            ))
         config_store.write_config(clean)
         if any(str(key).startswith('SUPPORT_TUNNEL_') for key in clean):
             try:
@@ -217,6 +240,14 @@ class Api:
                 support_tunnel.restart()
             except Exception:  # noqa: BLE001
                 logger.exception('imported support tunnel config apply failed')
+        if any(str(key).startswith('LOCAL_TELEGRAM_') for key in clean):
+            try:
+                self.server.ensure_django()
+                from desktop import local_telegram_audit
+                local_telegram_audit.start_background_notifier()
+                local_telegram_audit.wake()
+            except Exception:  # noqa: BLE001
+                logger.exception('imported local Telegram audit config apply failed')
         return {'ok': True, 'imported': sorted(clean),
                 'restart_required': self.server.is_running()}
 
@@ -474,6 +505,22 @@ class Api:
         except Exception:  # noqa: BLE001
             logger.exception('order audit stop during factory reset failed')
             return {'ok': False, 'error': 'Could not stop order audit safely.'}
+        try:
+            from desktop import local_telegram_audit
+            if not local_telegram_audit.stop_background_notifier(timeout=35):
+                return {
+                    'ok': False,
+                    'error': (
+                        'Local Telegram audit delivery is still finishing. '
+                        'Wait a moment and retry.'
+                    ),
+                }
+        except Exception:  # noqa: BLE001
+            logger.exception('local Telegram audit stop during factory reset failed')
+            return {
+                'ok': False,
+                'error': 'Could not stop local Telegram audit safely.',
+            }
         try:
             from django.db import connections
             connections.close_all()
@@ -803,6 +850,30 @@ class Api:
         return {'ok': True, 'requeued': requeued, 'push': push}
 
     # -- telegram / notifications -------------------------------------------
+    @_safe
+    def local_telegram_audit_status(self):
+        """Owner audit sent directly from this restaurant PC to Telegram."""
+        self.server.ensure_django()
+        from desktop import local_telegram_audit
+        local_telegram_audit.start_background_notifier()
+        return {'ok': True, **local_telegram_audit.get_status()}
+
+    @_safe
+    def save_local_telegram_audit(self, values=None):
+        self.server.ensure_django()
+        from desktop import local_telegram_audit
+        local_telegram_audit.save_configuration(values or {})
+        local_telegram_audit.start_background_notifier()
+        local_telegram_audit.wake()
+        return {'ok': True, **local_telegram_audit.get_status()}
+
+    @_safe
+    def test_local_telegram_audit(self):
+        self.server.ensure_django()
+        from desktop import local_telegram_audit
+        local_telegram_audit.start_background_notifier()
+        return local_telegram_audit.send_test_message()
+
     @_safe
     def order_audit_status(self):
         """Local append-only order evidence (independent from cloud sync)."""

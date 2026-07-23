@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
-from desktop import bridge, config_store, support_tunnel
+from desktop import bridge, config_store, local_telegram_audit, support_tunnel
 
 
 ROOT = Path(__file__).resolve().parent
@@ -153,3 +153,92 @@ def test_bridge_rejects_non_object_wrapper_and_unknown_only_payload(monkeypatch)
         'ok': False,
         'error': 'No recognised settings in the file',
     }
+
+
+def test_bridge_import_applies_local_telegram_config_immediately(monkeypatch):
+    current = dict(config_store.CONFIG_FIELDS)
+    current['LOCAL_TELEGRAM_AUDIT_BOT_TOKEN'] = (
+        '123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef'
+    )
+    writes = []
+    started = []
+    woke = []
+    django_ready = []
+    watermarks = []
+    monkeypatch.setattr(config_store, 'read_config', lambda: dict(current))
+    monkeypatch.setattr(
+        config_store, 'write_config', lambda values: writes.append(dict(values)),
+    )
+    monkeypatch.setattr(
+        local_telegram_audit,
+        'start_background_notifier',
+        lambda: started.append(True),
+    )
+    monkeypatch.setattr(
+        local_telegram_audit,
+        'wake',
+        lambda: woke.append(True),
+    )
+    monkeypatch.setattr(
+        local_telegram_audit,
+        '_reset_enable_watermark',
+        lambda moment=None: watermarks.append(moment),
+    )
+    api = bridge.Api.__new__(bridge.Api)
+    api.server = SimpleNamespace(
+        ensure_django=lambda: django_ready.append(True),
+        is_running=lambda: True,
+    )
+
+    result = api.import_config({
+        'config': {
+            'LOCAL_TELEGRAM_AUDIT_ENABLED': 'True',
+            'LOCAL_TELEGRAM_AUDIT_BOT_TOKEN': MASK,
+            'LOCAL_TELEGRAM_AUDIT_CHAT_IDS': '-1002000000002',
+        },
+    })
+
+    assert result['ok'] is True
+    assert writes == [{
+        'LOCAL_TELEGRAM_AUDIT_ENABLED': 'True',
+        'LOCAL_TELEGRAM_AUDIT_BOT_TOKEN': (
+            '123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef'
+        ),
+        'LOCAL_TELEGRAM_AUDIT_CHAT_IDS': '-1002000000002',
+    }]
+    assert len(watermarks) == 1
+    assert django_ready == [True]
+    assert started == [True]
+    assert woke == [True]
+
+
+def test_bridge_import_rejects_invalid_local_telegram_before_write_or_watermark(
+    monkeypatch,
+):
+    current = dict(config_store.CONFIG_FIELDS)
+    writes = []
+    monkeypatch.setattr(config_store, 'read_config', lambda: dict(current))
+    monkeypatch.setattr(
+        config_store, 'write_config', lambda values: writes.append(dict(values)),
+    )
+    monkeypatch.setattr(
+        local_telegram_audit,
+        '_reset_enable_watermark',
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError('invalid import must not move the watermark'),
+        ),
+    )
+    api = bridge.Api.__new__(bridge.Api)
+    api.server = SimpleNamespace(is_running=lambda: False)
+
+    result = api.import_config({
+        'config': {
+            'LOCAL_TELEGRAM_AUDIT_ENABLED': 'True',
+            'LOCAL_TELEGRAM_AUDIT_BOT_TOKEN': 'not-a-telegram-token',
+            'LOCAL_TELEGRAM_AUDIT_CHAT_IDS': '-1002000000002',
+        },
+    })
+
+    assert result['ok'] is False
+    assert 'token format is invalid' in result['error']
+    assert writes == []

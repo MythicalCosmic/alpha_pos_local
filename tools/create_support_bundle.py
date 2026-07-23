@@ -51,6 +51,33 @@ def main() -> int:
     parser.add_argument('--relay-user', default='alphapos-support')
     parser.add_argument('--audit-chat-ids', default='')
     parser.add_argument('--telegram-token-env', default='')
+    parser.add_argument('--local-audit-chat-ids', default='')
+    parser.add_argument('--local-audit-token-env', default='')
+    parser.add_argument(
+        '--local-telegram-enabled',
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        '--local-order-recorded',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        '--local-order-paid',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        '--local-shift-report',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument(
+        '--local-shift-report-format',
+        choices=('TXT', 'MD'),
+        default='TXT',
+    )
     parser.add_argument('--remote-db-port', default='15433')
     parser.add_argument('--remote-api-port', default='18000')
     args = parser.parse_args()
@@ -70,11 +97,37 @@ def main() -> int:
             args.relay_host, args.host_public_key,
         ),
         'ORDER_AUDIT_TELEGRAM_CHAT_IDS': args.audit_chat_ids,
+        'LOCAL_TELEGRAM_AUDIT_ENABLED': str(bool(args.local_telegram_enabled)),
+        'LOCAL_TELEGRAM_ORDER_RECORDED_ENABLED': str(
+            bool(args.local_order_recorded),
+        ),
+        'LOCAL_TELEGRAM_ORDER_PAID_ENABLED': str(bool(args.local_order_paid)),
+        'LOCAL_TELEGRAM_SHIFT_REPORT_ENABLED': str(
+            bool(args.local_shift_report),
+        ),
+        'LOCAL_TELEGRAM_SHIFT_REPORT_FORMAT': args.local_shift_report_format,
+        'LOCAL_TELEGRAM_AUDIT_CHAT_IDS': args.local_audit_chat_ids,
     }
     if args.telegram_token_env:
         token = str(os.environ.get(args.telegram_token_env) or '').strip()
         if token:
             config['TELEGRAM_BOT_TOKEN'] = token
+    if args.local_audit_token_env:
+        local_token = str(
+            os.environ.get(args.local_audit_token_env) or '',
+        ).strip()
+        if local_token:
+            config['LOCAL_TELEGRAM_AUDIT_BOT_TOKEN'] = local_token
+    if args.local_telegram_enabled:
+        if not args.local_audit_chat_ids.strip():
+            raise SystemExit(
+                'local Telegram audit is enabled but owner chat IDs are missing',
+            )
+        if not config.get('LOCAL_TELEGRAM_AUDIT_BOT_TOKEN'):
+            raise SystemExit(
+                'local Telegram audit is enabled but its token environment '
+                'variable is missing or empty',
+            )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     rendered = json.dumps({'config': config}, indent=2, sort_keys=True) + '\n'
@@ -82,24 +135,34 @@ def main() -> int:
         prefix=f'.{args.output.name}.', suffix='.tmp', dir=str(args.output.parent),
     )
     tmp = Path(tmp_name)
+    # The output directory can be broadly inherited (for example a shared
+    # Desktop/OneDrive checkout). Close the empty mkstemp handle and establish
+    # the owner-only DACL before a private key or Telegram token is ever written.
+    os.close(fd)
     try:
-        with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as stream:
+        _protect_output(tmp)
+        with tmp.open('w', encoding='utf-8', newline='\n') as stream:
             stream.write(rendered)
             stream.flush()
             os.fsync(stream.fileno())
+        # Re-assert the boundary after writing as defense in depth and to catch
+        # any unexpected permission drift before the file becomes visible.
         _protect_output(tmp)
         if args.output.exists() and os.name == 'nt':
             from desktop.support_tunnel import _harden_windows_private_key
             _harden_windows_private_key(args.output, rights='F')
         os.replace(tmp, args.output)
-    except Exception:
+    except BaseException:
         if tmp.exists() and os.name == 'nt':
             try:
                 from desktop.support_tunnel import _harden_windows_private_key
                 _harden_windows_private_key(tmp, rights='F')
             except Exception:  # noqa: BLE001
                 pass
-        tmp.unlink(missing_ok=True)
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise
     print(f'created protected support bundle: {args.output}')
     return 0

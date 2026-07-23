@@ -122,6 +122,16 @@ CONFIG_FIELDS = [
     # Owner-only recipients for raw order/sync evidence. A blank value disables
     # delivery; raw evidence never falls back to the broader staff recipient list.
     ('ORDER_AUDIT_TELEGRAM_CHAT_IDS', ''),
+    # Separate owner-facing LOCAL order/shift notifications. These credentials
+    # never fall back to the staff bot or raw-evidence channel, and delivery goes
+    # directly from this PC to Telegram rather than through AlphaPOS cloud.
+    ('LOCAL_TELEGRAM_AUDIT_ENABLED', 'False'),
+    ('LOCAL_TELEGRAM_ORDER_RECORDED_ENABLED', 'True'),
+    ('LOCAL_TELEGRAM_ORDER_PAID_ENABLED', 'True'),
+    ('LOCAL_TELEGRAM_SHIFT_REPORT_ENABLED', 'True'),
+    ('LOCAL_TELEGRAM_SHIFT_REPORT_FORMAT', 'TXT'),
+    ('LOCAL_TELEGRAM_AUDIT_BOT_TOKEN', ''),
+    ('LOCAL_TELEGRAM_AUDIT_CHAT_IDS', ''),
     ('TELEGRAM_WEBHOOK_SECRET', ''),
     # AI lives on the SERVER edition only (centralized Gemini calls against the
     # cloud's sales/stock data). The desktop/local edition ships NO AI — no keys
@@ -139,6 +149,7 @@ CONFIG_FIELDS = [
 
 SECRET_KEYS = {
     'FISCAL_SECRET', 'CLOUD_SYNC_TOKEN', 'TELEGRAM_BOT_TOKEN',
+    'LOCAL_TELEGRAM_AUDIT_BOT_TOKEN',
     'TELEGRAM_WEBHOOK_SECRET', 'SUPPORT_TUNNEL_PRIVATE_KEY_B64',
 }
 
@@ -533,6 +544,7 @@ def _wipe_data() -> list:
         DATA_DIR / '.control_token',
         DATA_DIR / 'logs', DATA_DIR / 'staticfiles', DATA_DIR / 'private_media',
         DATA_DIR / 'edge-profile', DATA_DIR / 'order_audit',
+        DATA_DIR / 'local_telegram_audit',
         DATA_DIR / 'support_tunnel',
     ]
     removed = []
@@ -571,7 +583,8 @@ def consume_reset_pending() -> bool:
             DATA_DIR / 'db.sqlite3', DATA_DIR / 'db.sqlite3-wal',
             DATA_DIR / 'db.sqlite3-shm', DATA_DIR / 'pgdata', ENV_FILE,
             SECRET_FILE, FERNET_FILE, DEVICE_FILE, STATE_FILE, CREDS_FILE,
-            DATA_DIR / 'order_audit', DATA_DIR / 'support_tunnel',
+            DATA_DIR / 'order_audit', DATA_DIR / 'local_telegram_audit',
+            DATA_DIR / 'support_tunnel',
         ]
         remaining = [path for path in critical if path.exists()]
         if remaining:

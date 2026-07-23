@@ -4,6 +4,7 @@
 # Produces (in DELIVERABLES\):
 #   AlphaPOS-Setup.exe     <- onedir + Inno Setup. Per-user install, AUTO-UPDATES.
 #   AlphaPOS-Portable.exe  <- one-file, copy-and-run (no install, no auto-update).
+#   AlphaPOS-Support-Connector.ps1 + pinned relay host key (no private key).
 #
 # The build venv must have the core submodule + toolchain installed. Install core
 # NON-editable (no -e): PyInstaller's module graph does not follow PEP 660 editable
@@ -122,6 +123,12 @@ if (-not (Test-Path $portable)) {
 }
 Copy-Item $portable "$deliv\AlphaPOS-Portable.exe" -Force
 Copy-Item $portable "$deliv\AlphaPOS-$version-Portable.exe" -Force
+Copy-Item (Join-Path $root 'tools\connect_support_relay.ps1') `
+    "$deliv\AlphaPOS-Support-Connector.ps1" -Force
+Copy-Item (Join-Path $root 'tools\support_relay_known_hosts') `
+    "$deliv\AlphaPOS-Support-Relay-Known-Hosts" -Force
+Copy-Item (Join-Path $root 'SUPPORT_TUNNEL_HOME_INSPECTION.md') `
+    "$deliv\AlphaPOS-Support-Tunnel-Guide.md" -Force
 
 Write-Host ''
 Write-Host "DONE. Deliverables in $deliv :" -ForegroundColor Green

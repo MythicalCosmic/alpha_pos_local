@@ -384,17 +384,22 @@ def test_locked_factory_reset_stays_armed_and_backend_refuses_to_boot(
 def test_factory_reset_removes_raw_order_audit_and_exports(monkeypatch, tmp_path):
     _config_paths(monkeypatch, tmp_path)
     audit_dir = tmp_path / 'order_audit'
+    local_telegram_dir = tmp_path / 'local_telegram_audit'
     exports = audit_dir / 'exports'
     exports.mkdir(parents=True)
+    local_telegram_dir.mkdir(parents=True)
     (audit_dir / 'orders.raw.jsonl').write_text('raw order\n', encoding='utf-8')
     (audit_dir / '.orders.raw.index.json').write_text('{}\n', encoding='utf-8')
     (exports / 'raw-export.jsonl').write_text('export\n', encoding='utf-8')
+    (local_telegram_dir / 'outbox.sqlite3').write_bytes(b'private outbox')
     monkeypatch.setattr(pg_embedded, 'stop', lambda: None)
 
     removed = config_store._wipe_data()
 
     assert str(audit_dir) in removed
+    assert str(local_telegram_dir) in removed
     assert not audit_dir.exists()
+    assert not local_telegram_dir.exists()
 
 
 def test_pending_reset_refuses_completion_if_order_audit_survives(
@@ -1117,6 +1122,60 @@ def test_failed_setup_never_binds_or_confirms_update(monkeypatch):
     app._autostart_backend()
     assert FakeApi.server.start_calls == 0
     assert not ready.is_set()
+
+
+def test_autostart_watchdog_restarts_local_telegram_worker(monkeypatch):
+    from desktop import app, local_telegram_audit, order_audit
+
+    class StopAfterTwoLoops:
+        waits = 0
+
+        def is_set(self):
+            return self.waits >= 2
+
+        def wait(self, _delay):
+            self.waits += 1
+            return self.is_set()
+
+    class FakeServer:
+        @staticmethod
+        def wants_running():
+            return True
+
+        @staticmethod
+        def is_running():
+            return True
+
+        @staticmethod
+        def ensure_background_workers():
+            return None
+
+    class FakeApi:
+        server = FakeServer()
+
+        @staticmethod
+        def run_setup():
+            return {'ok': True}
+
+    order_starts = []
+    telegram_starts = []
+    monkeypatch.setattr(app, '_UPDATE_SHUTDOWN', StopAfterTwoLoops())
+    monkeypatch.setattr(control_server, '_API', FakeApi())
+    monkeypatch.setattr(
+        order_audit,
+        'start_background_collector',
+        lambda: order_starts.append(True),
+    )
+    monkeypatch.setattr(
+        local_telegram_audit,
+        'start_background_notifier',
+        lambda: telegram_starts.append(True),
+    )
+
+    app._autostart_backend()
+
+    assert order_starts == [True]
+    assert telegram_starts == [True, True]
 
 
 def test_selftest_returns_failure_for_structured_setup_error(monkeypatch):

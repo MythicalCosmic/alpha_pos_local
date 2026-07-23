@@ -8,11 +8,18 @@ import pytest
 from django.conf import settings
 from django.db import IntegrityError, connection, transaction
 from django.db.models.query import QuerySet
-from django.test import Client
+from django.test import Client, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
-from base.models import Order, Session, Shift, User
+from base.models import (
+    DeliveryPerson,
+    Order,
+    Session,
+    Shift,
+    SyncQueueRecord,
+    User,
+)
 from base.repositories.session import SessionRepository
 from couriers import realtime, services
 from couriers.models import Courier, CourierNotification, DeliveryAssignment
@@ -191,6 +198,43 @@ def test_cashier_assigns_reassigns_and_clears_with_order_projection():
     )
     assert again.status_code == 200
     assert DeliveryAssignment.objects.filter(order=order).count() == 1
+
+
+@override_settings(SYNC_ENABLED=True, DEPLOYMENT_MODE='local')
+def test_inbound_legacy_courier_replay_is_cleared_and_published():
+    """A rejected legacy projection must be corrected on both sync peers."""
+    cashier, _token = _staff('CASHIER')
+    order = _order(cashier)
+    courier = _courier('CR-AUTHORITATIVE')
+    DeliveryAssignment.objects.create(
+        order=order,
+        courier=courier,
+        step=DeliveryAssignment.Step.ASSIGNED,
+        assigned_at=timezone.now(),
+    )
+    legacy = DeliveryPerson.objects.create(
+        first_name='Legacy',
+        last_name='Courier',
+        phone_number='+998900000001',
+    )
+    SyncQueueRecord.objects.all().delete()
+    starting_version = order.sync_version
+
+    # Simulate a cloud pull applying an old legacy courier without itself
+    # enqueuing an echo. The guard's corrective save must create that echo.
+    order.delivery_person = legacy
+    order.save(_syncing=True, update_fields=['delivery_person'])
+
+    order.refresh_from_db()
+    assert order.delivery_person_id is None
+    assert order.sync_version == starting_version + 1
+    assert order.synced_at is None
+    queued = SyncQueueRecord.objects.get(
+        model_name='order',
+        record_uuid=order.uuid,
+    )
+    assert queued.payload['sync_version'] == order.sync_version
+    assert queued.payload['delivery_person_uuid'] is None
 
 
 def test_order_list_preloads_assignment_without_per_order_queries():

@@ -800,6 +800,55 @@ window.I18N = {
   for (var l in extra) { window.I18N[l] = Object.assign(window.I18N[l] || {}, extra[l]); }
 })();
 
+// --- Direct local Telegram audit + detailed support-tunnel status ---
+(function () {
+  var extra = {
+    en: {
+      "nav.localAudit": "Local Telegram Audit",
+      "obs.relayHost": "Pinned relay host",
+      "obs.relayApi": "Relay backend endpoint",
+      "obs.hostFingerprint": "Pinned host fingerprint",
+      "obs.dbReadiness": "Database readiness",
+      "obs.backendReadiness": "Backend readiness",
+      "obs.retryState": "Retry state",
+      "obs.noRetry": "No retry scheduled",
+      "obs.connectorArtifact": "Home connector script",
+      "obs.operatorDb": "Operator DB endpoint",
+      "obs.operatorApi": "Operator API endpoint",
+      "obs.operatorInstruction": "Readiness instruction"
+    },
+    uz: {
+      "nav.localAudit": "Lokal Telegram auditi",
+      "obs.relayHost": "Tasdiqlangan relay host",
+      "obs.relayApi": "Relay backend manzili",
+      "obs.hostFingerprint": "Tasdiqlangan host barmoq izi",
+      "obs.dbReadiness": "Baza tayyorligi",
+      "obs.backendReadiness": "Backend tayyorligi",
+      "obs.retryState": "Qayta urinish holati",
+      "obs.noRetry": "Qayta urinish rejalashtirilmagan",
+      "obs.connectorArtifact": "Uyda ulanish skripti",
+      "obs.operatorDb": "Operator baza manzili",
+      "obs.operatorApi": "Operator API manzili",
+      "obs.operatorInstruction": "Tayyorlik ko‘rsatmasi"
+    },
+    ru: {
+      "nav.localAudit": "Локальный Telegram-аудит",
+      "obs.relayHost": "Закреплённый relay-хост",
+      "obs.relayApi": "Адрес backend на relay",
+      "obs.hostFingerprint": "Отпечаток ключа хоста",
+      "obs.dbReadiness": "Готовность базы",
+      "obs.backendReadiness": "Готовность backend",
+      "obs.retryState": "Повторное подключение",
+      "obs.noRetry": "Повтор не запланирован",
+      "obs.connectorArtifact": "Домашний скрипт подключения",
+      "obs.operatorDb": "Адрес БД для оператора",
+      "obs.operatorApi": "Адрес API для оператора",
+      "obs.operatorInstruction": "Инструкция готовности"
+    }
+  };
+  for (var l in extra) { window.I18N[l] = Object.assign(window.I18N[l] || {}, extra[l]); }
+})();
+
 // --- Updates page ---
 (function () {
   var extra = {

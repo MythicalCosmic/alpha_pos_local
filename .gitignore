@@ -30,6 +30,7 @@ db.sqlite3
 /staticfiles/
 /media/
 /order_audit/
+/local_telegram_audit/
 /DELIVERABLES/*Support-Config.json
 
 # Secrets
