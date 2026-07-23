@@ -194,7 +194,9 @@ class Api:
         if not isinstance(data, dict):
             return {'ok': False, 'error': 'Expected a config object'}
         # Some browsers hand us {"config": {...}} — unwrap it.
-        if 'config' in data and isinstance(data['config'], dict):
+        if 'config' in data:
+            if not isinstance(data['config'], dict):
+                return {'ok': False, 'error': 'Expected config to be an object'}
             data = data['config']
         current = config_store.read_config()
         known = {k for k, _ in config_store.CONFIG_FIELDS}

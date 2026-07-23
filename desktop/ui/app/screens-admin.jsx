@@ -310,17 +310,6 @@ const CFG_SECTIONS = [
   { t: "cfg.fiscal", hint: "cfg.fiscalHint", fields: [["FISCALIZATION_MODE", ["off", "mock", "sandbox", "live"]], ["FISCAL_PROVIDER", ["mock", "multikassa"]], ["FISCAL_TIN", "text"], ["FISCAL_PROVIDER_URL", "text"], ["FISCAL_VAT_PERCENT", "text"], ["FISCAL_MERCHANT_ID", "text"], ["FISCAL_SECRET", "secret"]] },
 ];
 
-function parseEnv(text) {
-  const out = {};
-  (text || "").split(/\r?\n/).forEach((line) => {
-    const s = line.trim();
-    if (!s || s[0] === "#" || s.indexOf("=") < 0) return;
-    const i = s.indexOf("=");
-    out[s.slice(0, i).trim()] = s.slice(i + 1).trim();
-  });
-  return out;
-}
-
 function ConfigScreen() {
   const app = useApp();
   const { t } = app;
@@ -361,8 +350,15 @@ function ConfigScreen() {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
-      const obj = parseEnv(String(reader.result || ""));
-      api.import_config(obj).then((r) => {
+      const parsed = parseConfigImport(
+        String(reader.result || ""),
+        Object.keys(vals || {}),
+      );
+      if (!parsed.ok) {
+        app.toast(parsed.error || "Invalid configuration file");
+        return;
+      }
+      api.import_config(parsed.data).then((r) => {
         if (r && r.ok) { app.toast(t("cfg.imported")); load(); } else app.toast((r && r.error) || "Import failed");
       });
     };
@@ -396,7 +392,7 @@ function ConfigScreen() {
           <p className="page-sub">{t("cfg.sub")}</p>
         </div>
         <div className="hstack">
-          <input type="file" accept=".env,text/plain" ref={fileRef} style={{ display: "none" }} onChange={onImportFile}></input>
+          <input type="file" accept=".env,.json,text/plain,application/json" ref={fileRef} style={{ display: "none" }} onChange={onImportFile}></input>
           <Btn variant="ghost" icon="upload" onClick={() => fileRef.current && fileRef.current.click()}>{t("cfg.import")}</Btn>
           <Btn variant="ghost" icon="download" onClick={exportEnv}>{t("cfg.export")}</Btn>
           <Btn variant="primary" onClick={save}>{t("cfg.saveBtn")}</Btn>

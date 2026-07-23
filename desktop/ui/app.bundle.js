@@ -1,6 +1,6 @@
 /* AlphaPOS desktop UI — generated; do not edit directly.
  * Run: node tools/compile_desktop_ui.js
- * source-sha256: cc5fe5a8f5063a08381b8b75b05a97acda70bd8311ef307ae6a2784b7d15569f
+ * source-sha256: 9727d3ec5b97bb68c1515b223336c2dd222126be6e7f12f675770bae012a278c
  */
 (function () {
 'use strict';
@@ -27,6 +27,68 @@
     },
   });
 })();
+
+/* source: app/config-import.js */
+// Configuration-file parser shared by the browser UI and focused Node tests.
+//
+// Owner support bundles are JSON (`{"config": {...}}`), while older Alpha POS
+// exports use one KEY=VALUE setting per line. Keep both formats at this boundary
+// and send only keys advertised by get_config() to the Python bridge.
+function parseConfigImport(text, recognizedKeys) {
+  const source = String(text == null ? "" : text).trim();
+  if (!source) {
+    return { ok: false, error: "The configuration file is empty." };
+  }
+
+  let candidate;
+  if (source[0] === "{" || source[0] === "[") {
+    let parsed;
+    try {
+      parsed = JSON.parse(source);
+    } catch (error) {
+      return { ok: false, error: "The configuration JSON is invalid." };
+    }
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+      return { ok: false, error: "Expected a JSON configuration object." };
+    }
+    if (Object.prototype.hasOwnProperty.call(parsed, "config")) {
+      if (!parsed.config || Array.isArray(parsed.config) || typeof parsed.config !== "object") {
+        return { ok: false, error: "The JSON config field must be an object." };
+      }
+      candidate = parsed.config;
+    } else {
+      candidate = parsed;
+    }
+  } else {
+    candidate = {};
+    source.split(/\r?\n/).forEach((line) => {
+      const value = line.trim();
+      if (!value || value[0] === "#" || value.indexOf("=") < 0) return;
+      const separator = value.indexOf("=");
+      const key = value.slice(0, separator).trim();
+      if (key) candidate[key] = value.slice(separator + 1).trim();
+    });
+  }
+
+  const allowed = new Set(Array.isArray(recognizedKeys) ? recognizedKeys : []);
+  const values = {};
+  Object.keys(candidate).forEach((key) => {
+    if (allowed.size === 0 || allowed.has(key)) values[key] = candidate[key];
+  });
+  if (Object.keys(values).length === 0) {
+    return {
+      ok: false,
+      error: allowed.size
+        ? "The file contains no recognized Alpha POS settings."
+        : "The file contains no configuration settings.",
+    };
+  }
+  return { ok: true, data: values };
+}
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { parseConfigImport };
+}
 
 /* source: app/i18n.js */
 // Alpha POS Backend — translations (EN / UZ / RU)
@@ -2817,16 +2879,6 @@ const CFG_SECTIONS = [{
   hint: "cfg.fiscalHint",
   fields: [["FISCALIZATION_MODE", ["off", "mock", "sandbox", "live"]], ["FISCAL_PROVIDER", ["mock", "multikassa"]], ["FISCAL_TIN", "text"], ["FISCAL_PROVIDER_URL", "text"], ["FISCAL_VAT_PERCENT", "text"], ["FISCAL_MERCHANT_ID", "text"], ["FISCAL_SECRET", "secret"]]
 }];
-function parseEnv(text) {
-  const out = {};
-  (text || "").split(/\r?\n/).forEach(line => {
-    const s = line.trim();
-    if (!s || s[0] === "#" || s.indexOf("=") < 0) return;
-    const i = s.indexOf("=");
-    out[s.slice(0, i).trim()] = s.slice(i + 1).trim();
-  });
-  return out;
-}
 function ConfigScreen() {
   const app = useApp();
   const {
@@ -2877,8 +2929,12 @@ function ConfigScreen() {
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
-      const obj = parseEnv(String(reader.result || ""));
-      api.import_config(obj).then(r => {
+      const parsed = parseConfigImport(String(reader.result || ""), Object.keys(vals || {}));
+      if (!parsed.ok) {
+        app.toast(parsed.error || "Invalid configuration file");
+        return;
+      }
+      api.import_config(parsed.data).then(r => {
         if (r && r.ok) {
           app.toast(t("cfg.imported"));
           load();
@@ -2934,7 +2990,7 @@ function ConfigScreen() {
     className: "hstack"
   }, React.createElement("input", {
     type: "file",
-    accept: ".env,text/plain",
+    accept: ".env,.json,text/plain,application/json",
     ref: fileRef,
     style: {
       display: "none"

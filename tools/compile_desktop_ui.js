@@ -21,6 +21,7 @@ const babel = require(path.join(uiDir, 'vendor', 'babel.min.js'));
 // tags. Keep bridge/i18n first and the React entrypoint last.
 const inputs = [
   'app/bridge.js',
+  'app/config-import.js',
   'app/i18n.js',
   'app/ui.jsx',
   'app/screens-main.jsx',

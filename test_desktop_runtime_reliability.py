@@ -1529,7 +1529,7 @@ def test_precompiled_ui_bundle_matches_every_source():
     root = Path(__file__).resolve().parent
     ui = root / 'desktop' / 'ui'
     inputs = [
-        'app/bridge.js', 'app/i18n.js', 'app/ui.jsx',
+        'app/bridge.js', 'app/config-import.js', 'app/i18n.js', 'app/ui.jsx',
         'app/screens-main.jsx', 'app/screens-admin.jsx',
         'app/screens-ops.jsx', 'app/screens-updates.jsx',
         'app/screens-logs.jsx', 'app/main.jsx',
