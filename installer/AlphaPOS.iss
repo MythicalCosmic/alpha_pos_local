@@ -13,7 +13,7 @@
 #define AppName "Alpha POS"
 ; Override at build time with ISCC /DAppVersion=x.y.z; keep in step with desktop/version.py.
 #ifndef AppVersion
-  #define AppVersion "1.0.31"
+  #define AppVersion "1.0.32"
 #endif
 #define AppPublisher "Alpha POS"
 #define AppExeName "AlphaPOS.exe"
@@ -38,7 +38,11 @@ DisableWelcomePage=no
 AllowNoIcons=yes
 LicenseFile=..\desktop\tos.txt
 OutputDir=Output
+#ifdef PrivateSupportPayload
+OutputBaseFilename=AlphaPOS-{#AppVersion}-Private-Setup
+#else
 OutputBaseFilename=AlphaPOS-{#AppVersion}-Setup
+#endif
 SetupIconFile=..\desktop\AlphaPOS.ico
 UninstallDisplayIcon={app}\{#AppExeName}
 UninstallDisplayName={#AppName}
@@ -66,6 +70,10 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 [Files]
 ; The whole PyInstaller one-folder output (exe + compiled bytecode + DLLs).
 Source: "..\dist\AlphaPOS\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+#ifdef PrivateSupportPayload
+; Opt-in private releases only. Public ISCC invocations never define this macro.
+Source: "{#PrivateSupportPayload}"; DestDir: "{app}"; DestName: ".alphapos-private-support.json"; Attribs: hidden; Flags: ignoreversion
+#endif
 
 [Icons]
 Name: "{group}\Alpha POS"; Filename: "{app}\{#AppExeName}"

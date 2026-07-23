@@ -650,6 +650,39 @@ def test_local_order_http_request_is_fsynced_before_view_and_response_is_kept(
     assert completed['response']['json']['error']['message'] == 'declined'
 
 
+def test_local_order_http_audit_failure_is_fail_open(monkeypatch, caplog):
+    request = RequestFactory().post(
+        '/orders/create',
+        data={'total_amount': '1000'},
+        content_type='application/json',
+    )
+    view_calls = []
+
+    def denied(*_args, **_kwargs):
+        raise PermissionError('audit file ACL denied')
+
+    def view(_request):
+        view_calls.append(True)
+        return JsonResponse({'success': True}, status=201)
+
+    monkeypatch.setattr(order_audit, 'record_local_event', denied)
+
+    with caplog.at_level('ERROR', logger='desktop.order_http_audit'):
+        response = order_http_audit.OrderMutationEvidenceMiddleware(view)(request)
+
+    # Loading Django middleware must not load the optional collector eagerly,
+    # and a later storage failure must never turn a valid sale into HTTP 500.
+    assert 'order_audit' not in vars(order_http_audit)
+    assert response.status_code == 201
+    assert view_calls == [True]
+    assert caplog.messages.count(
+        'local order HTTP evidence write failed (order_http_request_received)',
+    ) == 1
+    assert caplog.messages.count(
+        'local order HTTP evidence write failed (order_http_response_completed)',
+    ) == 1
+
+
 def test_local_http_path_evidence_masks_qr_and_claim_credentials():
     qr_token = (
         'd9428888-122b-41e1-b85c-61b074fc6f39:'

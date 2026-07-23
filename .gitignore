@@ -12,6 +12,8 @@ env/
 
 # Desktop build artifacts
 /build/
+# Opt-in private installer plaintext exists only while Inno Setup is compiling.
+/build/private-release/
 /dist/
 /installer/Output/
 *.exe

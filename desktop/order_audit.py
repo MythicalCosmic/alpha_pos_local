@@ -548,8 +548,9 @@ class OrderAuditCollector:
         self.index_file = Path(index_file)
         # Raw evidence contains customer/order PII and is deliberately reachable
         # through the owner support workflow. It must not inherit a broad
-        # Windows profile ACL. Harden old files once on upgrade and let all new
-        # atomic indexes/exports inherit the owner-only directory DACL.
+        # Windows profile ACL. Repair every existing object with the correct
+        # directory/file rights before _load_index performs its first read,
+        # then let new atomic indexes/exports inherit the owner-only DACL.
         self.dataset.parent.mkdir(parents=True, exist_ok=True)
         config_store._harden_windows_private_path(
             self.dataset.parent, directory=True, recursive=True,

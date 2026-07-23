@@ -15,6 +15,11 @@
 #               pyinstaller pywebview pythonnet Pillow tufup
 # Auto-update needs the signing root: run `python tools\release.py --init` once
 # (creates update_keys\ + update_repo\metadata\root.json, which the build bundles).
+[CmdletBinding()]
+param(
+    [string]$PrivateSupportConfig = ''
+)
+
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $root
@@ -27,6 +32,31 @@ if (-not $venv) { throw "No build venv found (.venv-build / .venv / ..\.venv / .
 Write-Host "Using build venv: $venv" -ForegroundColor DarkCyan
 $py = Join-Path $root "$venv\Scripts\python.exe"
 $pyinstaller = Join-Path $root "$venv\Scripts\pyinstaller.exe"
+
+$privateConfigPath = $null
+if ($PrivateSupportConfig) {
+    $privateConfigPath = (Resolve-Path -LiteralPath $PrivateSupportConfig).Path
+    $rootPrefix = [IO.Path]::GetFullPath($root).TrimEnd('\') + '\'
+    if ($privateConfigPath.StartsWith(
+        $rootPrefix, [StringComparison]::OrdinalIgnoreCase
+    )) {
+        $relativePrivatePath = $privateConfigPath.Substring($rootPrefix.Length)
+        & git -C $root check-ignore --quiet -- $relativePrivatePath
+        if ($LASTEXITCODE -ne 0) {
+            throw (
+                'Private support config is inside the repository but is not ' +
+                'ignored by Git. Refusing to risk tracking credentials.'
+            )
+        }
+    }
+    & $py 'tools\stage_private_release_payload.py' `
+        '--check' '--input' $privateConfigPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Private support payload validation failed ($LASTEXITCODE)"
+    }
+    Write-Host 'Private installer mode: validated ignored support payload.' `
+        -ForegroundColor Yellow
+}
 
 $iscc = @("$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
           "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
@@ -101,21 +131,77 @@ if ($LASTEXITCODE -ne 0) { throw "PyInstaller (onefile) failed ($LASTEXITCODE)" 
 
 Write-Host '== 5/5  Compiling Setup installer (Inno Setup) ==' -ForegroundColor Cyan
 if ($iscc) {
-    & $iscc "/DAppVersion=$version" 'installer\AlphaPOS.iss'
-    if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed ($LASTEXITCODE)" }
+    $privateStage = $null
+    try {
+        $isccArguments = @("/DAppVersion=$version")
+        if ($privateConfigPath) {
+            $privateStageDir = Join-Path $root 'build\private-release'
+            $privateStage = Join-Path $privateStageDir 'private-support.json'
+            & $py 'tools\stage_private_release_payload.py' `
+                '--input' $privateConfigPath '--output' $privateStage
+            if ($LASTEXITCODE -ne 0) {
+                throw "Private support payload staging failed ($LASTEXITCODE)"
+            }
+            $isccArguments += "/DPrivateSupportPayload=$privateStage"
+        }
+        $isccArguments += 'installer\AlphaPOS.iss'
+        & $iscc @isccArguments
+        if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed ($LASTEXITCODE)" }
+    } finally {
+        if ($privateStage) {
+            $expectedStage = [IO.Path]::GetFullPath(
+                (Join-Path $root 'build\private-release\private-support.json')
+            )
+            $actualStage = [IO.Path]::GetFullPath($privateStage)
+            if ($actualStage -ne $expectedStage) {
+                throw "Refusing to clean unexpected private stage: $actualStage"
+            }
+            $cleanupError = $null
+            foreach ($delayMs in @(0, 100, 300, 1000)) {
+                if (-not (Test-Path -LiteralPath $actualStage)) { break }
+                if ($delayMs) { Start-Sleep -Milliseconds $delayMs }
+                try {
+                    Remove-Item -LiteralPath $actualStage -Force -ErrorAction Stop
+                    $cleanupError = $null
+                } catch {
+                    $cleanupError = $_.Exception.Message
+                }
+            }
+            if (Test-Path -LiteralPath $actualStage) {
+                throw (
+                    'Private support payload cleanup failed; refusing to ' +
+                    'declare the release complete.' +
+                    $(if ($cleanupError) { " $cleanupError" } else { '' })
+                )
+            }
+        }
+    }
 } else {
+    if ($privateConfigPath) {
+        throw 'Inno Setup is required for a private installer build.'
+    }
     Write-Host 'ISCC not found - skipping Setup installer (install Inno Setup 6).' -ForegroundColor Yellow
 }
 
 $deliv = Join-Path $root 'DELIVERABLES'
 New-Item -ItemType Directory -Force -Path $deliv | Out-Null
 if ($iscc) {
-    $installer = Join-Path $root "installer\Output\AlphaPOS-$version-Setup.exe"
+    $installerName = if ($privateConfigPath) {
+        "AlphaPOS-$version-Private-Setup.exe"
+    } else {
+        "AlphaPOS-$version-Setup.exe"
+    }
+    $installer = Join-Path $root "installer\Output\$installerName"
     if (-not (Test-Path $installer)) {
         throw "Inno Setup succeeded but expected installer is missing: $installer"
     }
-    Copy-Item $installer "$deliv\AlphaPOS-Setup.exe" -Force
-    Copy-Item $installer "$deliv\AlphaPOS-$version-Setup.exe" -Force
+    if ($privateConfigPath) {
+        Copy-Item $installer "$deliv\AlphaPOS-Private-Setup.exe" -Force
+        Copy-Item $installer "$deliv\AlphaPOS-$version-Private-Setup.exe" -Force
+    } else {
+        Copy-Item $installer "$deliv\AlphaPOS-Setup.exe" -Force
+        Copy-Item $installer "$deliv\AlphaPOS-$version-Setup.exe" -Force
+    }
 }
 $portable = Join-Path $root 'dist\AlphaPOS.exe'
 if (-not (Test-Path $portable)) {

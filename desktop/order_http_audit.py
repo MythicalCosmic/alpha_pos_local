@@ -9,14 +9,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
-
-from desktop import order_audit
-
 
 _MUTATING_METHODS = {'POST', 'PUT', 'PATCH', 'DELETE'}
 _MAX_CAPTURE_BYTES = 2 * 1024 * 1024
@@ -25,6 +23,25 @@ _UUID_PATH_SEGMENT_RE = re.compile(
     re.IGNORECASE,
 )
 _OPAQUE_PATH_SEGMENT_RE = re.compile(r'^[A-Za-z0-9._~:-]{20,}$')
+logger = logging.getLogger('desktop.order_http_audit')
+
+
+def _record_local_event(event: str, payload: dict[str, Any]) -> bool:
+    """Write optional evidence without making checkout depend on its storage.
+
+    Importing ``desktop.order_audit`` at middleware-import time made a damaged
+    or unreadable evidence file abort Django's middleware construction and
+    therefore Uvicorn itself. Keep both the import and the synchronous write
+    inside this fail-open boundary: evidence errors remain loud in the durable
+    application log, while the order request continues through its real view.
+    """
+    try:
+        from desktop import order_audit
+        order_audit.record_local_event(event, payload, synchronous=True)
+        return True
+    except Exception:  # noqa: BLE001 - diagnostics cannot become checkout uptime
+        logger.exception('local order HTTP evidence write failed (%s)', event)
+        return False
 
 
 def _now() -> str:
@@ -144,9 +161,7 @@ class OrderMutationEvidenceMiddleware:
         }
         # Fsync before entering create/pay logic: this is intentionally on the
         # money path and is the proof of a request that never committed.
-        order_audit.record_local_event(
-            'order_http_request_received', received, synchronous=True,
-        )
+        _record_local_event('order_http_request_received', received)
 
         response = self.get_response(request)
         raw_response = b''
@@ -167,7 +182,5 @@ class OrderMutationEvidenceMiddleware:
             'response': _body_evidence(raw_response),
             'streaming': bool(getattr(response, 'streaming', False)),
         }
-        order_audit.record_local_event(
-            'order_http_response_completed', completed, synchronous=True,
-        )
+        _record_local_event('order_http_response_completed', completed)
         return response

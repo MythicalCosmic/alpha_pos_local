@@ -63,6 +63,60 @@ def _rows(path):
         connection.close()
 
 
+def test_outbox_repairs_private_acl_before_first_sqlite_open(
+        monkeypatch, isolated_outbox):
+    reports = isolated_outbox.parent / 'reports'
+    reports.mkdir(parents=True)
+    existing_report = reports / 'alpha-pos-shift-existing.txt'
+    existing_report.write_text('private order total\n', encoding='utf-8')
+    events = []
+    real_connect = sqlite3.connect
+
+    def guarded_connect(path, *args, **kwargs):
+        events.append(('connect', Path(path)))
+        return real_connect(path, *args, **kwargs)
+
+    config_store._HARDENED_WINDOWS_PATHS.clear()
+    monkeypatch.setattr(config_store.os, 'name', 'nt')
+    monkeypatch.setattr(config_store.sys, 'frozen', True, raising=False)
+    monkeypatch.setattr(
+        config_store, '_current_windows_sid', lambda: 'S-1-5-21-1234',
+    )
+    monkeypatch.setattr(
+        config_store, '_windows_executable', lambda name: name,
+    )
+    monkeypatch.setattr(
+        config_store,
+        '_hidden_windows_command',
+        lambda command: events.append(
+            ('acl', Path(command[1]), command[-1]),
+        ) or SimpleNamespace(returncode=0, stdout='processed', stderr=''),
+    )
+    monkeypatch.setattr(audit.sqlite3, 'connect', guarded_connect)
+
+    try:
+        connection = audit._connect()
+        connection.close()
+        # _connect is intentionally allowed to call the helper every time:
+        # its process cache prevents repeat icacls work while new SQLite files
+        # safely inherit from the already-private parent directory.
+        connection = audit._connect()
+        connection.close()
+    finally:
+        config_store._HARDENED_WINDOWS_PATHS.clear()
+
+    assert events == [
+        ('acl', isolated_outbox.parent, '*S-1-5-21-1234:(OI)(CI)F'),
+        ('acl', reports, '*S-1-5-21-1234:(OI)(CI)F'),
+        ('acl', existing_report, '*S-1-5-21-1234:F'),
+        ('connect', isolated_outbox),
+        ('connect', isolated_outbox),
+    ]
+    assert existing_report.read_text(encoding='utf-8') == (
+        'private order total\n'
+    )
+
+
 def test_dedicated_token_is_secret_masked_and_not_in_config_repr(monkeypatch):
     assert 'LOCAL_TELEGRAM_AUDIT_BOT_TOKEN' in config_store.SECRET_KEYS
     monkeypatch.setattr(
