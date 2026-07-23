@@ -1,6 +1,6 @@
 /* AlphaPOS desktop UI — generated; do not edit directly.
  * Run: node tools/compile_desktop_ui.js
- * source-sha256: 29712d17b132c5f07ba5739bc06cf10d100c75ff79c99bc4e07c6b052b3e6aab
+ * source-sha256: cc5fe5a8f5063a08381b8b75b05a97acda70bd8311ef307ae6a2784b7d15569f
  */
 (function () {
 'use strict';
@@ -96,6 +96,43 @@ window.I18N = {
     "dash.password": "Password",
     "dash.showPwd": "Show",
     "dash.hidePwd": "Hide",
+    "obs.title": "Local evidence & secure support",
+    "obs.sub": "Always-visible controls for the owner-only support tunnel and direct local order evidence. These channels do not depend on cloud sync.",
+    "obs.protected": "Protected & observable",
+    "obs.checkStatus": "Check status",
+    "obs.tunnelTitle": "Secure local database tunnel",
+    "obs.tunnelReady": "DB ready",
+    "obs.tunnelWaiting": "Connecting",
+    "obs.tunnelEnabled": "Secure support tunnel enabled",
+    "obs.tunnelDisabled": "Secure support tunnel disabled",
+    "obs.dbQuery": "Database query",
+    "obs.verified": "Verified",
+    "obs.notVerified": "Not verified",
+    "obs.secureSession": "SSH session",
+    "obs.relayDb": "Relay DB endpoint",
+    "obs.localApi": "Local API",
+    "obs.tunnelConfigure": "Import the per-install support key and pinned relay host in Configuration.",
+    "obs.tunnelHint": "PostgreSQL is never exposed on this PC or the public relay interface. The relay listener is loopback-only and requires authenticated SSH access.",
+    "obs.auditTitle": "Direct Telegram order evidence",
+    "obs.needsAttention": "Needs attention",
+    "obs.telegramActive": "Direct delivery on",
+    "obs.paused": "Paused",
+    "obs.collectShort": "Durable snapshots of orders, items, tenders and sync lifecycle.",
+    "obs.telegramDirect": "Sends from this till straight to the owner chats; acknowledged bytes are never skipped.",
+    "obs.ordersCaptured": "Orders captured",
+    "obs.pendingEvidence": "Pending Telegram bytes",
+    "obs.telegramChats": "Owner chats",
+    "obs.formats": "Evidence formats",
+    "obs.telegramConfigure": "Configure the local bot token and dedicated owner chat ID before automatic delivery.",
+    "obs.auditHint": "Raw JSONL remains on this till and is sent in lossless compressed segments. Failed sends retry the same bytes until Telegram acknowledges them.",
+    "obs.dbReadyShort": "DB tunnel ready",
+    "obs.dbWaitingShort": "DB tunnel waiting",
+    "obs.dbOffShort": "DB tunnel off",
+    "obs.telegramOnShort": "Order evidence on",
+    "obs.telegramOffShort": "Order evidence off",
+    "obs.closePending": "Shift close is waiting for cloud acknowledgement",
+    "obs.closeConflict": "Shift close evidence conflicts with the cloud",
+    "obs.closePendingHint": "The local close evidence is retained and will retry. Do not treat this shift as cloud-confirmed yet.",
     "lic.title": "License & Subscription",
     "lic.sub": "Register this install, choose a plan, and manage the license.",
     "lic.current": "Current status",
@@ -315,6 +352,43 @@ window.I18N = {
     "dash.password": "Parol",
     "dash.showPwd": "Ko'rsatish",
     "dash.hidePwd": "Yashirish",
+    "obs.title": "Lokal dalillar va xavfsiz yordam",
+    "obs.sub": "Faqat egaga tegishli yordam tunneli va to‘g‘ridan-to‘g‘ri lokal buyurtma dalillari uchun doim ko‘rinadigan boshqaruv. Bu kanallar bulutli syncga bog‘liq emas.",
+    "obs.protected": "Himoyalangan va kuzatiladi",
+    "obs.checkStatus": "Holatni tekshiring",
+    "obs.tunnelTitle": "Xavfsiz lokal baza tunneli",
+    "obs.tunnelReady": "Baza tayyor",
+    "obs.tunnelWaiting": "Ulanmoqda",
+    "obs.tunnelEnabled": "Xavfsiz yordam tunneli yoqildi",
+    "obs.tunnelDisabled": "Xavfsiz yordam tunneli o‘chirildi",
+    "obs.dbQuery": "Baza so‘rovi",
+    "obs.verified": "Tasdiqlangan",
+    "obs.notVerified": "Tasdiqlanmagan",
+    "obs.secureSession": "SSH sessiya",
+    "obs.relayDb": "Relay baza manzili",
+    "obs.localApi": "Lokal API",
+    "obs.tunnelConfigure": "Sozlamalarda shu qurilma uchun yordam kaliti va tasdiqlangan relay hostini import qiling.",
+    "obs.tunnelHint": "PostgreSQL bu kompyuterda yoki relayning ochiq interfeysida internetga chiqarilmaydi. Relay porti faqat localhostda va tasdiqlangan SSH kirishini talab qiladi.",
+    "obs.auditTitle": "Telegramga bevosita buyurtma dalillari",
+    "obs.needsAttention": "E’tibor kerak",
+    "obs.telegramActive": "Bevosita yuborish yoqilgan",
+    "obs.paused": "To‘xtatilgan",
+    "obs.collectShort": "Buyurtma, mahsulot, to‘lov va sync jarayonining barqaror nusxalari.",
+    "obs.telegramDirect": "Shu kassadan egasining chatlariga bevosita yuboradi; tasdiqlanmagan baytlar tashlab ketilmaydi.",
+    "obs.ordersCaptured": "Yig‘ilgan buyurtmalar",
+    "obs.pendingEvidence": "Telegramga kutilayotgan baytlar",
+    "obs.telegramChats": "Ega chatlari",
+    "obs.formats": "Dalil formatlari",
+    "obs.telegramConfigure": "Avtomatik yuborishdan oldin lokal bot tokeni va maxsus ega chat ID sini sozlang.",
+    "obs.auditHint": "Xom JSONL shu kassada qoladi va yo‘qotishsiz siqilgan bo‘laklarda yuboriladi. Xato yuborishlar Telegram tasdiqlaguncha aynan o‘sha baytlarni qayta urinadi.",
+    "obs.dbReadyShort": "Baza tunneli tayyor",
+    "obs.dbWaitingShort": "Baza tunneli kutilmoqda",
+    "obs.dbOffShort": "Baza tunneli o‘chiq",
+    "obs.telegramOnShort": "Buyurtma dalili yoqilgan",
+    "obs.telegramOffShort": "Buyurtma dalili o‘chiq",
+    "obs.closePending": "Smena yopilishi bulut tasdig‘ini kutmoqda",
+    "obs.closeConflict": "Smena yopilish dalili bulut bilan zid",
+    "obs.closePendingHint": "Lokal yopilish dalili saqlanadi va qayta urinadi. Hozircha smenani bulut tasdiqlagan deb hisoblamang.",
     "lic.title": "Litsenziya va obuna",
     "lic.sub": "O'rnatishni ro'yxatdan o'tkazing, tarif tanlang va litsenziyani boshqaring.",
     "lic.current": "Joriy holat",
@@ -534,6 +608,43 @@ window.I18N = {
     "dash.password": "Пароль",
     "dash.showPwd": "Показать",
     "dash.hidePwd": "Скрыть",
+    "obs.title": "Локальные доказательства и защищённая поддержка",
+    "obs.sub": "Всегда видимые элементы управления приватным туннелем поддержки и прямой отправкой локальных данных заказов. Эти каналы не зависят от облачной синхронизации.",
+    "obs.protected": "Защищено и наблюдаемо",
+    "obs.checkStatus": "Проверьте статус",
+    "obs.tunnelTitle": "Защищённый туннель локальной БД",
+    "obs.tunnelReady": "БД готова",
+    "obs.tunnelWaiting": "Подключение",
+    "obs.tunnelEnabled": "Защищённый туннель поддержки включён",
+    "obs.tunnelDisabled": "Защищённый туннель поддержки выключен",
+    "obs.dbQuery": "Запрос к БД",
+    "obs.verified": "Проверено",
+    "obs.notVerified": "Не проверено",
+    "obs.secureSession": "SSH-сессия",
+    "obs.relayDb": "Адрес БД на relay",
+    "obs.localApi": "Локальный API",
+    "obs.tunnelConfigure": "Импортируйте ключ этой установки и закреплённый хост relay в Настройках.",
+    "obs.tunnelHint": "PostgreSQL не публикуется в интернет ни на этом ПК, ни на внешнем интерфейсе relay. Порт relay доступен только на localhost и требует аутентификацию SSH.",
+    "obs.auditTitle": "Прямые данные заказов в Telegram",
+    "obs.needsAttention": "Требует внимания",
+    "obs.telegramActive": "Прямая отправка включена",
+    "obs.paused": "Приостановлено",
+    "obs.collectShort": "Надёжные снимки заказов, позиций, оплат и цикла синхронизации.",
+    "obs.telegramDirect": "Отправляет с этой кассы прямо в чаты владельца; неподтверждённые байты не пропускаются.",
+    "obs.ordersCaptured": "Собрано заказов",
+    "obs.pendingEvidence": "Байтов ожидает Telegram",
+    "obs.telegramChats": "Чаты владельца",
+    "obs.formats": "Форматы данных",
+    "obs.telegramConfigure": "Перед автоотправкой настройте локальный токен бота и отдельный ID чата владельца.",
+    "obs.auditHint": "Исходный JSONL хранится на кассе и отправляется без потерь сжатыми сегментами. При ошибке повторяются те же байты до подтверждения Telegram.",
+    "obs.dbReadyShort": "Туннель БД готов",
+    "obs.dbWaitingShort": "Туннель БД ожидает",
+    "obs.dbOffShort": "Туннель БД выключен",
+    "obs.telegramOnShort": "Данные заказов включены",
+    "obs.telegramOffShort": "Данные заказов выключены",
+    "obs.closePending": "Закрытие смены ожидает подтверждения облака",
+    "obs.closeConflict": "Данные закрытия смены конфликтуют с облаком",
+    "obs.closePendingHint": "Локальные данные закрытия сохранены и будут отправлены повторно. Смена ещё не подтверждена облаком.",
     "lic.title": "Лицензия и подписка",
     "lic.sub": "Зарегистрируйте установку, выберите тариф и управляйте лицензией.",
     "lic.current": "Текущий статус",
@@ -1257,6 +1368,270 @@ Object.assign(window, {
 });
 
 /* source: app/screens-main.jsx */
+function obsBytes(value) {
+  const n = Math.max(0, Number(value || 0));
+  if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
+  if (n >= 1024) return Math.round(n / 1024) + " KB";
+  return Math.round(n) + " B";
+}
+function ObservabilityCard({
+  obs
+}) {
+  const app = useApp();
+  const {
+    t
+  } = app;
+  const tunnel = obs.tunnel || {};
+  const audit = obs.orderAudit || {};
+  const tunnelTone = tunnel.ready ? "ok" : tunnel.state === "error" ? "danger" : tunnel.enabled ? "warn" : "muted";
+  const tunnelLabel = tunnel.ready ? t("obs.tunnelReady") : tunnel.enabled ? t("obs.tunnelWaiting") : t("common.offline");
+  const auditError = audit.delivery_state === "error" || audit.delivery_state === "configuration_required";
+  const auditTone = auditError ? "danger" : audit.enabled !== false && audit.auto_send !== false ? "ok" : "muted";
+  const auditLabel = auditError ? t("obs.needsAttention") : audit.enabled !== false && audit.auto_send !== false ? t("obs.telegramActive") : t("obs.paused");
+  const tunnelError = tunnel.last_error || (tunnel.enabled && !tunnel.ready ? tunnel.last_probe_error : "");
+  const auditErrorText = audit.last_auto_send_error || audit.last_error || "";
+  return React.createElement(Card, {
+    title: t("obs.title"),
+    style: {
+      gridColumn: "span 12",
+      borderColor: tunnel.ready && !auditError ? "rgba(38, 151, 101, .35)" : undefined
+    },
+    action: React.createElement(Badge, {
+      tone: tunnel.ready && !auditError ? "ok" : "warn"
+    }, tunnel.ready && !auditError ? t("obs.protected") : t("obs.checkStatus"))
+  }, React.createElement("p", {
+    style: {
+      margin: "-2px 0 16px",
+      color: "var(--ink-3)",
+      fontSize: 12.5,
+      textWrap: "pretty"
+    }
+  }, t("obs.sub")), React.createElement("div", {
+    className: "g2",
+    style: {
+      gap: 14
+    }
+  }, React.createElement("div", {
+    style: {
+      border: "1px solid var(--line)",
+      borderRadius: 12,
+      padding: 16
+    }
+  }, React.createElement("div", {
+    className: "hstack",
+    style: {
+      justifyContent: "space-between",
+      alignItems: "center",
+      gap: 12
+    }
+  }, React.createElement("div", {
+    className: "hstack",
+    style: {
+      gap: 9
+    }
+  }, React.createElement(Icon, {
+    name: "globe",
+    size: 19
+  }), React.createElement("div", {
+    style: {
+      fontWeight: 650
+    }
+  }, t("obs.tunnelTitle")), React.createElement(Badge, {
+    tone: tunnelTone,
+    pulse: !!tunnel.ready
+  }, tunnelLabel)), React.createElement(Switch, {
+    on: !!tunnel.enabled,
+    onChange: obs.toggleTunnel
+  })), React.createElement("div", {
+    className: "kv",
+    style: {
+      marginTop: 14
+    }
+  }, React.createElement(KRow, {
+    l: t("obs.dbQuery"),
+    v: tunnel.local_db_query_verified ? t("obs.verified") : t("obs.notVerified"),
+    badge: React.createElement(Badge, {
+      tone: tunnel.local_db_query_verified ? "ok" : "muted"
+    }, tunnel.local_db_query_verified ? t("obs.verified") : t("obs.notVerified"))
+  }), React.createElement(KRow, {
+    l: t("obs.secureSession"),
+    v: tunnel.session_verified ? t("common.online") : t("common.offline")
+  }), React.createElement(KRow, {
+    l: t("obs.relayDb"),
+    v: tunnel.remote_db || "—",
+    mono: true,
+    dim: !tunnel.remote_db
+  }), React.createElement(KRow, {
+    l: t("obs.localApi"),
+    v: tunnel.local_api_reachable ? t("common.online") : t("common.offline")
+  })), tunnelError ? React.createElement("div", {
+    style: {
+      marginTop: 12,
+      color: "var(--danger)",
+      fontSize: 12,
+      wordBreak: "break-word"
+    }
+  }, tunnelError) : null, !tunnel.configured && tunnel.enabled ? React.createElement("div", {
+    style: {
+      marginTop: 12,
+      color: "var(--warn)",
+      fontSize: 12
+    }
+  }, t("obs.tunnelConfigure")) : null, React.createElement("p", {
+    style: {
+      margin: "12px 0 0",
+      color: "var(--ink-3)",
+      fontSize: 11.5,
+      textWrap: "pretty"
+    }
+  }, t("obs.tunnelHint")), React.createElement("div", {
+    style: {
+      marginTop: 12
+    }
+  }, React.createElement(Btn, {
+    size: "sm",
+    variant: "ghost",
+    onClick: () => app.nav("config")
+  }, t("common.manage")))), React.createElement("div", {
+    style: {
+      border: "1px solid var(--line)",
+      borderRadius: 12,
+      padding: 16
+    }
+  }, React.createElement("div", {
+    className: "hstack",
+    style: {
+      justifyContent: "space-between",
+      alignItems: "center",
+      gap: 12
+    }
+  }, React.createElement("div", {
+    className: "hstack",
+    style: {
+      gap: 9
+    }
+  }, React.createElement(Icon, {
+    name: "send",
+    size: 19
+  }), React.createElement("div", {
+    style: {
+      fontWeight: 650
+    }
+  }, t("obs.auditTitle")), React.createElement(Badge, {
+    tone: auditTone,
+    pulse: audit.delivery_state === "delivered"
+  }, auditLabel))), React.createElement("div", {
+    className: "hstack",
+    style: {
+      justifyContent: "space-between",
+      alignItems: "center",
+      gap: 16,
+      marginTop: 14
+    }
+  }, React.createElement("div", {
+    style: {
+      minWidth: 0
+    }
+  }, React.createElement("div", {
+    style: {
+      fontWeight: 600,
+      fontSize: 13
+    }
+  }, t("audit.collect")), React.createElement("div", {
+    style: {
+      color: "var(--ink-3)",
+      fontSize: 11.5,
+      marginTop: 2
+    }
+  }, t("obs.collectShort"))), React.createElement(Switch, {
+    on: audit.enabled !== false,
+    onChange: obs.toggleAuditCollection
+  })), React.createElement("div", {
+    className: "hstack",
+    style: {
+      justifyContent: "space-between",
+      alignItems: "center",
+      gap: 16,
+      marginTop: 12,
+      paddingTop: 12,
+      borderTop: "1px solid var(--line)"
+    }
+  }, React.createElement("div", {
+    style: {
+      minWidth: 0
+    }
+  }, React.createElement("div", {
+    style: {
+      fontWeight: 600,
+      fontSize: 13
+    }
+  }, t("audit.autoSend")), React.createElement("div", {
+    style: {
+      color: "var(--ink-3)",
+      fontSize: 11.5,
+      marginTop: 2
+    }
+  }, t("obs.telegramDirect"))), React.createElement(Switch, {
+    on: audit.auto_send !== false,
+    onChange: obs.toggleAuditSend
+  })), React.createElement("div", {
+    className: "kv",
+    style: {
+      marginTop: 14
+    }
+  }, React.createElement(KRow, {
+    l: t("obs.ordersCaptured"),
+    v: audit.order_count || 0,
+    mono: true
+  }), React.createElement(KRow, {
+    l: t("obs.pendingEvidence"),
+    v: obsBytes(audit.auto_pending_bytes),
+    mono: true
+  }), React.createElement(KRow, {
+    l: t("obs.telegramChats"),
+    v: audit.telegram_chat_count || 0,
+    mono: true
+  }), React.createElement(KRow, {
+    l: t("obs.formats"),
+    v: (audit.formats || ["JSONL", "JSONL.GZ"]).join(" + "),
+    mono: true
+  })), auditErrorText ? React.createElement("div", {
+    style: {
+      marginTop: 12,
+      color: "var(--danger)",
+      fontSize: 12,
+      wordBreak: "break-word"
+    }
+  }, auditErrorText) : null, !audit.telegram_configured ? React.createElement("div", {
+    style: {
+      marginTop: 12,
+      color: "var(--warn)",
+      fontSize: 12
+    }
+  }, t("obs.telegramConfigure")) : null, React.createElement("p", {
+    style: {
+      margin: "12px 0 0",
+      color: "var(--ink-3)",
+      fontSize: 11.5,
+      textWrap: "pretty"
+    }
+  }, t("obs.auditHint")), React.createElement("div", {
+    className: "hstack",
+    style: {
+      marginTop: 12
+    }
+  }, React.createElement(Btn, {
+    size: "sm",
+    variant: "primary",
+    icon: "send",
+    disabled: obs.busy === "send",
+    onClick: obs.sendAuditNow
+  }, obs.busy === "send" ? t("audit.sending") : t("audit.sendNow")), React.createElement(Btn, {
+    size: "sm",
+    variant: "ghost",
+    onClick: () => app.nav("config")
+  }, t("common.manage"))))));
+}
 function DashboardScreen() {
   const app = useApp();
   const {
@@ -1266,12 +1641,17 @@ function DashboardScreen() {
     lic,
     fiscal,
     updates,
-    adminCreds
+    adminCreds,
+    observability
   } = app;
   const [showPwd, setShowPwd] = React.useState(false);
   const phase = server.phase;
   const statusTitle = phase === "on" ? t("dash.serverOn") : phase === "starting" ? t("dash.starting") : phase === "stopping" ? t("dash.stopping") : t("dash.serverOff");
   const statusSub = phase === "on" ? t("dash.serverOnSub") : phase === "off" ? t("dash.serverOffSub") : " ";
+  const shiftClose = observability.shiftClose || {};
+  const shiftCloseState = String(shiftClose.state || "").toUpperCase();
+  const shiftCloseConflict = shiftCloseState === "CONFLICT" || Number(shiftClose.conflict_count || 0) > 0;
+  const shiftCloseVisible = shiftCloseConflict || shiftCloseState === "PENDING" || Number(shiftClose.pending_count || 0) > 0;
   return React.createElement("div", {
     className: "page",
     "data-screen-label": "Dashboard"
@@ -1281,9 +1661,39 @@ function DashboardScreen() {
     className: "page-h"
   }, t("dash.title")), React.createElement("p", {
     className: "page-sub"
-  }, t("dash.sub"))), React.createElement("div", {
+  }, t("dash.sub"))), shiftCloseVisible ? React.createElement("div", {
+    style: {
+      marginBottom: 14,
+      border: "1px solid " + (shiftCloseConflict ? "var(--danger)" : "var(--warn)"),
+      borderRadius: 12,
+      padding: "12px 14px",
+      color: shiftCloseConflict ? "var(--danger)" : "var(--warn)",
+      display: "flex",
+      alignItems: "center",
+      gap: 10
+    }
+  }, React.createElement(Icon, {
+    name: "warn",
+    size: 18
+  }), React.createElement("div", {
+    style: {
+      minWidth: 0
+    }
+  }, React.createElement("div", {
+    style: {
+      fontWeight: 700
+    }
+  }, shiftCloseConflict ? t("obs.closeConflict") : t("obs.closePending")), React.createElement("div", {
+    style: {
+      fontSize: 12,
+      marginTop: 2,
+      wordBreak: "break-word"
+    }
+  }, shiftClose.message || t("obs.closePendingHint")))) : null, React.createElement("div", {
     className: "g12"
-  }, React.createElement(Card, {
+  }, React.createElement(ObservabilityCard, {
+    obs: observability
+  }), React.createElement(Card, {
     style: {
       gridColumn: "span 7",
       display: "flex",
@@ -3366,21 +3776,27 @@ const SYNC_L = {
     off: "Sync off",
     down: "Not connected",
     busy: "Syncing…",
-    pending: "queued"
+    pending: "queued",
+    closePending: "Shift close pending",
+    closeConflict: "Shift close conflict"
   },
   uz: {
     live: "Sinx faol",
     off: "Sinx o‘chiq",
     down: "Ulanmagan",
     busy: "Sinxlash…",
-    pending: "navbatda"
+    pending: "navbatda",
+    closePending: "Smena yopilishi kutilmoqda",
+    closeConflict: "Smena yopilishida ziddiyat"
   },
   ru: {
     live: "Синхр. активна",
     off: "Синхр. выкл",
     down: "Нет связи",
     busy: "Синхр…",
-    pending: "в очереди"
+    pending: "в очереди",
+    closePending: "Закрытие смены ожидается",
+    closeConflict: "Конфликт закрытия смены"
   }
 };
 const NAV = [{
@@ -3522,6 +3938,21 @@ function App() {
     pending_count: 0
   });
   const [syncBusy, setSyncBusy] = React.useState(false);
+  const [tunnel, setTunnel] = React.useState({
+    enabled: false,
+    ready: false,
+    state: "off"
+  });
+  const [orderAudit, setOrderAudit] = React.useState({
+    enabled: true,
+    auto_send: true,
+    delivery_state: "pending",
+    order_count: 0,
+    record_count: 0,
+    bytes: 0,
+    auto_pending_bytes: 0
+  });
+  const [observabilityBusy, setObservabilityBusy] = React.useState("");
   const onSinceRef = React.useRef(null);
   const refreshServer = React.useCallback(() => {
     return api.server_status().then(r => {
@@ -3553,6 +3984,19 @@ function App() {
   const refreshSync = React.useCallback(() => api.sync_status().then(r => {
     if (r && r.ok && r.sync) setSync(r.sync);
   }), []);
+  const refreshObservability = React.useCallback(() => Promise.all([api.support_tunnel_status(), api.order_audit_status()]).then(([tunnelResult, auditResult]) => {
+    if (tunnelResult && tunnelResult.ok) setTunnel(tunnelResult);else if (tunnelResult && tunnelResult.error) setTunnel(old => ({
+      ...old,
+      ready: false,
+      state: "error",
+      last_error: tunnelResult.error
+    }));
+    if (auditResult && auditResult.ok) setOrderAudit(auditResult);else if (auditResult && auditResult.error) setOrderAudit(old => ({
+      ...old,
+      delivery_state: "error",
+      last_error: auditResult.error
+    }));
+  }), []);
   const refreshAll = React.useCallback(() => {
     refreshServer();
     refreshLicense();
@@ -3560,18 +4004,20 @@ function App() {
     refreshCreds();
     refreshUpdates();
     refreshSync();
-  }, [refreshServer, refreshLicense, refreshFiscal, refreshCreds, refreshUpdates, refreshSync]);
+    refreshObservability();
+  }, [refreshServer, refreshLicense, refreshFiscal, refreshCreds, refreshUpdates, refreshSync, refreshObservability]);
   React.useEffect(() => {
     refreshAll();
   }, [refreshAll]);
   React.useEffect(() => {
     if (tick > 0 && tick % 4 === 0) refreshServer();
     if (tick > 0 && tick % 5 === 0) refreshSync();
+    if (tick > 0 && tick % 5 === 0) refreshObservability();
     if (tick > 0 && tick % 20 === 0) {
       refreshLicense();
       refreshUpdates();
     }
-  }, [tick, refreshServer, refreshLicense, refreshUpdates, refreshSync]);
+  }, [tick, refreshServer, refreshLicense, refreshUpdates, refreshSync, refreshObservability]);
   const toggleServer = async () => {
     if (phase === "on") {
       setPhase("stopping");
@@ -3607,6 +4053,84 @@ function App() {
     setSyncBusy(false);
     refreshSync();
     toast(r && r.ok ? sl.live + " ✓" : sl.down + (r && r.error ? ": " + r.error : ""));
+  };
+  const toggleTunnel = async on => {
+    if (observabilityBusy) return;
+    setObservabilityBusy("tunnel");
+    setTunnel(old => ({
+      ...old,
+      enabled: on,
+      ready: false,
+      state: on ? "connecting" : "off"
+    }));
+    const r = await api.set_support_tunnel_enabled(on);
+    setObservabilityBusy("");
+    if (r && r.ok) {
+      setTunnel(r);
+      toast(on ? t("obs.tunnelEnabled") : t("obs.tunnelDisabled"));
+    } else {
+      setTunnel(old => ({
+        ...old,
+        enabled: !on,
+        ready: false,
+        state: "error",
+        last_error: r && r.error || "Failed"
+      }));
+      toast(r && r.error || "Failed");
+    }
+    refreshObservability();
+  };
+  const toggleAuditCollection = async on => {
+    if (observabilityBusy) return;
+    setObservabilityBusy("audit");
+    setOrderAudit(old => ({
+      ...old,
+      enabled: on
+    }));
+    const r = await api.set_order_audit_enabled(on);
+    setObservabilityBusy("");
+    if (r && r.ok) {
+      setOrderAudit(r);
+      toast(on ? t("audit.enabledToast") : t("audit.disabledToast"));
+    } else {
+      setOrderAudit(old => ({
+        ...old,
+        enabled: !on,
+        delivery_state: "error",
+        last_error: r && r.error || "Failed"
+      }));
+      toast(r && r.error || "Failed");
+    }
+  };
+  const toggleAuditSend = async on => {
+    if (observabilityBusy) return;
+    setObservabilityBusy("telegram");
+    setOrderAudit(old => ({
+      ...old,
+      auto_send: on
+    }));
+    const r = await api.set_order_audit_auto_send(on);
+    setObservabilityBusy("");
+    if (r && r.ok) {
+      setOrderAudit(r);
+      toast(on ? t("audit.autoEnabledToast") : t("audit.autoDisabledToast"));
+    } else {
+      setOrderAudit(old => ({
+        ...old,
+        auto_send: !on,
+        delivery_state: "error",
+        last_error: r && r.error || "Failed"
+      }));
+      toast(r && r.error || "Failed");
+    }
+  };
+  const sendAuditNow = async () => {
+    if (observabilityBusy) return;
+    setObservabilityBusy("send");
+    const r = await api.send_order_audit_now();
+    setObservabilityBusy("");
+    await refreshObservability();
+    if (r && (r.ok || r.partial)) toast(r.partial ? t("audit.sentPartial") : t("audit.sent"));else toast(r && r.failed && r.failed[0] && r.failed[0].error || r && r.error || t("audit.sendFailed"));
   };
   const uptime = onSinceRef.current ? Math.floor((Date.now() - onSinceRef.current) / 1000) : 0;
   const registered = !!(lic && lic.status === "ACTIVE");
@@ -3696,6 +4220,17 @@ function App() {
       bumpConfirmed
     },
     adminCreds: creds,
+    observability: {
+      tunnel,
+      orderAudit,
+      shiftClose: sync.shift_close || {},
+      busy: observabilityBusy,
+      toggleTunnel,
+      toggleAuditCollection,
+      toggleAuditSend,
+      sendAuditNow,
+      refresh: refreshObservability
+    },
     updates: {
       version: upd.version,
       url: upd.update_url,
@@ -3750,6 +4285,11 @@ function App() {
     alt: ""
   }), "Alpha POS Backend"), React.createElement("div", {
     className: "tb-spacer"
+  }), React.createElement(ObservabilityPills, {
+    tunnel: tunnel,
+    audit: orderAudit,
+    t: t,
+    onOpen: () => setPage("dashboard")
   }), React.createElement(SyncPill, {
     sync: sync,
     busy: syncBusy,
@@ -3862,10 +4402,14 @@ function SyncPill({
 }) {
   const enabled = !!sync.enabled;
   const online = enabled && !!sync.is_online;
-  const color = !enabled ? "var(--ink-3)" : online ? "var(--ok)" : "#d23b3b";
-  const label = busy ? sl.busy : !enabled ? sl.off : online ? sl.live : sl.down;
+  const close = sync.shift_close || {};
+  const closeState = String(close.state || "").toUpperCase();
+  const closeConflict = closeState === "CONFLICT" || Number(close.conflict_count || 0) > 0;
+  const closePending = !closeConflict && (closeState === "PENDING" || Number(close.pending_count || 0) > 0);
+  const color = closeConflict ? "#d23b3b" : closePending ? "var(--warn)" : !enabled ? "var(--ink-3)" : online ? "var(--ok)" : "#d23b3b";
+  const label = busy ? sl.busy : closeConflict ? sl.closeConflict : closePending ? sl.closePending : !enabled ? sl.off : online ? sl.live : sl.down;
   const pending = sync.pending_count || 0;
-  const title = [label, pending ? pending + " " + sl.pending : "", sync.last_error || ""].filter(Boolean).join("   ·   ");
+  const title = [label, close.message || "", pending ? pending + " " + sl.pending : "", sync.last_error || ""].filter(Boolean).join("   ·   ");
   return React.createElement("button", {
     title: title,
     onClick: onSync,
@@ -3901,6 +4445,49 @@ function SyncPill({
       opacity: 0.65
     }
   }, "\xB7 ", pending) : null);
+}
+function ObservabilityPills({
+  tunnel,
+  audit,
+  t,
+  onOpen
+}) {
+  const tunnelTone = tunnel.ready ? "var(--ok)" : tunnel.enabled ? "var(--warn)" : "var(--ink-3)";
+  const auditError = audit.delivery_state === "error" || audit.delivery_state === "configuration_required";
+  const auditActive = audit.enabled !== false && audit.auto_send !== false;
+  const auditTone = auditError ? "#d23b3b" : auditActive ? "var(--ok)" : "var(--ink-3)";
+  const pill = (key, color, label, title) => React.createElement("button", {
+    key: key,
+    title: title,
+    onClick: onOpen,
+    style: {
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 6,
+      background: "transparent",
+      border: "1px solid rgba(127,127,127,.28)",
+      borderRadius: 999,
+      padding: "4px 9px",
+      cursor: "pointer",
+      font: "inherit",
+      fontSize: 11.5,
+      color: "var(--ink-2, inherit)"
+    }
+  }, React.createElement("span", {
+    style: {
+      width: 8,
+      height: 8,
+      borderRadius: "50%",
+      background: color
+    }
+  }), React.createElement("span", null, label));
+  return React.createElement("div", {
+    style: {
+      display: "inline-flex",
+      gap: 6,
+      marginRight: 8
+    }
+  }, pill("tunnel", tunnelTone, tunnel.ready ? t("obs.dbReadyShort") : tunnel.enabled ? t("obs.dbWaitingShort") : t("obs.dbOffShort"), tunnel.last_error || tunnel.last_probe_error || t("obs.tunnelHint")), pill("audit", auditTone, auditActive ? t("obs.telegramOnShort") : t("obs.telegramOffShort"), audit.last_auto_send_error || audit.last_error || t("obs.auditHint")));
 }
 ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App, null));
 })();

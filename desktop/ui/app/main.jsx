@@ -7,9 +7,9 @@ const ACCENTS = ["#1e6b4c", "#27486e", "#8a4a2c", "#5b4a7a"];
 
 // Live cloud-sync pill labels (self-contained, trilingual — no i18n.js surgery).
 const SYNC_L = {
-  en: { live: "Sync live", off: "Sync off", down: "Not connected", busy: "Syncing…", pending: "queued" },
-  uz: { live: "Sinx faol", off: "Sinx o‘chiq", down: "Ulanmagan", busy: "Sinxlash…", pending: "navbatda" },
-  ru: { live: "Синхр. активна", off: "Синхр. выкл", down: "Нет связи", busy: "Синхр…", pending: "в очереди" },
+  en: { live: "Sync live", off: "Sync off", down: "Not connected", busy: "Syncing…", pending: "queued", closePending: "Shift close pending", closeConflict: "Shift close conflict" },
+  uz: { live: "Sinx faol", off: "Sinx o‘chiq", down: "Ulanmagan", busy: "Sinxlash…", pending: "navbatda", closePending: "Smena yopilishi kutilmoqda", closeConflict: "Smena yopilishida ziddiyat" },
+  ru: { live: "Синхр. активна", off: "Синхр. выкл", down: "Нет связи", busy: "Синхр…", pending: "в очереди", closePending: "Закрытие смены ожидается", closeConflict: "Конфликт закрытия смены" },
 };
 
 const NAV = [
@@ -95,6 +95,12 @@ function App() {
   const [upd, setUpd] = React.useState({ version: "1.0.0", update_url: "", pending: false, frozen: false });
   const [sync, setSync] = React.useState({ enabled: false, pending_count: 0 });
   const [syncBusy, setSyncBusy] = React.useState(false);
+  const [tunnel, setTunnel] = React.useState({ enabled: false, ready: false, state: "off" });
+  const [orderAudit, setOrderAudit] = React.useState({
+    enabled: true, auto_send: true, delivery_state: "pending",
+    order_count: 0, record_count: 0, bytes: 0, auto_pending_bytes: 0,
+  });
+  const [observabilityBusy, setObservabilityBusy] = React.useState("");
   const onSinceRef = React.useRef(null);
 
   const refreshServer = React.useCallback(() => {
@@ -111,17 +117,26 @@ function App() {
   const refreshCreds = React.useCallback(() => api.admin_credentials().then((r) => { if (r && r.ok) setCreds({ email: r.email, password: r.password }); }), []);
   const refreshUpdates = React.useCallback(() => api.update_status().then((r) => { if (r && r.ok) setUpd(r); }), []);
   const refreshSync = React.useCallback(() => api.sync_status().then((r) => { if (r && r.ok && r.sync) setSync(r.sync); }), []);
+  const refreshObservability = React.useCallback(() => Promise.all([
+    api.support_tunnel_status(), api.order_audit_status(),
+  ]).then(([tunnelResult, auditResult]) => {
+    if (tunnelResult && tunnelResult.ok) setTunnel(tunnelResult);
+    else if (tunnelResult && tunnelResult.error) setTunnel((old) => ({ ...old, ready: false, state: "error", last_error: tunnelResult.error }));
+    if (auditResult && auditResult.ok) setOrderAudit(auditResult);
+    else if (auditResult && auditResult.error) setOrderAudit((old) => ({ ...old, delivery_state: "error", last_error: auditResult.error }));
+  }), []);
   const refreshAll = React.useCallback(() => {
-    refreshServer(); refreshLicense(); refreshFiscal(); refreshCreds(); refreshUpdates(); refreshSync();
-  }, [refreshServer, refreshLicense, refreshFiscal, refreshCreds, refreshUpdates, refreshSync]);
+    refreshServer(); refreshLicense(); refreshFiscal(); refreshCreds(); refreshUpdates(); refreshSync(); refreshObservability();
+  }, [refreshServer, refreshLicense, refreshFiscal, refreshCreds, refreshUpdates, refreshSync, refreshObservability]);
 
   React.useEffect(() => { refreshAll(); }, [refreshAll]);
   // Poll the server status often (drives the power button); the rest slowly.
   React.useEffect(() => {
     if (tick > 0 && tick % 4 === 0) refreshServer();
     if (tick > 0 && tick % 5 === 0) refreshSync();   // ~5s for a "live" sync pill
+    if (tick > 0 && tick % 5 === 0) refreshObservability();
     if (tick > 0 && tick % 20 === 0) { refreshLicense(); refreshUpdates(); }
-  }, [tick, refreshServer, refreshLicense, refreshUpdates, refreshSync]);
+  }, [tick, refreshServer, refreshLicense, refreshUpdates, refreshSync, refreshObservability]);
 
   /* ---------- server control ---------- */
   const toggleServer = async () => {
@@ -154,6 +169,62 @@ function App() {
     setSyncBusy(false);
     refreshSync();
     toast((r && r.ok) ? sl.live + " ✓" : (sl.down + (r && r.error ? ": " + r.error : "")));
+  };
+
+  const toggleTunnel = async (on) => {
+    if (observabilityBusy) return;
+    setObservabilityBusy("tunnel");
+    setTunnel((old) => ({ ...old, enabled: on, ready: false, state: on ? "connecting" : "off" }));
+    const r = await api.set_support_tunnel_enabled(on);
+    setObservabilityBusy("");
+    if (r && r.ok) {
+      setTunnel(r);
+      toast(on ? t("obs.tunnelEnabled") : t("obs.tunnelDisabled"));
+    } else {
+      setTunnel((old) => ({ ...old, enabled: !on, ready: false, state: "error", last_error: (r && r.error) || "Failed" }));
+      toast((r && r.error) || "Failed");
+    }
+    refreshObservability();
+  };
+
+  const toggleAuditCollection = async (on) => {
+    if (observabilityBusy) return;
+    setObservabilityBusy("audit");
+    setOrderAudit((old) => ({ ...old, enabled: on }));
+    const r = await api.set_order_audit_enabled(on);
+    setObservabilityBusy("");
+    if (r && r.ok) {
+      setOrderAudit(r);
+      toast(on ? t("audit.enabledToast") : t("audit.disabledToast"));
+    } else {
+      setOrderAudit((old) => ({ ...old, enabled: !on, delivery_state: "error", last_error: (r && r.error) || "Failed" }));
+      toast((r && r.error) || "Failed");
+    }
+  };
+
+  const toggleAuditSend = async (on) => {
+    if (observabilityBusy) return;
+    setObservabilityBusy("telegram");
+    setOrderAudit((old) => ({ ...old, auto_send: on }));
+    const r = await api.set_order_audit_auto_send(on);
+    setObservabilityBusy("");
+    if (r && r.ok) {
+      setOrderAudit(r);
+      toast(on ? t("audit.autoEnabledToast") : t("audit.autoDisabledToast"));
+    } else {
+      setOrderAudit((old) => ({ ...old, auto_send: !on, delivery_state: "error", last_error: (r && r.error) || "Failed" }));
+      toast((r && r.error) || "Failed");
+    }
+  };
+
+  const sendAuditNow = async () => {
+    if (observabilityBusy) return;
+    setObservabilityBusy("send");
+    const r = await api.send_order_audit_now();
+    setObservabilityBusy("");
+    await refreshObservability();
+    if (r && (r.ok || r.partial)) toast(r.partial ? t("audit.sentPartial") : t("audit.sent"));
+    else toast((r && r.failed && r.failed[0] && r.failed[0].error) || (r && r.error) || t("audit.sendFailed"));
   };
 
   const uptime = onSinceRef.current ? Math.floor((Date.now() - onSinceRef.current) / 1000) : 0;
@@ -240,6 +311,11 @@ function App() {
     },
     fiscal: { mode: fiscal.mode, setMode: setFisMode, provider: fiscal.provider || "mock", confirmed: fiscal.confirmed || 0, failed: fiscal.failed || 0, bumpConfirmed },
     adminCreds: creds,
+    observability: {
+      tunnel, orderAudit, shiftClose: sync.shift_close || {}, busy: observabilityBusy,
+      toggleTunnel, toggleAuditCollection, toggleAuditSend, sendAuditNow,
+      refresh: refreshObservability,
+    },
     updates: {
       version: upd.version, url: upd.update_url, pending: upd.pending, frozen: upd.frozen,
       enabled: upd.enabled, reason: upd.reason,
@@ -275,6 +351,10 @@ function App() {
         <div className="titlebar">
           <div className="tb-app"><img className="tb-logo" src="AlphaPOS.png" alt="" />Alpha POS Backend</div>
           <div className="tb-spacer"></div>
+          <ObservabilityPills
+            tunnel={tunnel} audit={orderAudit} t={t}
+            onOpen={() => setPage("dashboard")}
+          ></ObservabilityPills>
           <SyncPill sync={sync} busy={syncBusy} onSync={cloudSyncNow} sl={sl}></SyncPill>
         </div>
 
@@ -350,10 +430,14 @@ function ThemeSwitch({ dir, setDir, accent, setAccent, t }) {
 function SyncPill({ sync, busy, onSync, sl }) {
   const enabled = !!sync.enabled;
   const online = enabled && !!sync.is_online;
-  const color = !enabled ? "var(--ink-3)" : (online ? "var(--ok)" : "#d23b3b");
-  const label = busy ? sl.busy : (!enabled ? sl.off : (online ? sl.live : sl.down));
+  const close = sync.shift_close || {};
+  const closeState = String(close.state || "").toUpperCase();
+  const closeConflict = closeState === "CONFLICT" || Number(close.conflict_count || 0) > 0;
+  const closePending = !closeConflict && (closeState === "PENDING" || Number(close.pending_count || 0) > 0);
+  const color = closeConflict ? "#d23b3b" : (closePending ? "var(--warn)" : (!enabled ? "var(--ink-3)" : (online ? "var(--ok)" : "#d23b3b")));
+  const label = busy ? sl.busy : (closeConflict ? sl.closeConflict : (closePending ? sl.closePending : (!enabled ? sl.off : (online ? sl.live : sl.down))));
   const pending = sync.pending_count || 0;
-  const title = [label, pending ? (pending + " " + sl.pending) : "", sync.last_error || ""]
+  const title = [label, close.message || "", pending ? (pending + " " + sl.pending) : "", sync.last_error || ""]
     .filter(Boolean).join("   ·   ");
   return (
     <button title={title} onClick={onSync} disabled={busy}
@@ -369,6 +453,31 @@ function SyncPill({ sync, busy, onSync, sl }) {
       <span>{label}</span>
       {pending ? <span className="mono" style={{ opacity: 0.65 }}>· {pending}</span> : null}
     </button>
+  );
+}
+
+function ObservabilityPills({ tunnel, audit, t, onOpen }) {
+  const tunnelTone = tunnel.ready ? "var(--ok)" : (tunnel.enabled ? "var(--warn)" : "var(--ink-3)");
+  const auditError = audit.delivery_state === "error" || audit.delivery_state === "configuration_required";
+  const auditActive = audit.enabled !== false && audit.auto_send !== false;
+  const auditTone = auditError ? "#d23b3b" : (auditActive ? "var(--ok)" : "var(--ink-3)");
+  const pill = (key, color, label, title) => (
+    <button key={key} title={title} onClick={onOpen}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 6,
+        background: "transparent", border: "1px solid rgba(127,127,127,.28)",
+        borderRadius: 999, padding: "4px 9px", cursor: "pointer",
+        font: "inherit", fontSize: 11.5, color: "var(--ink-2, inherit)",
+      }}>
+      <span style={{ width: 8, height: 8, borderRadius: "50%", background: color }}></span>
+      <span>{label}</span>
+    </button>
+  );
+  return (
+    <div style={{ display: "inline-flex", gap: 6, marginRight: 8 }}>
+      {pill("tunnel", tunnelTone, tunnel.ready ? t("obs.dbReadyShort") : (tunnel.enabled ? t("obs.dbWaitingShort") : t("obs.dbOffShort")), tunnel.last_error || tunnel.last_probe_error || t("obs.tunnelHint"))}
+      {pill("audit", auditTone, auditActive ? t("obs.telegramOnShort") : t("obs.telegramOffShort"), audit.last_auto_send_error || audit.last_error || t("obs.auditHint"))}
+    </div>
   );
 }
 

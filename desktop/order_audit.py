@@ -816,10 +816,18 @@ class OrderAuditCollector:
         with self._lock:
             self._flush_index(force=True)
 
-    def status(self) -> dict[str, Any]:
+    def status(self, *, chat_ids: list[str] | None = None) -> dict[str, Any]:
         with self._lock:
             size = self.dataset.stat().st_size if self.dataset.exists() else 0
-            slowest_offset = min(self._delivery_offsets.values(), default=0)
+            if chat_ids:
+                # A newly provisioned recipient starts at byte zero even if an
+                # older recipient already acknowledged the complete file.
+                slowest_offset = min(
+                    max(0, int(self._delivery_offsets.get(str(chat_id), 0)))
+                    for chat_id in chat_ids
+                )
+            else:
+                slowest_offset = 0
             return {
                 'enabled': _enabled_from_state(),
                 'auto_send': _auto_send_enabled_from_state(),
@@ -953,7 +961,33 @@ _SENDER_THREAD: threading.Thread | None = None
 
 
 def get_status() -> dict[str, Any]:
-    return _COLLECTOR.status()
+    token, chat_ids = _telegram_delivery_configuration()
+    result = _COLLECTOR.status(chat_ids=chat_ids)
+    result.update({
+        'worker_alive': bool(_THREAD is not None and _THREAD.is_alive()),
+        'sender_alive': bool(
+            _SENDER_THREAD is not None and _SENDER_THREAD.is_alive()
+        ),
+        'telegram_configured': bool(token and chat_ids),
+        'telegram_token_configured': bool(token),
+        'telegram_chat_count': len(chat_ids),
+        # Raw JSONL is authoritative; automatic transport compresses newline-
+        # aligned segments without changing a byte of the evidence stream.
+        'formats': ['JSONL', 'JSONL.GZ'],
+    })
+    if not result['enabled']:
+        result['delivery_state'] = 'off'
+    elif not result['auto_send']:
+        result['delivery_state'] = 'paused'
+    elif not result['telegram_configured']:
+        result['delivery_state'] = 'configuration_required'
+    elif not result['sender_alive'] or result['last_auto_send_error']:
+        result['delivery_state'] = 'error'
+    elif result['auto_pending_bytes']:
+        result['delivery_state'] = 'pending'
+    else:
+        result['delivery_state'] = 'delivered'
+    return result
 
 
 def record_local_event(
@@ -1370,22 +1404,30 @@ def _parse_chat_ids(value: Any) -> list[str]:
     return out
 
 
-def _telegram_credentials() -> tuple[str, list[str]]:
+def _telegram_delivery_configuration() -> tuple[str, list[str]]:
+    """Read transport presence without ever exposing the token to the UI."""
     cfg = config_store.read_config()
     token = str(cfg.get('TELEGRAM_BOT_TOKEN') or '').strip()
     # Raw database evidence is materially more sensitive than staff alerts.
     # It must never inherit the broad Notifications recipient list.
     chat_ids = _parse_chat_ids(cfg.get('ORDER_AUDIT_TELEGRAM_CHAT_IDS'))
-    # The current Notifications screen persists its values in the local DB.
-    # Reuse only its bot token; recipients remain owner-explicit above.
+    # The current Notifications settings persist the token in the local DB.
+    # Reuse only that token; recipients remain owner-explicit above.
     if not token:
         try:
             from notifications.models import NotificationSettings
             ns = NotificationSettings.load()
-            token = token or str(ns.bot_token or '').strip()
-        except Exception:  # noqa: BLE001
+            token = str(ns.bot_token or '').strip()
+        except Exception:  # noqa: BLE001 - status remains available before Django
             logger.debug('order audit: local NotificationSettings unavailable', exc_info=True)
-    if not token or token == _MASK:
+    if token == _MASK:
+        token = ''
+    return token, chat_ids
+
+
+def _telegram_credentials() -> tuple[str, list[str]]:
+    token, chat_ids = _telegram_delivery_configuration()
+    if not token:
         raise RuntimeError(
             'Telegram bot token is not configured locally. Add it on the Notifications page.',
         )

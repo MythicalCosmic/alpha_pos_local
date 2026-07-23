@@ -42,6 +42,42 @@ def _sync_response(result, *, operation):
     return response
 
 
+def _attach_shift_close_status(response, close_status):
+    """Never report a manual sync as finished while a close is unresolved."""
+    close_status = close_status if isinstance(close_status, dict) else {
+        'state': 'CONFLICT', 'clear': False, 'pending_count': 0,
+        'conflict_count': 1,
+        'message': 'Shift close acknowledgement status is unavailable.',
+    }
+    response['shift_close'] = close_status
+    if not close_status.get('clear'):
+        response['ok'] = False
+        prefix = (
+            'Shift close conflict'
+            if close_status.get('conflict_count')
+            else 'Shift close still awaiting cloud acknowledgement'
+        )
+        detail = str(close_status.get('message') or '').strip()
+        response.setdefault('error', f'{prefix}: {detail}' if detail else prefix)
+    return response
+
+
+def _shift_close_tracker_failure(module, exc):
+    """Return a visible fail-closed status without suppressing the real push."""
+    try:
+        status = module.get_status()
+    except Exception:  # noqa: BLE001
+        status = {}
+    status = dict(status or {})
+    status.update({
+        'state': 'CONFLICT',
+        'clear': False,
+        'conflict_count': max(1, int(status.get('conflict_count') or 0)),
+        'message': f'Shift close acknowledgement tracker failed: {str(exc)[:300]}',
+    })
+    return status
+
+
 class Api:
     def __init__(self):
         self.server = ServerManager()
@@ -459,6 +495,12 @@ class Api:
         return {'ok': True, **support_tunnel.status()}
 
     @_safe
+    def set_support_tunnel_enabled(self, on):
+        """Persist and immediately apply the restricted support-tunnel switch."""
+        from desktop import support_tunnel
+        return {'ok': True, **support_tunnel.set_enabled(bool(on))}
+
+    @_safe
     def test_server_connection(self):
         import urllib.request
         if not self.server.is_running():
@@ -543,7 +585,11 @@ class Api:
     def sync_status(self):
         self.server.ensure_django()
         from base.services.sync.service import SyncService
-        return {'ok': True, 'sync': SyncService.get_status()}
+        from desktop import shift_close_sync
+        shift_close_sync.ensure_started()
+        sync = SyncService.get_status()
+        sync['shift_close'] = shift_close_sync.get_status()
+        return {'ok': True, 'sync': sync}
 
     @_safe
     def send_mock_sync(self):
@@ -644,7 +690,27 @@ class Api:
         """Push all unsynced local records up to the cloud hub."""
         self.server.ensure_django()
         from base.services.sync.service import SyncService
-        return _sync_response(SyncService.push(), operation='Cloud push')
+        from desktop import shift_close_sync
+        tracker_error = None
+        try:
+            shift_close_sync.prepare_for_push()
+        except Exception as exc:  # noqa: BLE001 - still deliver ordinary records
+            tracker_error = exc
+            logger.exception('could not prepare shift-close acknowledgement')
+        result = SyncService.push()
+        try:
+            close_status = shift_close_sync.after_push(result)
+        except Exception as exc:  # noqa: BLE001
+            tracker_error = exc
+            logger.exception('could not verify shift-close acknowledgement')
+            close_status = _shift_close_tracker_failure(shift_close_sync, exc)
+        if tracker_error is not None and close_status.get('clear'):
+            close_status = _shift_close_tracker_failure(
+                shift_close_sync, tracker_error,
+            )
+        return _attach_shift_close_status(
+            _sync_response(result, operation='Cloud push'), close_status,
+        )
 
     @_safe
     def cloud_pull(self):
@@ -660,7 +726,24 @@ class Api:
         self.server.ensure_django()
         from base.services.sync.service import SyncService
         from base.services.sync.config import get_pull_enabled
+        from desktop import shift_close_sync
+        tracker_error = None
+        try:
+            shift_close_sync.prepare_for_push()
+        except Exception as exc:  # noqa: BLE001 - still run push and pull
+            tracker_error = exc
+            logger.exception('could not prepare shift-close acknowledgement')
         push = SyncService.push()
+        try:
+            close_status = shift_close_sync.after_push(push)
+        except Exception as exc:  # noqa: BLE001
+            tracker_error = exc
+            logger.exception('could not verify shift-close acknowledgement')
+            close_status = _shift_close_tracker_failure(shift_close_sync, exc)
+        if tracker_error is not None and close_status.get('clear'):
+            close_status = _shift_close_tracker_failure(
+                shift_close_sync, tracker_error,
+            )
         pull = (
             SyncService.pull_from_cloud()
             if get_pull_enabled()
@@ -672,13 +755,14 @@ class Api:
             'ok': push_response['ok'] and pull_response['ok'],
             'push': push,
             'pull': pull,
+            'shift_close': close_status,
         }
         if not response['ok']:
             response['error'] = (
                 push_response.get('error') or pull_response.get('error')
                 or 'Cloud sync failed'
             )
-        return response
+        return _attach_shift_close_status(response, close_status)
 
     @_safe
     def cloud_dead_letters(self):

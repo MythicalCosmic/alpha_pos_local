@@ -258,18 +258,64 @@ class ServerManager:
                     get_cloud_url, get_sync_retry_interval,
                 )
                 from base.services.sync.service import SyncService
+                from desktop import shift_close_sync
                 interval = max(10, get_sync_interval())
                 try:
                     if SyncConfig.is_enabled() and is_local_mode() and get_cloud_url():
-                        push = SyncService.push()
-                        if push.get('success'):
-                            failures = 0
-                            delay = interval
-                            self._record_worker(
-                                'sync', last_success_at=self._utc_now(),
-                                consecutive_failures=0, last_status='ok',
-                                last_error='', next_run_in_s=delay,
+                        close_tracker_error = ''
+                        try:
+                            # Rebuild/retain any exact close bundle whose generic
+                            # per-model queue records were already accepted while
+                            # the cloud was still waiting for sibling evidence.
+                            shift_close_sync.prepare_for_push()
+                        except Exception as exc:  # noqa: BLE001
+                            close_tracker_error = str(exc)[:300]
+                            logger.exception(
+                                'could not prepare durable shift-close acknowledgement',
                             )
+                        push = SyncService.push()
+                        close_status = None
+                        try:
+                            # A successful model batch is not proof that the full
+                            # immutable close bundle arrived. Only the dedicated
+                            # cloud verifier may clear the desktop PENDING state.
+                            close_status = shift_close_sync.after_push(push)
+                        except Exception as exc:  # noqa: BLE001
+                            close_tracker_error = str(exc)[:300]
+                            logger.exception(
+                                'could not verify cloud shift-close acknowledgement',
+                            )
+                        if push.get('success'):
+                            if close_tracker_error:
+                                failures += 1
+                                delay = min(interval, 10)
+                                self._record_worker(
+                                    'sync', consecutive_failures=failures,
+                                    last_status='close_tracker_error',
+                                    last_error=(
+                                        'Shift close acknowledgement could not be '
+                                        f'verified: {close_tracker_error}'
+                                    ),
+                                    next_run_in_s=delay,
+                                )
+                            elif close_status and not close_status.get('clear'):
+                                failures = 0
+                                delay = min(interval, 10)
+                                state = str(close_status.get('state') or 'PENDING').lower()
+                                self._record_worker(
+                                    'sync', consecutive_failures=0,
+                                    last_status=f'close_{state}',
+                                    last_error=str(close_status.get('message') or '')[:300],
+                                    next_run_in_s=delay,
+                                )
+                            else:
+                                failures = 0
+                                delay = interval
+                                self._record_worker(
+                                    'sync', last_success_at=self._utc_now(),
+                                    consecutive_failures=0, last_status='ok',
+                                    last_error='', next_run_in_s=delay,
+                                )
                         elif self._sync_busy(push, 'push'):
                             failures = 0
                             delay = interval
@@ -411,6 +457,11 @@ class ServerManager:
     def ensure_background_workers(self):
         """Watchdog entrypoint used by the launcher supervisor."""
         if self.is_running() and self.wants_running():
+            try:
+                from desktop import shift_close_sync
+                shift_close_sync.ensure_started()
+            except Exception:  # noqa: BLE001 - never prevent the POS from serving
+                logger.exception('could not start shift-close acknowledgement tracker')
             self._ensure_heartbeat_worker()
             self._ensure_sync_worker()
             self._ensure_pull_worker()

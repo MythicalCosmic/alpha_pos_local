@@ -2,9 +2,99 @@
 // and License & Subscription. Wired to the live control-server bridge.
 
 /* ================= DASHBOARD ================= */
+function obsBytes(value) {
+  const n = Math.max(0, Number(value || 0));
+  if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
+  if (n >= 1024) return Math.round(n / 1024) + " KB";
+  return Math.round(n) + " B";
+}
+
+function ObservabilityCard({ obs }) {
+  const app = useApp();
+  const { t } = app;
+  const tunnel = obs.tunnel || {};
+  const audit = obs.orderAudit || {};
+  const tunnelTone = tunnel.ready ? "ok" : (tunnel.state === "error" ? "danger" : (tunnel.enabled ? "warn" : "muted"));
+  const tunnelLabel = tunnel.ready ? t("obs.tunnelReady") : (tunnel.enabled ? t("obs.tunnelWaiting") : t("common.offline"));
+  const auditError = audit.delivery_state === "error" || audit.delivery_state === "configuration_required";
+  const auditTone = auditError ? "danger" : ((audit.enabled !== false && audit.auto_send !== false) ? "ok" : "muted");
+  const auditLabel = auditError ? t("obs.needsAttention") : ((audit.enabled !== false && audit.auto_send !== false) ? t("obs.telegramActive") : t("obs.paused"));
+  const tunnelError = tunnel.last_error || (tunnel.enabled && !tunnel.ready ? tunnel.last_probe_error : "");
+  const auditErrorText = audit.last_auto_send_error || audit.last_error || "";
+
+  return (
+    <Card
+      title={t("obs.title")}
+      style={{ gridColumn: "span 12", borderColor: tunnel.ready && !auditError ? "rgba(38, 151, 101, .35)" : undefined }}
+      action={<Badge tone={tunnel.ready && !auditError ? "ok" : "warn"}>{tunnel.ready && !auditError ? t("obs.protected") : t("obs.checkStatus")}</Badge>}
+    >
+      <p style={{ margin: "-2px 0 16px", color: "var(--ink-3)", fontSize: 12.5, textWrap: "pretty" }}>{t("obs.sub")}</p>
+      <div className="g2" style={{ gap: 14 }}>
+        <div style={{ border: "1px solid var(--line)", borderRadius: 12, padding: 16 }}>
+          <div className="hstack" style={{ justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+            <div className="hstack" style={{ gap: 9 }}>
+              <Icon name="globe" size={19}></Icon>
+              <div style={{ fontWeight: 650 }}>{t("obs.tunnelTitle")}</div>
+              <Badge tone={tunnelTone} pulse={!!tunnel.ready}>{tunnelLabel}</Badge>
+            </div>
+            <Switch on={!!tunnel.enabled} onChange={obs.toggleTunnel}></Switch>
+          </div>
+          <div className="kv" style={{ marginTop: 14 }}>
+            <KRow l={t("obs.dbQuery")} v={tunnel.local_db_query_verified ? t("obs.verified") : t("obs.notVerified")} badge={<Badge tone={tunnel.local_db_query_verified ? "ok" : "muted"}>{tunnel.local_db_query_verified ? t("obs.verified") : t("obs.notVerified")}</Badge>}></KRow>
+            <KRow l={t("obs.secureSession")} v={tunnel.session_verified ? t("common.online") : t("common.offline")}></KRow>
+            <KRow l={t("obs.relayDb")} v={tunnel.remote_db || "—"} mono dim={!tunnel.remote_db}></KRow>
+            <KRow l={t("obs.localApi")} v={tunnel.local_api_reachable ? t("common.online") : t("common.offline")}></KRow>
+          </div>
+          {tunnelError ? <div style={{ marginTop: 12, color: "var(--danger)", fontSize: 12, wordBreak: "break-word" }}>{tunnelError}</div> : null}
+          {!tunnel.configured && tunnel.enabled ? <div style={{ marginTop: 12, color: "var(--warn)", fontSize: 12 }}>{t("obs.tunnelConfigure")}</div> : null}
+          <p style={{ margin: "12px 0 0", color: "var(--ink-3)", fontSize: 11.5, textWrap: "pretty" }}>{t("obs.tunnelHint")}</p>
+          <div style={{ marginTop: 12 }}><Btn size="sm" variant="ghost" onClick={() => app.nav("config")}>{t("common.manage")}</Btn></div>
+        </div>
+
+        <div style={{ border: "1px solid var(--line)", borderRadius: 12, padding: 16 }}>
+          <div className="hstack" style={{ justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+            <div className="hstack" style={{ gap: 9 }}>
+              <Icon name="send" size={19}></Icon>
+              <div style={{ fontWeight: 650 }}>{t("obs.auditTitle")}</div>
+              <Badge tone={auditTone} pulse={audit.delivery_state === "delivered"}>{auditLabel}</Badge>
+            </div>
+          </div>
+          <div className="hstack" style={{ justifyContent: "space-between", alignItems: "center", gap: 16, marginTop: 14 }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>{t("audit.collect")}</div>
+              <div style={{ color: "var(--ink-3)", fontSize: 11.5, marginTop: 2 }}>{t("obs.collectShort")}</div>
+            </div>
+            <Switch on={audit.enabled !== false} onChange={obs.toggleAuditCollection}></Switch>
+          </div>
+          <div className="hstack" style={{ justifyContent: "space-between", alignItems: "center", gap: 16, marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--line)" }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>{t("audit.autoSend")}</div>
+              <div style={{ color: "var(--ink-3)", fontSize: 11.5, marginTop: 2 }}>{t("obs.telegramDirect")}</div>
+            </div>
+            <Switch on={audit.auto_send !== false} onChange={obs.toggleAuditSend}></Switch>
+          </div>
+          <div className="kv" style={{ marginTop: 14 }}>
+            <KRow l={t("obs.ordersCaptured")} v={audit.order_count || 0} mono></KRow>
+            <KRow l={t("obs.pendingEvidence")} v={obsBytes(audit.auto_pending_bytes)} mono></KRow>
+            <KRow l={t("obs.telegramChats")} v={audit.telegram_chat_count || 0} mono></KRow>
+            <KRow l={t("obs.formats")} v={(audit.formats || ["JSONL", "JSONL.GZ"]).join(" + ")} mono></KRow>
+          </div>
+          {auditErrorText ? <div style={{ marginTop: 12, color: "var(--danger)", fontSize: 12, wordBreak: "break-word" }}>{auditErrorText}</div> : null}
+          {!audit.telegram_configured ? <div style={{ marginTop: 12, color: "var(--warn)", fontSize: 12 }}>{t("obs.telegramConfigure")}</div> : null}
+          <p style={{ margin: "12px 0 0", color: "var(--ink-3)", fontSize: 11.5, textWrap: "pretty" }}>{t("obs.auditHint")}</p>
+          <div className="hstack" style={{ marginTop: 12 }}>
+            <Btn size="sm" variant="primary" icon="send" disabled={obs.busy === "send"} onClick={obs.sendAuditNow}>{obs.busy === "send" ? t("audit.sending") : t("audit.sendNow")}</Btn>
+            <Btn size="sm" variant="ghost" onClick={() => app.nav("config")}>{t("common.manage")}</Btn>
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 function DashboardScreen() {
   const app = useApp();
-  const { t, server, hb, lic, fiscal, updates, adminCreds } = app;
+  const { t, server, hb, lic, fiscal, updates, adminCreds, observability } = app;
   const [showPwd, setShowPwd] = React.useState(false);
 
   const phase = server.phase;
@@ -13,6 +103,10 @@ function DashboardScreen() {
     phase === "starting" ? t("dash.starting") :
     phase === "stopping" ? t("dash.stopping") : t("dash.serverOff");
   const statusSub = phase === "on" ? t("dash.serverOnSub") : phase === "off" ? t("dash.serverOffSub") : " ";
+  const shiftClose = observability.shiftClose || {};
+  const shiftCloseState = String(shiftClose.state || "").toUpperCase();
+  const shiftCloseConflict = shiftCloseState === "CONFLICT" || Number(shiftClose.conflict_count || 0) > 0;
+  const shiftCloseVisible = shiftCloseConflict || shiftCloseState === "PENDING" || Number(shiftClose.pending_count || 0) > 0;
 
   return (
     <div className="page" data-screen-label="Dashboard">
@@ -21,7 +115,18 @@ function DashboardScreen() {
         <p className="page-sub">{t("dash.sub")}</p>
       </header>
 
+      {shiftCloseVisible ? (
+        <div style={{ marginBottom: 14, border: "1px solid " + (shiftCloseConflict ? "var(--danger)" : "var(--warn)"), borderRadius: 12, padding: "12px 14px", color: shiftCloseConflict ? "var(--danger)" : "var(--warn)", display: "flex", alignItems: "center", gap: 10 }}>
+          <Icon name="warn" size={18}></Icon>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 700 }}>{shiftCloseConflict ? t("obs.closeConflict") : t("obs.closePending")}</div>
+            <div style={{ fontSize: 12, marginTop: 2, wordBreak: "break-word" }}>{shiftClose.message || t("obs.closePendingHint")}</div>
+          </div>
+        </div>
+      ) : null}
+
       <div className="g12">
+        <ObservabilityCard obs={observability}></ObservabilityCard>
         {/* Server hero */}
         <Card style={{ gridColumn: "span 7", display: "flex", alignItems: "center" }} label="Server control">
           <div className="hero-wrap" style={{ width: "100%" }}>

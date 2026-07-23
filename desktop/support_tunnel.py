@@ -15,9 +15,11 @@ import logging
 import os
 import re
 import shutil
+import socket
 import subprocess
 import threading
 import time
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +37,12 @@ _PROCESS: subprocess.Popen | None = None
 _LAST_ERROR = ''
 _LAST_CONNECTED_AT: str | None = None
 _LAST_EXIT_CODE: int | None = None
+_LAST_SESSION_VERIFIED_AT: str | None = None
+_LAST_PROBE_AT: str | None = None
+_LOCAL_DB_REACHABLE = False
+_LOCAL_DB_QUERY_VERIFIED = False
+_LOCAL_API_REACHABLE = False
+_LAST_PROBE_ERROR = ''
 _CONFIG_RE = re.compile(r'^[A-Za-z0-9._:@\[\]-]+$')
 _WINDOWS_SID_RE = re.compile(r'^S-\d+(?:-\d+)+$', re.IGNORECASE)
 
@@ -248,8 +256,69 @@ def _hidden_popen(command: list[str]) -> subprocess.Popen:
     return subprocess.Popen(command, **kwargs)
 
 
+def _probe_local_targets(settings: dict[str, Any]) -> None:
+    """Verify the endpoints the reverse tunnel is publishing.
+
+    A live ``ssh.exe`` PID alone is not proof that PostgreSQL is usable.  The
+    database check performs an authenticated query with the exact local role
+    used by the desktop runtime.  ``psycopg`` is bundled with Alpha POS; the TCP
+    fallback is reported separately and is never presented as query-verified.
+    The API probe is diagnostic only -- database access remains available while
+    the POS HTTP server is intentionally stopped.
+    """
+    global _LAST_PROBE_AT, _LOCAL_DB_REACHABLE, _LOCAL_DB_QUERY_VERIFIED
+    global _LOCAL_API_REACHABLE, _LAST_PROBE_ERROR
+
+    db_reachable = False
+    db_query_verified = False
+    api_reachable = False
+    errors: list[str] = []
+    try:
+        with socket.create_connection(('127.0.0.1', 5433), timeout=1.5):
+            db_reachable = True
+    except OSError as exc:
+        errors.append(f'local PostgreSQL is not reachable: {exc}')
+
+    if db_reachable:
+        try:
+            import psycopg
+            with psycopg.connect(
+                host='127.0.0.1', port=5433,
+                dbname=os.environ.get('DB_NAME') or 'alpha_pos',
+                user=os.environ.get('DB_USER') or 'alpha_pos',
+                password=os.environ.get('DB_PASSWORD') or 'alpha_pos',
+                connect_timeout=2,
+            ) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute('SELECT current_database()')
+                    row = cursor.fetchone()
+                    db_query_verified = bool(row and row[0])
+        except Exception as exc:  # noqa: BLE001 - status must remain available
+            errors.append(f'local PostgreSQL query failed: {exc}')
+
+    try:
+        request = urllib.request.Request(
+            f'http://127.0.0.1:{_port(settings["local_api_port"], "PORT")}/healthz',
+            headers={'User-Agent': 'AlphaPOS-support-probe/1'},
+        )
+        with urllib.request.urlopen(request, timeout=2) as response:
+            api_reachable = response.status == 200
+        if not api_reachable:
+            errors.append('local POS API health check did not return HTTP 200')
+    except Exception as exc:  # noqa: BLE001 - the API may be intentionally off
+        errors.append(f'local POS API is not reachable: {exc}')
+
+    with _LOCK:
+        _LAST_PROBE_AT = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+        _LOCAL_DB_REACHABLE = db_reachable
+        _LOCAL_DB_QUERY_VERIFIED = db_query_verified
+        _LOCAL_API_REACHABLE = api_reachable
+        _LAST_PROBE_ERROR = '; '.join(errors)[:1000]
+
+
 def _supervisor() -> None:
     global _PROCESS, _LAST_ERROR, _LAST_CONNECTED_AT, _LAST_EXIT_CODE
+    global _LAST_SESSION_VERIFIED_AT
     backoff = 3
     while not _STOP.is_set():
         connected_started: float | None = None
@@ -263,6 +332,7 @@ def _supervisor() -> None:
             if not settings['enabled']:
                 with _LOCK:
                     _LAST_ERROR = ''
+                    _LAST_SESSION_VERIFIED_AT = None
                 backoff = 3
                 _STOP.wait(5)
                 continue
@@ -272,14 +342,31 @@ def _supervisor() -> None:
                 _LAST_ERROR = ''
                 _LAST_CONNECTED_AT = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
                 _LAST_EXIT_CODE = None
+                _LAST_SESSION_VERIFIED_AT = None
             connected_started = time.monotonic()
+            next_probe = connected_started
             while not _STOP.wait(1):
                 code = process.poll()
                 if code is None:
+                    now = time.monotonic()
+                    # ``Popen`` only proves ssh.exe started. Keep the UI in
+                    # CONNECTING through OpenSSH's ten-second connect timeout;
+                    # surviving beyond it with ExitOnForwardFailure enabled is
+                    # our fail-closed evidence that authentication and both
+                    # reverse listeners completed.
+                    if now - connected_started >= 12 and _LAST_SESSION_VERIFIED_AT is None:
+                        with _LOCK:
+                            _LAST_SESSION_VERIFIED_AT = time.strftime(
+                                '%Y-%m-%dT%H:%M:%SZ', time.gmtime(),
+                            )
+                    if now >= next_probe:
+                        _probe_local_targets(settings)
+                        next_probe = now + 10
                     continue
                 _, stderr = process.communicate(timeout=1)
                 with _LOCK:
                     _LAST_EXIT_CODE = code
+                    _LAST_SESSION_VERIFIED_AT = None
                     _LAST_ERROR = str(
                         stderr or f'ssh exited with code {code}'
                     )[-500:]
@@ -373,13 +460,51 @@ def restart() -> bool:
     return True
 
 
+def set_enabled(enabled: bool) -> dict[str, Any]:
+    """Persist and apply the operator-facing support switch immediately."""
+    config_store.write_config({
+        'SUPPORT_TUNNEL_ENABLED': 'True' if bool(enabled) else 'False',
+    })
+    restart()
+    # Return an immediate, truthful transitional state.  The dashboard polls
+    # until ``ready`` only after ssh has stayed alive and the DB query succeeds.
+    return status()
+
+
 def status() -> dict[str, Any]:
     settings = _settings()
     with _LOCK:
         process = _PROCESS
+        configured = bool(
+            settings['host'] and settings['user']
+            and settings['private_key_b64'] and settings['known_host']
+        )
+        connected = bool(process is not None and process.poll() is None)
+        session_verified = bool(connected and _LAST_SESSION_VERIFIED_AT)
+        ready = bool(
+            settings['enabled'] and session_verified
+            and _LOCAL_DB_REACHABLE and _LOCAL_DB_QUERY_VERIFIED
+        )
+        if not settings['enabled']:
+            state = 'off'
+        elif not configured:
+            state = 'configuration_required'
+        elif ready:
+            state = 'ready'
+        elif connected:
+            state = 'degraded' if _LAST_PROBE_AT and _LAST_PROBE_ERROR else 'connecting'
+        elif _LAST_ERROR:
+            state = 'error'
+        else:
+            state = 'connecting'
         return {
             'enabled': settings['enabled'],
-            'connected': bool(process is not None and process.poll() is None),
+            'configured': configured,
+            'worker_alive': bool(_THREAD is not None and _THREAD.is_alive()),
+            'connected': connected,
+            'session_verified': session_verified,
+            'ready': ready,
+            'state': state,
             'relay_host': settings['host'],
             'remote_db': (
                 f'127.0.0.1:{settings["remote_db_port"]}'
@@ -390,6 +515,12 @@ def status() -> dict[str, Any]:
                 if settings['host'] else ''
             ),
             'last_connected_at': _LAST_CONNECTED_AT,
+            'session_verified_at': _LAST_SESSION_VERIFIED_AT,
+            'last_probe_at': _LAST_PROBE_AT,
+            'local_db_reachable': _LOCAL_DB_REACHABLE,
+            'local_db_query_verified': _LOCAL_DB_QUERY_VERIFIED,
+            'local_api_reachable': _LOCAL_API_REACHABLE,
+            'last_probe_error': _LAST_PROBE_ERROR,
             'last_exit_code': _LAST_EXIT_CODE,
             'last_error': _LAST_ERROR,
         }

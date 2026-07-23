@@ -710,3 +710,54 @@ def test_factory_reset_aborts_when_audit_writer_cannot_quiesce(monkeypatch):
     assert result['ok'] is False
     assert 'audit' in result['error'].lower()
     assert reset_called == []
+
+
+def test_status_counts_new_telegram_recipient_backlog_from_byte_zero(
+    tmp_path, monkeypatch,
+):
+    collector = order_audit.OrderAuditCollector(
+        dataset=tmp_path / 'orders.raw.jsonl',
+        index_file=tmp_path / '.index.json',
+    )
+    collector.capture(_order())
+    size = collector.dataset.stat().st_size
+    collector.mark_delivered('existing-owner', size)
+
+    status = collector.status(chat_ids=['existing-owner', 'new-owner'])
+
+    assert status['auto_pending_bytes'] == size
+
+
+def test_public_status_exposes_delivery_health_but_never_bot_token(
+    tmp_path, monkeypatch,
+):
+    collector = order_audit.OrderAuditCollector(
+        dataset=tmp_path / 'orders.raw.jsonl',
+        index_file=tmp_path / '.index.json',
+    )
+    collector.capture(_order())
+    monkeypatch.setattr(order_audit, '_COLLECTOR', collector)
+    token = '123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcd'
+    monkeypatch.setattr(
+        order_audit.config_store, 'read_config',
+        lambda: {
+            'TELEGRAM_BOT_TOKEN': token,
+            'ORDER_AUDIT_TELEGRAM_CHAT_IDS': 'owner-a,owner-b',
+        },
+    )
+
+    class Alive:
+        @staticmethod
+        def is_alive():
+            return True
+
+    monkeypatch.setattr(order_audit, '_THREAD', Alive())
+    monkeypatch.setattr(order_audit, '_SENDER_THREAD', Alive())
+
+    status = order_audit.get_status()
+
+    assert status['telegram_configured'] is True
+    assert status['telegram_chat_count'] == 2
+    assert status['delivery_state'] == 'pending'
+    assert status['formats'] == ['JSONL', 'JSONL.GZ']
+    assert token not in json.dumps(status)

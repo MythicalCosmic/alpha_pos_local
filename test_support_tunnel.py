@@ -203,3 +203,51 @@ def test_restart_waits_for_slow_old_supervisor_then_restarts(monkeypatch):
     assert support_tunnel.restart() is True
     assert restarted.wait(1)
     assert support_tunnel._THREAD is None
+
+
+def test_status_reports_ready_only_after_session_and_database_query(monkeypatch):
+    class LiveProcess:
+        @staticmethod
+        def poll():
+            return None
+
+    monkeypatch.setattr(support_tunnel, '_settings', _settings)
+    monkeypatch.setattr(support_tunnel, '_PROCESS', LiveProcess())
+    monkeypatch.setattr(support_tunnel, '_LAST_SESSION_VERIFIED_AT', '2026-07-22T12:00:00Z')
+    monkeypatch.setattr(support_tunnel, '_LOCAL_DB_REACHABLE', True)
+    monkeypatch.setattr(support_tunnel, '_LOCAL_DB_QUERY_VERIFIED', True)
+    monkeypatch.setattr(support_tunnel, '_LOCAL_API_REACHABLE', False)
+    monkeypatch.setattr(support_tunnel, '_LAST_PROBE_AT', '2026-07-22T12:00:01Z')
+    monkeypatch.setattr(support_tunnel, '_LAST_PROBE_ERROR', 'local POS API is stopped')
+    monkeypatch.setattr(support_tunnel, '_LAST_ERROR', '')
+
+    result = support_tunnel.status()
+
+    assert result['state'] == 'ready'
+    assert result['ready'] is True
+    assert result['local_db_query_verified'] is True
+    assert result['local_api_reachable'] is False
+    assert result['remote_db'] == '127.0.0.1:15433'
+
+    monkeypatch.setattr(support_tunnel, '_LOCAL_DB_QUERY_VERIFIED', False)
+    degraded = support_tunnel.status()
+    assert degraded['state'] == 'degraded'
+    assert degraded['ready'] is False
+
+
+def test_operator_toggle_is_persisted_and_applied_immediately(monkeypatch):
+    writes = []
+    restarts = []
+    monkeypatch.setattr(
+        support_tunnel.config_store, 'write_config', lambda values: writes.append(values),
+    )
+    monkeypatch.setattr(support_tunnel, 'restart', lambda: restarts.append(True) or True)
+    monkeypatch.setattr(
+        support_tunnel, 'status', lambda: {'enabled': True, 'state': 'connecting'},
+    )
+
+    result = support_tunnel.set_enabled(True)
+
+    assert writes == [{'SUPPORT_TUNNEL_ENABLED': 'True'}]
+    assert restarts == [True]
+    assert result == {'enabled': True, 'state': 'connecting'}
