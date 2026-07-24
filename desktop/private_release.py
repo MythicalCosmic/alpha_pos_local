@@ -6,7 +6,8 @@ PyInstaller runtime hook calls :func:`apply_installed_private_payload` before
 the application imports Django settings.
 
 The payload is deliberately narrow. It may configure the outbound support
-tunnel and owner-only audit delivery, but it can never change restaurant,
+tunnel, owner-only audit delivery, and restore this build's canonical signed
+update endpoint, but it can never redirect updates or change restaurant,
 cloud-sync, database, licensing, or fiscal identity.
 """
 from __future__ import annotations
@@ -27,6 +28,11 @@ PAYLOAD_FILENAME = '.alphapos-private-support.json'
 APPLIED_MARKER = config_store.DATA_DIR / '.private_support_payload_applied'
 MAX_PAYLOAD_BYTES = 128 * 1024
 MASK = '\u2022' * 8
+UPDATE_URL_KEY = 'ALPHA_POS_UPDATE_URL'
+# Derive this from the control panel's baked default instead of duplicating a
+# release endpoint here. Private payloads may restore this exact public URL,
+# but may never redirect an installed till to an arbitrary update server.
+CANONICAL_UPDATE_URL = dict(config_store.CONFIG_FIELDS)[UPDATE_URL_KEY]
 
 SUPPORT_TUNNEL_KEYS = frozenset({
     'SUPPORT_TUNNEL_ENABLED',
@@ -48,7 +54,8 @@ OWNER_AUDIT_KEYS = frozenset({
     'LOCAL_TELEGRAM_AUDIT_BOT_TOKEN',
     'LOCAL_TELEGRAM_AUDIT_CHAT_IDS',
 })
-ALLOWED_PRIVATE_KEYS = SUPPORT_TUNNEL_KEYS | OWNER_AUDIT_KEYS
+UPDATER_KEYS = frozenset({UPDATE_URL_KEY})
+ALLOWED_PRIVATE_KEYS = SUPPORT_TUNNEL_KEYS | OWNER_AUDIT_KEYS | UPDATER_KEYS
 
 
 class PrivateReleasePayloadError(RuntimeError):
@@ -177,17 +184,35 @@ def _validate_owner_audit(values: dict[str, str]) -> None:
         ) from exc
 
 
+def _validate_update_configuration(values: dict[str, str]) -> None:
+    if UPDATE_URL_KEY not in values:
+        return
+    # Equality is deliberately exact: no alternate host, path, scheme,
+    # trailing slash, whitespace, or URL credentials are accepted. Never
+    # interpolate the rejected value into an exception or log message.
+    if values[UPDATE_URL_KEY] != CANONICAL_UPDATE_URL:
+        raise PrivateReleasePayloadError(
+            'private support payload contains a non-canonical update URL'
+        )
+
+
 def validate_payload_bytes(raw: bytes) -> dict[str, str]:
     """Validate and normalize a private payload without logging its values."""
     values = _document_from_bytes(raw)
     _validate_support_configuration(values)
     _validate_owner_audit(values)
+    _validate_update_configuration(values)
     return values
 
 
 def canonical_payload_bytes(raw: bytes) -> bytes:
     """Return a deterministic, allowlisted private payload for the installer."""
     values = validate_payload_bytes(raw)
+    # Upgrade-safe provisioning: every newly staged private installer repairs
+    # an older blank/stale updater setting without modifying the credential
+    # source JSON. Because this changes the canonical bytes, the one-shot digest
+    # marker also permits the repaired payload to run on an upgraded install.
+    values.setdefault(UPDATE_URL_KEY, CANONICAL_UPDATE_URL)
     document = {
         'schema': 'alphapos.private-support.v1',
         'config': {key: values[key] for key in sorted(values)},
@@ -286,7 +311,8 @@ def apply_private_payload(
 
     # write_config preserves unmanaged settings and every managed field not
     # present in ``clean``. The allowlist above makes branch/cloud/DB identity
-    # impossible to change through this path.
+    # impossible to change through this path, while the update URL validator
+    # permits only the exact endpoint already baked into this release.
     config_store.write_config(clean)
     config_store._write_protected(marker_path, digest + '\n')
     try:

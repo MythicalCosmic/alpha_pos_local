@@ -1,7 +1,20 @@
 # Alpha POS Desktop 1.0.33
 
 This release repairs direct raw-order Telegram delivery and completes a
-responsive layout pass across the desktop control panel.
+responsive layout pass across the desktop control panel. It also makes private
+upgrades repair a missing signed-update endpoint without permitting payloads to
+redirect an installation.
+
+## Upgrade-safe private installer
+
+- Adds the exact `ALPHA_POS_UPDATE_URL` baked into the release whenever a
+  private payload is staged, without modifying the protected source JSON.
+- Gives the upgraded payload a new digest so an older installation with a
+  blank or stale updater setting applies the repair on first launch.
+- Rejects every alternate update URL, including host, scheme, path,
+  trailing-slash, and whitespace variants.
+- Continues to preserve branch, cloud-sync, database, licensing, and fiscal
+  identity.
 
 ## Owner-only Telegram delivery
 

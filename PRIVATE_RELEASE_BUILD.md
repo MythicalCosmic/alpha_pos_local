@@ -12,7 +12,7 @@ sets the intended version, run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build_installer.ps1 `
-  -PrivateSupportConfig .\DELIVERABLES\AlphaPOS-Support-Config.json
+  -PrivateSupportConfig .\DELIVERABLES\AlphaPOS-1.0.33-Support-Config.json
 ```
 
 The source JSON must be outside the repository or ignored by Git. The build
@@ -37,10 +37,13 @@ Run the private installer as the same Windows user that owns the restaurant
 installation, then launch Alpha POS. Before Django starts, a runtime hook:
 
 1. validates the embedded payload and its SSH host pin/private-key structure;
-2. accepts only `SUPPORT_TUNNEL_*`, owner order-audit recipients, and
-   `LOCAL_TELEGRAM_*` settings;
+2. accepts only `SUPPORT_TUNNEL_*`, owner order-audit recipients,
+   `LOCAL_TELEGRAM_*` settings, and the exact `ALPHA_POS_UPDATE_URL` already
+   baked into this release;
 3. atomically merges those fields into `%LOCALAPPDATA%\AlphaPOS\.env`;
-4. preserves branch, cloud-sync, database, licensing, and fiscal settings;
+4. restores an older blank or stale update URL to that canonical signed-update
+   endpoint while preserving branch, cloud-sync, database, licensing, and
+   fiscal settings;
 5. keeps an existing nonblank secret when the payload value is blank or masked;
 6. writes only a non-secret SHA-256 applied marker; and
 7. removes the installed plaintext payload.
@@ -48,6 +51,13 @@ installation, then launch Alpha POS. Before Django starts, a runtime hook:
 The digest marker makes the operation idempotent if deletion is interrupted.
 Invalid payloads are rejected without changing `.env` and cannot stop checkout
 from booting.
+
+The protected source JSON does not need to contain `ALPHA_POS_UPDATE_URL`.
+Staging inserts the baked canonical value automatically so an upgraded private
+installer receives a new digest and repairs the updater setting on first
+launch. If the source explicitly supplies any other URL, including a
+trailing-slash or whitespace variant, validation fails rather than redirecting
+the till.
 
 After launch, confirm the panel reports the expected private-support settings.
 Do not run the home connector until both **DB Ready** and **Backend Ready** are

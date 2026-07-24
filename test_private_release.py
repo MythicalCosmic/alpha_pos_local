@@ -26,6 +26,10 @@ def test_private_payload_allowlist_cannot_change_restaurant_identity():
         'FISCAL_SECRET',
     }
     assert private_release.ALLOWED_PRIVATE_KEYS.isdisjoint(forbidden)
+    assert (
+        private_release.UPDATE_URL_KEY
+        in private_release.ALLOWED_PRIVATE_KEYS
+    )
 
     with pytest.raises(
         private_release.PrivateReleasePayloadError,
@@ -48,7 +52,10 @@ def test_canonical_payload_accepts_only_current_schema():
     document = json.loads(canonical)
 
     assert document['schema'] == 'alphapos.private-support.v1'
-    assert document['config'] == {'ORDER_AUDIT_TELEGRAM_CHAT_IDS': '1001'}
+    assert document['config'] == {
+        'ALPHA_POS_UPDATE_URL': private_release.CANONICAL_UPDATE_URL,
+        'ORDER_AUDIT_TELEGRAM_CHAT_IDS': '1001',
+    }
 
     with pytest.raises(
         private_release.PrivateReleasePayloadError,
@@ -60,6 +67,76 @@ def test_canonical_payload_accepts_only_current_schema():
                 schema='alphapos.private-support.v2',
             )
         )
+
+
+@pytest.mark.parametrize(
+    'alternate',
+    [
+        'https://updates.example.invalid/updates',
+        private_release.CANONICAL_UPDATE_URL + '/',
+        ' ' + private_release.CANONICAL_UPDATE_URL,
+    ],
+)
+def test_private_payload_rejects_every_noncanonical_update_url(alternate):
+    with pytest.raises(
+        private_release.PrivateReleasePayloadError,
+        match='non-canonical update URL',
+    ):
+        private_release.validate_payload_bytes(
+            _payload({
+                'ALPHA_POS_UPDATE_URL': alternate,
+                'ORDER_AUDIT_TELEGRAM_CHAT_IDS': '1001',
+            })
+        )
+
+
+def test_staged_payload_repairs_blank_update_url_on_apply(
+    tmp_path,
+    monkeypatch,
+):
+    payload = tmp_path / private_release.PAYLOAD_FILENAME
+    marker = tmp_path / 'applied'
+    # The protected source does not need to be edited; canonical staging injects
+    # the updater endpoint and therefore changes the installed payload digest.
+    staged = private_release.canonical_payload_bytes(
+        _payload({'ORDER_AUDIT_TELEGRAM_CHAT_IDS': '1001'})
+    )
+    payload.write_bytes(staged)
+    current = dict(config_store.CONFIG_FIELDS)
+    current['ALPHA_POS_UPDATE_URL'] = ''
+    writes = []
+
+    monkeypatch.setattr(
+        config_store, '_harden_windows_private_path',
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(config_store, 'read_config', lambda: dict(current))
+
+    def write_config(values):
+        writes.append(dict(values))
+        current.update(values)
+
+    monkeypatch.setattr(config_store, 'write_config', write_config)
+    monkeypatch.setattr(
+        config_store, '_write_protected',
+        lambda path, text: Path(path).write_text(text, encoding='ascii'),
+    )
+
+    result = private_release.apply_private_payload(
+        payload,
+        marker_path=marker,
+    )
+
+    assert result['status'] == 'applied'
+    assert writes == [{
+        'ALPHA_POS_UPDATE_URL': private_release.CANONICAL_UPDATE_URL,
+        'ORDER_AUDIT_TELEGRAM_CHAT_IDS': '1001',
+    }]
+    assert (
+        current['ALPHA_POS_UPDATE_URL']
+        == dict(config_store.CONFIG_FIELDS)['ALPHA_POS_UPDATE_URL']
+    )
+    assert not payload.exists()
 
 
 def test_apply_hardens_then_merges_without_erasing_identity_or_secrets(
@@ -194,7 +271,10 @@ def test_stager_writes_only_canonical_ignored_payload(tmp_path, monkeypatch):
 
     staged = json.loads(destination.read_text())
     assert staged['schema'] == 'alphapos.private-support.v1'
-    assert staged['config'] == {'ORDER_AUDIT_TELEGRAM_CHAT_IDS': '1001'}
+    assert staged['config'] == {
+        'ALPHA_POS_UPDATE_URL': private_release.CANONICAL_UPDATE_URL,
+        'ORDER_AUDIT_TELEGRAM_CHAT_IDS': '1001',
+    }
     if stage_private_release_payload.os.name == 'nt':
         assert hardened[0] == (destination.parent, {'rights': 'F'})
         assert hardened[1] == (destination, {'rights': 'F'})
