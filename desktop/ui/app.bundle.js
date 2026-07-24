@@ -1,6 +1,6 @@
 /* AlphaPOS desktop UI — generated; do not edit directly.
  * Run: node tools/compile_desktop_ui.js
- * source-sha256: 63235daee1047b3c5efb4a9eb25fde21cc99b9175d861363e0c283681f2c875a
+ * source-sha256: c79eaae7fdf36f96e978725e783b6d86f7477946d2395b96392876bba6d3aee0
  */
 (function () {
 'use strict';
@@ -1519,28 +1519,16 @@ function ObservabilityCard({
       textWrap: "pretty"
     }
   }, t("obs.sub")), React.createElement("div", {
-    className: "g2",
+    className: "g2 obs-grid",
     style: {
       gap: 14
     }
   }, React.createElement("div", {
-    style: {
-      border: "1px solid var(--line)",
-      borderRadius: 12,
-      padding: 16
-    }
+    className: "obs-panel"
   }, React.createElement("div", {
-    className: "hstack",
-    style: {
-      justifyContent: "space-between",
-      alignItems: "center",
-      gap: 12
-    }
+    className: "hstack obs-panel-head"
   }, React.createElement("div", {
-    className: "hstack",
-    style: {
-      gap: 9
-    }
+    className: "hstack obs-panel-title"
   }, React.createElement(Icon, {
     name: "globe",
     size: 19
@@ -1659,23 +1647,11 @@ function ObservabilityCard({
     variant: "ghost",
     onClick: () => app.nav("config")
   }, t("common.manage")))), React.createElement("div", {
-    style: {
-      border: "1px solid var(--line)",
-      borderRadius: 12,
-      padding: 16
-    }
+    className: "obs-panel"
   }, React.createElement("div", {
-    className: "hstack",
-    style: {
-      justifyContent: "space-between",
-      alignItems: "center",
-      gap: 12
-    }
+    className: "hstack obs-panel-head"
   }, React.createElement("div", {
-    className: "hstack",
-    style: {
-      gap: 9
-    }
+    className: "hstack obs-panel-title"
   }, React.createElement(Icon, {
     name: "send",
     size: 19
@@ -1782,7 +1758,7 @@ function ObservabilityCard({
       textWrap: "pretty"
     }
   }, t("obs.auditHint")), React.createElement("div", {
-    className: "hstack",
+    className: "hstack obs-actions",
     style: {
       marginTop: 12
     }
@@ -1795,7 +1771,7 @@ function ObservabilityCard({
   }, obs.busy === "send" ? t("audit.sending") : t("audit.sendNow")), React.createElement(Btn, {
     size: "sm",
     variant: "ghost",
-    onClick: () => app.nav("config")
+    onClick: () => app.nav("localAudit")
   }, t("common.manage"))))));
 }
 function DashboardScreen() {
@@ -1856,7 +1832,7 @@ function DashboardScreen() {
       wordBreak: "break-word"
     }
   }, shiftClose.message || t("obs.closePendingHint")))) : null, React.createElement("div", {
-    className: "g12"
+    className: "g12 dashboard-grid"
   }, React.createElement(ObservabilityCard, {
     obs: observability
   }), React.createElement(Card, {

@@ -962,16 +962,41 @@ _SENDER_THREAD: threading.Thread | None = None
 
 
 def get_status() -> dict[str, Any]:
-    token, chat_ids = _telegram_delivery_configuration()
+    token, chat_ids, configuration_source = (
+        _telegram_delivery_configuration_details()
+    )
     result = _COLLECTOR.status(chat_ids=chat_ids)
+    telegram_configured = bool(token and chat_ids)
+    # Delivery errors are recipient-specific.  Once the owner changes the
+    # dedicated route, an error belonging to an old recipient (or a prior
+    # unconfigured state) must not keep the new, working route red forever.
+    active_chat_ids = set(chat_ids)
+    delivery_errors = {
+        str(key): str(value)
+        for key, value in (result.get('delivery_errors') or {}).items()
+        if (
+            str(key) in active_chat_ids
+            or (
+                not telegram_configured
+                and str(key) in {'configuration', 'legacy'}
+            )
+        )
+    }
+    result['delivery_errors'] = delivery_errors
+    result['last_auto_send_error'] = '; '.join(
+        f'{key}: {delivery_errors[key]}'
+        for key in sorted(delivery_errors)
+    )[:1000]
     result.update({
         'worker_alive': bool(_THREAD is not None and _THREAD.is_alive()),
         'sender_alive': bool(
             _SENDER_THREAD is not None and _SENDER_THREAD.is_alive()
         ),
-        'telegram_configured': bool(token and chat_ids),
+        'telegram_configured': telegram_configured,
         'telegram_token_configured': bool(token),
         'telegram_chat_count': len(chat_ids),
+        # This is deliberately a fixed label, never a credential or chat ID.
+        'telegram_configuration_source': configuration_source,
         # Raw JSONL is authoritative; automatic transport compresses newline-
         # aligned segments without changing a byte of the evidence stream.
         'formats': ['JSONL', 'JSONL.GZ'],
@@ -1405,37 +1430,76 @@ def _parse_chat_ids(value: Any) -> list[str]:
     return out
 
 
-def _telegram_delivery_configuration() -> tuple[str, list[str]]:
-    """Read transport presence without ever exposing the token to the UI."""
+def _notification_settings_bot_token() -> str:
+    """Read the legacy Notifications token without exposing any recipients."""
+    try:
+        from notifications.models import NotificationSettings
+        ns = NotificationSettings.load()
+        token = str(ns.bot_token or '').strip()
+    except Exception:  # noqa: BLE001 - status remains available before Django
+        logger.debug(
+            'order audit: local NotificationSettings unavailable',
+            exc_info=True,
+        )
+        return ''
+    return '' if token == _MASK else token
+
+
+def _telegram_delivery_configuration_details(
+) -> tuple[str, list[str], str]:
+    """Resolve one complete owner-only transport pair.
+
+    Raw evidence must never inherit the broad staff notification recipients,
+    and credentials from different settings surfaces must never be mixed.  A
+    complete, explicitly dedicated raw-evidence pair wins.  Otherwise the
+    owner-only Local Telegram Audit pair is reused as a unit.
+    """
     cfg = config_store.read_config()
-    token = str(cfg.get('TELEGRAM_BOT_TOKEN') or '').strip()
+
     # Raw database evidence is materially more sensitive than staff alerts.
-    # It must never inherit the broad Notifications recipient list.
-    chat_ids = _parse_chat_ids(cfg.get('ORDER_AUDIT_TELEGRAM_CHAT_IDS'))
-    # The current Notifications settings persist the token in the local DB.
-    # Reuse only that token; recipients remain owner-explicit above.
-    if not token:
-        try:
-            from notifications.models import NotificationSettings
-            ns = NotificationSettings.load()
-            token = str(ns.bot_token or '').strip()
-        except Exception:  # noqa: BLE001 - status remains available before Django
-            logger.debug('order audit: local NotificationSettings unavailable', exc_info=True)
-    if token == _MASK:
-        token = ''
+    # It must never inherit TELEGRAM_CHAT_IDS or any other staff list.
+    raw_chat_ids = _parse_chat_ids(
+        cfg.get('ORDER_AUDIT_TELEGRAM_CHAT_IDS'),
+    )
+    raw_token = str(cfg.get('TELEGRAM_BOT_TOKEN') or '').strip()
+    if raw_token == _MASK:
+        raw_token = ''
+    if raw_chat_ids and not raw_token:
+        # The Notifications screen persists its token in the local database.
+        # Reuse only that token and only with the explicit raw recipients.
+        raw_token = _notification_settings_bot_token()
+    if raw_token and raw_chat_ids:
+        return raw_token, raw_chat_ids, 'dedicated_order_audit'
+
+    local_token = str(
+        cfg.get('LOCAL_TELEGRAM_AUDIT_BOT_TOKEN') or '',
+    ).strip()
+    if local_token == _MASK:
+        local_token = ''
+    local_chat_ids = _parse_chat_ids(
+        cfg.get('LOCAL_TELEGRAM_AUDIT_CHAT_IDS'),
+    )
+    if local_token and local_chat_ids:
+        return local_token, local_chat_ids, 'local_telegram_audit'
+
+    # Do not return partial presence: doing so would make status claim that
+    # credentials are usable and risks a future caller mixing the two sources.
+    return '', [], 'unconfigured'
+
+
+def _telegram_delivery_configuration() -> tuple[str, list[str]]:
+    """Read the selected transport pair without exposing it to the UI."""
+    token, chat_ids, _source = _telegram_delivery_configuration_details()
     return token, chat_ids
 
 
 def _telegram_credentials() -> tuple[str, list[str]]:
     token, chat_ids = _telegram_delivery_configuration()
-    if not token:
+    if not token or not chat_ids:
         raise RuntimeError(
-            'Telegram bot token is not configured locally. Add it on the Notifications page.',
-        )
-    if not chat_ids:
-        raise RuntimeError(
-            'Dedicated order-audit Telegram chat ID is not configured locally. '
-            'Import the owner support configuration before enabling delivery.',
+            'Direct raw-file Telegram delivery is not configured. Open Local '
+            'Telegram Audit and save both the bot token and at least one '
+            'Telegram ID, or import a complete owner support configuration.',
         )
     return token, chat_ids
 
@@ -1477,6 +1541,7 @@ def _deliver_pending_once() -> dict[str, int]:
     """Attempt one segment per recipient and report progress for tests/status."""
     token, chat_ids = _telegram_credentials()
     _COLLECTOR.clear_auto_send_error('configuration')
+    _COLLECTOR.clear_auto_send_error('legacy')
     branch = str(config_store.read_config().get('BRANCH_ID') or 'unconfigured')
     result = {'sent': 0, 'failed': 0, 'empty': 0}
     for chat_id in chat_ids:
@@ -1499,10 +1564,11 @@ def _deliver_pending_once() -> dict[str, int]:
             result['sent'] += 1
         except Exception as exc:  # noqa: BLE001
             result['failed'] += 1
-            _COLLECTOR.set_auto_send_error(exc, chat_id=chat_id)
+            safe_error = _safe_error(exc, secret=token)
+            _COLLECTOR.set_auto_send_error(safe_error, chat_id=chat_id)
             logger.warning(
                 'automatic order evidence delivery failed for chat %s: %s',
-                chat_id, _safe_error(exc),
+                chat_id, safe_error,
             )
         finally:
             path.unlink(missing_ok=True)
@@ -1542,13 +1608,21 @@ def _auto_sender_worker() -> None:
             logger.debug('order audit: sender DB close failed', exc_info=True)
 
 
-def _safe_error(exc: Any) -> str:
-    return _scrub_text(str(exc))[:500]
+def _safe_error(exc: Any, *, secret: str = '') -> str:
+    text = str(exc)
+    if secret:
+        # requests can include its complete URL in an exception. Replace the
+        # exact selected token as well as applying the generic token patterns,
+        # so even a malformed legacy credential can never enter status/logs.
+        text = text.replace(str(secret), '[redacted-token]')
+    return _scrub_text(text)[:500]
 
 
 def send_export_now() -> dict[str, Any]:
     """Send the immutable raw file straight to Telegram, bypassing POS cloud."""
     token, chat_ids = _telegram_credentials()
+    _COLLECTOR.clear_auto_send_error('configuration')
+    _COLLECTOR.clear_auto_send_error('legacy')
     path, metadata = _COLLECTOR.prepare_export()
     try:
         import requests
@@ -1595,10 +1669,13 @@ def send_export_now() -> dict[str, Any]:
                        f'(HTTP {response.status_code})'
                 )
             sent.append(chat_id)
+            _COLLECTOR.clear_auto_send_error(chat_id)
         except Exception as exc:  # noqa: BLE001
-            failed.append({'chat_id': chat_id, 'error': _safe_error(exc)})
+            safe_error = _safe_error(exc, secret=token)
+            failed.append({'chat_id': chat_id, 'error': safe_error})
+            _COLLECTOR.set_auto_send_error(safe_error, chat_id=chat_id)
             logger.warning('direct order-audit export failed for chat %s: %s',
-                           chat_id, _safe_error(exc))
+                           chat_id, safe_error)
     return {
         'ok': bool(sent) and not failed,
         'partial': bool(sent) and bool(failed),

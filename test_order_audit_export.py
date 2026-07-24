@@ -367,8 +367,10 @@ def test_direct_telegram_export_uses_local_config_and_never_leaks_token(
     monkeypatch.setattr(
         order_audit.config_store, 'read_config',
         lambda: {
-            'TELEGRAM_BOT_TOKEN': token,
-            'ORDER_AUDIT_TELEGRAM_CHAT_IDS': '111111111,-100222222',
+            'TELEGRAM_BOT_TOKEN': '',
+            'ORDER_AUDIT_TELEGRAM_CHAT_IDS': '',
+            'LOCAL_TELEGRAM_AUDIT_BOT_TOKEN': token,
+            'LOCAL_TELEGRAM_AUDIT_CHAT_IDS': '111111111,-100222222',
             'BRANCH_ID': 'restaurant-1',
         },
     )
@@ -407,17 +409,57 @@ def test_direct_telegram_export_uses_local_config_and_never_leaks_token(
     assert token not in json.dumps(result)
 
 
+def test_direct_export_redacts_exact_selected_token_from_network_errors(
+    tmp_path, monkeypatch,
+):
+    collector = order_audit.OrderAuditCollector(
+        dataset=tmp_path / 'orders.raw.jsonl',
+        index_file=tmp_path / '.index.json',
+    )
+    assert collector.capture(_order())
+    monkeypatch.setattr(order_audit, '_COLLECTOR', collector)
+    # Deliberately does not match the generic Telegram-token regex. The exact
+    # selected secret must still be removed if requests echoes its URL.
+    token = 'malformed:legacy-secret'
+    monkeypatch.setattr(
+        order_audit.config_store, 'read_config',
+        lambda: {
+            'LOCAL_TELEGRAM_AUDIT_BOT_TOKEN': token,
+            'LOCAL_TELEGRAM_AUDIT_CHAT_IDS': 'owner-a',
+            'BRANCH_ID': 'restaurant-1',
+        },
+    )
+
+    import requests
+
+    def post(url, **_kwargs):
+        raise RuntimeError(f'network failure while posting to {url}')
+
+    monkeypatch.setattr(requests, 'post', post)
+
+    result = order_audit.send_export_now()
+    serialized = json.dumps({
+        'result': result,
+        'status': collector.status(chat_ids=['owner-a']),
+    })
+
+    assert result['ok'] is False
+    assert result['failed']
+    assert token not in serialized
+    assert '[redacted-token]' in serialized
+
+
 def test_direct_export_fails_clearly_without_local_credentials(monkeypatch):
     monkeypatch.setattr(
         order_audit.config_store, 'read_config',
         lambda: {
             'TELEGRAM_BOT_TOKEN': '',
             'ORDER_AUDIT_TELEGRAM_CHAT_IDS': '',
+            'LOCAL_TELEGRAM_AUDIT_BOT_TOKEN': '',
+            'LOCAL_TELEGRAM_AUDIT_CHAT_IDS': '',
         },
     )
-    # Avoid a real Django settings access in the fallback for this unit test.
-    monkeypatch.setitem(__import__('sys').modules, 'notifications.models', None)
-    with pytest.raises(RuntimeError, match='bot token is not configured locally'):
+    with pytest.raises(RuntimeError, match='Open Local Telegram Audit'):
         order_audit._telegram_credentials()
 
 
@@ -428,10 +470,141 @@ def test_raw_evidence_never_falls_back_to_staff_notification_recipients(monkeypa
             'TELEGRAM_BOT_TOKEN': '123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcd',
             'TELEGRAM_CHAT_IDS': 'staff-chat,manager-chat',
             'ORDER_AUDIT_TELEGRAM_CHAT_IDS': '',
+            'LOCAL_TELEGRAM_AUDIT_BOT_TOKEN': '',
+            'LOCAL_TELEGRAM_AUDIT_CHAT_IDS': '',
         },
     )
-    with pytest.raises(RuntimeError, match='Dedicated order-audit Telegram chat ID'):
+    with pytest.raises(RuntimeError, match='Open Local Telegram Audit'):
         order_audit._telegram_credentials()
+
+
+def test_raw_evidence_falls_back_to_complete_local_audit_pair(monkeypatch):
+    local_token = '987654321:ABCDEFGHIJKLMNOPQRSTUVWXYZ_local'
+    monkeypatch.setattr(
+        order_audit.config_store, 'read_config',
+        lambda: {
+            'TELEGRAM_BOT_TOKEN': '',
+            'ORDER_AUDIT_TELEGRAM_CHAT_IDS': '',
+            'LOCAL_TELEGRAM_AUDIT_BOT_TOKEN': local_token,
+            'LOCAL_TELEGRAM_AUDIT_CHAT_IDS': 'owner-a, owner-b',
+        },
+    )
+
+    token, chat_ids, source = (
+        order_audit._telegram_delivery_configuration_details()
+    )
+
+    assert token == local_token
+    assert chat_ids == ['owner-a', 'owner-b']
+    assert source == 'local_telegram_audit'
+
+
+def test_complete_explicit_raw_pair_takes_precedence_over_local_pair(monkeypatch):
+    raw_token = '123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_raw'
+    monkeypatch.setattr(
+        order_audit.config_store, 'read_config',
+        lambda: {
+            'TELEGRAM_BOT_TOKEN': raw_token,
+            'ORDER_AUDIT_TELEGRAM_CHAT_IDS': 'raw-owner',
+            'LOCAL_TELEGRAM_AUDIT_BOT_TOKEN': (
+                '987654321:ABCDEFGHIJKLMNOPQRSTUVWXYZ_local'
+            ),
+            'LOCAL_TELEGRAM_AUDIT_CHAT_IDS': 'local-owner',
+        },
+    )
+
+    token, chat_ids, source = (
+        order_audit._telegram_delivery_configuration_details()
+    )
+
+    assert token == raw_token
+    assert chat_ids == ['raw-owner']
+    assert source == 'dedicated_order_audit'
+
+
+def test_database_notification_token_completes_explicit_raw_pair(monkeypatch):
+    db_token = '123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_database'
+    monkeypatch.setattr(
+        order_audit.config_store, 'read_config',
+        lambda: {
+            'TELEGRAM_BOT_TOKEN': '',
+            'ORDER_AUDIT_TELEGRAM_CHAT_IDS': 'raw-owner',
+            'LOCAL_TELEGRAM_AUDIT_BOT_TOKEN': (
+                '987654321:ABCDEFGHIJKLMNOPQRSTUVWXYZ_local'
+            ),
+            'LOCAL_TELEGRAM_AUDIT_CHAT_IDS': 'local-owner',
+        },
+    )
+    monkeypatch.setattr(
+        order_audit, '_notification_settings_bot_token', lambda: db_token,
+    )
+
+    token, chat_ids, source = (
+        order_audit._telegram_delivery_configuration_details()
+    )
+
+    assert token == db_token
+    assert chat_ids == ['raw-owner']
+    assert source == 'dedicated_order_audit'
+
+
+@pytest.mark.parametrize(
+    ('config', 'expected'),
+    [
+        (
+            {
+                # A legacy raw token must not borrow Local Audit recipients.
+                'TELEGRAM_BOT_TOKEN': (
+                    '123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_raw'
+                ),
+                'ORDER_AUDIT_TELEGRAM_CHAT_IDS': '',
+                'LOCAL_TELEGRAM_AUDIT_BOT_TOKEN': '',
+                'LOCAL_TELEGRAM_AUDIT_CHAT_IDS': 'local-owner',
+            },
+            ('', [], 'unconfigured'),
+        ),
+        (
+            {
+                # A Local Audit token must not borrow dedicated raw recipients.
+                'TELEGRAM_BOT_TOKEN': '',
+                'ORDER_AUDIT_TELEGRAM_CHAT_IDS': 'raw-owner',
+                'LOCAL_TELEGRAM_AUDIT_BOT_TOKEN': (
+                    '987654321:ABCDEFGHIJKLMNOPQRSTUVWXYZ_local'
+                ),
+                'LOCAL_TELEGRAM_AUDIT_CHAT_IDS': '',
+            },
+            ('', [], 'unconfigured'),
+        ),
+        (
+            {
+                # An incomplete explicit pair may safely fall back to a
+                # complete Local Telegram Audit pair, still without mixing.
+                'TELEGRAM_BOT_TOKEN': (
+                    '123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_raw'
+                ),
+                'ORDER_AUDIT_TELEGRAM_CHAT_IDS': '',
+                'LOCAL_TELEGRAM_AUDIT_BOT_TOKEN': (
+                    '987654321:ABCDEFGHIJKLMNOPQRSTUVWXYZ_local'
+                ),
+                'LOCAL_TELEGRAM_AUDIT_CHAT_IDS': 'local-owner',
+            },
+            (
+                '987654321:ABCDEFGHIJKLMNOPQRSTUVWXYZ_local',
+                ['local-owner'],
+                'local_telegram_audit',
+            ),
+        ),
+    ],
+)
+def test_raw_delivery_never_mixes_partial_credential_sources(
+    monkeypatch, config, expected,
+):
+    monkeypatch.setattr(order_audit.config_store, 'read_config', lambda: config)
+    monkeypatch.setattr(
+        order_audit, '_notification_settings_bot_token', lambda: '',
+    )
+
+    assert order_audit._telegram_delivery_configuration_details() == expected
 
 
 def test_delivery_errors_are_per_recipient_and_unchanged_errors_do_not_fsync(
@@ -791,6 +964,50 @@ def test_public_status_exposes_delivery_health_but_never_bot_token(
 
     assert status['telegram_configured'] is True
     assert status['telegram_chat_count'] == 2
+    assert status['telegram_configuration_source'] == 'dedicated_order_audit'
     assert status['delivery_state'] == 'pending'
     assert status['formats'] == ['JSONL', 'JSONL.GZ']
     assert token not in json.dumps(status)
+
+
+def test_status_ignores_errors_from_replaced_delivery_configuration(
+    tmp_path, monkeypatch,
+):
+    collector = order_audit.OrderAuditCollector(
+        dataset=tmp_path / 'orders.raw.jsonl',
+        index_file=tmp_path / '.index.json',
+    )
+    collector.capture(_order())
+    collector.set_auto_send_error(
+        'Telegram delivery was not configured',
+        chat_id='configuration',
+    )
+    collector.set_auto_send_error('old bot rejected upload', chat_id='old-owner')
+    monkeypatch.setattr(order_audit, '_COLLECTOR', collector)
+    local_token = '987654321:ABCDEFGHIJKLMNOPQRSTUVWXYZ_local'
+    monkeypatch.setattr(
+        order_audit.config_store, 'read_config',
+        lambda: {
+            'TELEGRAM_BOT_TOKEN': '',
+            'ORDER_AUDIT_TELEGRAM_CHAT_IDS': '',
+            'LOCAL_TELEGRAM_AUDIT_BOT_TOKEN': local_token,
+            'LOCAL_TELEGRAM_AUDIT_CHAT_IDS': 'current-owner',
+        },
+    )
+
+    class Alive:
+        @staticmethod
+        def is_alive():
+            return True
+
+    monkeypatch.setattr(order_audit, '_THREAD', Alive())
+    monkeypatch.setattr(order_audit, '_SENDER_THREAD', Alive())
+
+    status = order_audit.get_status()
+
+    assert status['telegram_configured'] is True
+    assert status['telegram_configuration_source'] == 'local_telegram_audit'
+    assert status['delivery_errors'] == {}
+    assert status['last_auto_send_error'] == ''
+    assert status['delivery_state'] == 'pending'
+    assert local_token not in json.dumps(status)

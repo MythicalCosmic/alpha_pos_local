@@ -32,10 +32,10 @@ function ObservabilityCard({ obs }) {
       action={<Badge tone={tunnel.ready && !auditError ? "ok" : "warn"}>{tunnel.ready && !auditError ? t("obs.protected") : t("obs.checkStatus")}</Badge>}
     >
       <p style={{ margin: "-2px 0 16px", color: "var(--ink-3)", fontSize: 12.5, textWrap: "pretty" }}>{t("obs.sub")}</p>
-      <div className="g2" style={{ gap: 14 }}>
-        <div style={{ border: "1px solid var(--line)", borderRadius: 12, padding: 16 }}>
-          <div className="hstack" style={{ justifyContent: "space-between", alignItems: "center", gap: 12 }}>
-            <div className="hstack" style={{ gap: 9 }}>
+      <div className="g2 obs-grid" style={{ gap: 14 }}>
+        <div className="obs-panel">
+          <div className="hstack obs-panel-head">
+            <div className="hstack obs-panel-title">
               <Icon name="globe" size={19}></Icon>
               <div style={{ fontWeight: 650 }}>{t("obs.tunnelTitle")}</div>
               <Badge tone={tunnelTone} pulse={!!tunnel.ready}>{tunnelLabel}</Badge>
@@ -63,9 +63,9 @@ function ObservabilityCard({ obs }) {
           <div style={{ marginTop: 12 }}><Btn size="sm" variant="ghost" onClick={() => app.nav("config")}>{t("common.manage")}</Btn></div>
         </div>
 
-        <div style={{ border: "1px solid var(--line)", borderRadius: 12, padding: 16 }}>
-          <div className="hstack" style={{ justifyContent: "space-between", alignItems: "center", gap: 12 }}>
-            <div className="hstack" style={{ gap: 9 }}>
+        <div className="obs-panel">
+          <div className="hstack obs-panel-head">
+            <div className="hstack obs-panel-title">
               <Icon name="send" size={19}></Icon>
               <div style={{ fontWeight: 650 }}>{t("obs.auditTitle")}</div>
               <Badge tone={auditTone} pulse={audit.delivery_state === "delivered"}>{auditLabel}</Badge>
@@ -94,9 +94,9 @@ function ObservabilityCard({ obs }) {
           {auditErrorText ? <div style={{ marginTop: 12, color: "var(--danger)", fontSize: 12, wordBreak: "break-word" }}>{auditErrorText}</div> : null}
           {!audit.telegram_configured ? <div style={{ marginTop: 12, color: "var(--warn)", fontSize: 12 }}>{t("obs.telegramConfigure")}</div> : null}
           <p style={{ margin: "12px 0 0", color: "var(--ink-3)", fontSize: 11.5, textWrap: "pretty" }}>{t("obs.auditHint")}</p>
-          <div className="hstack" style={{ marginTop: 12 }}>
+          <div className="hstack obs-actions" style={{ marginTop: 12 }}>
             <Btn size="sm" variant="primary" icon="send" disabled={obs.busy === "send"} onClick={obs.sendAuditNow}>{obs.busy === "send" ? t("audit.sending") : t("audit.sendNow")}</Btn>
-            <Btn size="sm" variant="ghost" onClick={() => app.nav("config")}>{t("common.manage")}</Btn>
+            <Btn size="sm" variant="ghost" onClick={() => app.nav("localAudit")}>{t("common.manage")}</Btn>
           </div>
         </div>
       </div>
@@ -137,7 +137,7 @@ function DashboardScreen() {
         </div>
       ) : null}
 
-      <div className="g12">
+      <div className="g12 dashboard-grid">
         <ObservabilityCard obs={observability}></ObservabilityCard>
         {/* Server hero */}
         <Card style={{ gridColumn: "span 7", display: "flex", alignItems: "center" }} label="Server control">

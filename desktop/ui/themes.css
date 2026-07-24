@@ -177,7 +177,7 @@ body { overflow: hidden; }
 .main { flex: 1; min-width: 0; overflow-y: auto; padding: 34px 42px 48px; scrollbar-gutter: stable; }
 .main::-webkit-scrollbar { width: 10px; }
 .main::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 8px; border: 3px solid var(--bg); }
-.page { max-width: 1060px; margin: 0 auto; }
+.page { max-width: 1060px; min-width: 0; margin: 0 auto; }
 
 .page-head { margin-bottom: 26px; }
 .page-h { font-family: var(--font-display); font-size: 31px; margin: 0; }
@@ -188,13 +188,15 @@ body { overflow: hidden; }
 .g2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 18px; }
 .stack { display: flex; flex-direction: column; gap: 18px; }
 .hstack { display: flex; align-items: center; gap: 10px; }
+.g12 > *, .g2 > *, .cfg-grid > *, .tile-grid > *, .plan-grid > *, .md > *,
+.hstack > *, .card-head > * { min-width: 0; }
 
 /* Cards */
 .card {
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
-  padding: 22px 24px; box-shadow: var(--shadow);
+  min-width: 0; padding: 22px 24px; box-shadow: var(--shadow);
 }
-.card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
 .card-t { margin: 0; line-height: 1.25; }
 .card.tone-warn { border-color: color-mix(in oklab, var(--warn) 35%, var(--line)); }
 .card.tone-danger { border-color: color-mix(in oklab, var(--danger) 35%, var(--line)); }
@@ -208,7 +210,7 @@ body { overflow: hidden; }
 .kv-row:last-child { border-bottom: 0; }
 .kv-row:first-child { padding-top: 2px; }
 .kv-l { color: var(--ink-3); font-size: 13px; flex: none; }
-.kv-v { font-size: 13.5px; font-weight: 500; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kv-v { flex: 1 1 auto; min-width: 0; font-size: 13.5px; font-weight: 500; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kv-v.mono { font-family: var(--font-mono); font-size: 12.5px; font-weight: 400; }
 .kv-v.dim { color: var(--ink-3); font-weight: 400; }
 
@@ -421,11 +423,41 @@ textarea.inp { font-family: var(--font-mono); font-size: 12.5px; line-height: 1.
 .ti-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; min-height: 31px; }
 .ti-res { display: flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 11.5px; color: var(--ok); }
 
+/* Dashboard support channels contain long pinned endpoints and fingerprints.
+   Keep their controls readable instead of letting a two-column panel escape
+   the native window. */
+.obs-panel {
+  min-width: 0; border: 1px solid var(--line); border-radius: 12px; padding: 16px;
+}
+.obs-panel-head {
+  justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+}
+.obs-panel-title { flex: 1 1 260px; gap: 9px; flex-wrap: wrap; }
+.obs-actions { flex-wrap: wrap; }
+
 @media (max-width: 1180px) {
-  .g12 { grid-template-columns: repeat(6, 1fr); }
+  .g12 { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .dashboard-grid > :nth-child(1),
+  .dashboard-grid > :nth-child(2),
+  .dashboard-grid > :nth-child(3),
+  .dashboard-grid > :nth-child(4),
+  .dashboard-grid > :nth-child(7) { grid-column: span 6 !important; }
+  .dashboard-grid > :nth-child(5),
+  .dashboard-grid > :nth-child(6) { grid-column: span 3 !important; }
+  .obs-grid { grid-template-columns: minmax(0, 1fr); }
   .tile-grid, .plan-grid { grid-template-columns: repeat(2, 1fr); }
   .cfg-grid { grid-template-columns: 1fr; }
   .md { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 980px) {
+  .main { padding: 28px 28px 40px; }
+  .g12 { grid-template-columns: minmax(0, 1fr); }
+  .g12 > * { grid-column: 1 / -1 !important; }
+  .g2 { grid-template-columns: minmax(0, 1fr); }
+  .page-head { margin-bottom: 22px; }
+  .page-h { font-size: 28px; }
+  .card { padding: 20px; }
 }
 
 /* ---- Theme switcher (sidebar foot) ---- */
