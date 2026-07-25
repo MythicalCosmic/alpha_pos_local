@@ -60,7 +60,11 @@ function RecoveryPanel() {
     api.cloud_resync_failed().then((r) => {
       setBusy(false);
       const n = (r && r.requeued) || 0;
-      app.toast(t("tests.retryDone").replace("{n}", n));
+      app.toast(
+        r && r.ok
+          ? t("tests.retryDone").replace("{n}", n)
+          : (r && r.error) || "Recovery push failed"
+      );
       refresh();
     });
   };

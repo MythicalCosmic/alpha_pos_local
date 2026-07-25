@@ -823,12 +823,18 @@ class Api:
         from collections import Counter
         from base.models import SyncQueueRecord
         from base.services.sync.config import get_sync_max_queue_attempts
+        from django.db.models import Q
         cap = get_sync_max_queue_attempts()
-        by_model, total = {}, 0
+        dead = (
+            Q(last_error__startswith='[REJECTED]')
+            | Q(last_error__startswith='[BRANCH_SCOPE]')
+            | Q(last_error__startswith='[RETRYING]')
+        )
         if cap:
-            qs = SyncQueueRecord.objects.filter(attempts__gte=cap)
-            by_model = dict(Counter(qs.values_list('model_name', flat=True)))
-            total = sum(by_model.values())
+            dead |= Q(attempts__gte=cap)
+        qs = SyncQueueRecord.objects.filter(dead)
+        by_model = dict(Counter(qs.values_list('model_name', flat=True)))
+        total = sum(by_model.values())
         return {'ok': True, 'total': total, 'by_model': by_model, 'cap': cap}
 
     @_safe
@@ -841,13 +847,88 @@ class Api:
         from base.models import SyncQueueRecord
         from base.services.sync.config import get_sync_max_queue_attempts
         from base.services.sync.service import SyncService
+        from django.db import transaction
+        from django.db.models import Q
         cap = get_sync_max_queue_attempts()
-        requeued = 0
+        dead = (
+            Q(last_error__startswith='[REJECTED]')
+            | Q(last_error__startswith='[BRANCH_SCOPE]')
+            | Q(last_error__startswith='[RETRYING]')
+        )
         if cap:
-            requeued = SyncQueueRecord.objects.filter(
-                attempts__gte=cap).update(attempts=0, last_error='')
+            dead |= Q(attempts__gte=cap)
+        # Do not erase the receiver's diagnosis before the cloud accepts this
+        # exact queue generation. An auth/offline failure after the old blanket
+        # clear destroyed the only explanation for why manual recovery was
+        # needed.
+        recovery_markers = {}
+        with transaction.atomic():
+            rows = list(
+                SyncQueueRecord.objects.select_for_update()
+                .filter(dead)
+                .only('pk', 'generation', 'last_error', 'attempts')
+            )
+            for row in rows:
+                original = (row.last_error or 'dead-lettered record').strip()
+                marker = (
+                    original.split(' | latest push:', 1)[0]
+                    if original.startswith('[RETRYING]')
+                    else f'[RETRYING] {original}'
+                )
+                marker = marker[:500].rstrip()
+                row.attempts = 0
+                row.last_error = marker
+                recovery_markers[row.pk] = (row.generation, marker)
+            if rows:
+                SyncQueueRecord.objects.bulk_update(
+                    rows, ['attempts', 'last_error'],
+                )
+        requeued = len(recovery_markers)
         push = SyncService.push()
-        return {'ok': True, 'requeued': requeued, 'push': push}
+        # Requeueing locally is not proof that the cloud accepted anything.
+        # The old unconditional ``ok`` produced a false success toast for auth,
+        # transport, and receiver failures. Rows stay eligible for the normal
+        # background retry, while this response reports the immediate push
+        # truthfully.
+        push_response = _sync_response(push, operation='Recovery push')
+        response = {
+            'ok': push_response['ok'],
+            'requeued': requeued,
+            'push': push,
+        }
+        if not response['ok']:
+            response['error'] = push_response.get(
+                'error', 'Recovery push failed',
+            )
+            # Batch-level transport failures can replace last_error with only
+            # the latest network symptom. Keep both that symptom and the
+            # original receiver diagnosis for unchanged rows. A fresh explicit
+            # rejection or branch quarantine remains authoritative.
+            for row in SyncQueueRecord.objects.filter(
+                pk__in=recovery_markers,
+            ).only('pk', 'generation', 'last_error'):
+                expected_generation, marker = recovery_markers[row.pk]
+                if row.generation != expected_generation:
+                    continue
+                observed_error = row.last_error or ''
+                current_error = observed_error.strip()
+                if current_error.startswith(('[REJECTED]', '[BRANCH_SCOPE]')):
+                    continue
+                if current_error and not current_error.startswith('[RETRYING]'):
+                    restored = (
+                        f'{marker} | latest push: {current_error}'
+                    )[:500].rstrip()
+                else:
+                    restored = current_error or marker
+                SyncQueueRecord.objects.filter(
+                    pk=row.pk,
+                    generation=expected_generation,
+                    # Compare-and-swap the exact value inspected above. A
+                    # concurrent receiver rejection for this same generation
+                    # is newer, authoritative evidence and must survive.
+                    last_error=observed_error,
+                ).update(last_error=restored)
+        return response
 
     # -- telegram / notifications -------------------------------------------
     @_safe

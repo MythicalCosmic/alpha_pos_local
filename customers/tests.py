@@ -111,12 +111,14 @@ class TestMarkAsPaidIdempotent:
         result1, status1 = CustomerOrderService.mark_as_paid(
             order.id, cashier_id=cashier_user.id,
             user_id=cashier_user.id, user_role='CASHIER',
+            payment_method='CASH',
         )
         assert status1 == 200
 
         result2, status2 = CustomerOrderService.mark_as_paid(
             order.id, cashier_id=cashier_user.id,
             user_id=cashier_user.id, user_role='CASHIER',
+            payment_method='CASH',
         )
         assert status2 >= 400, 'second pay must be rejected'
 
@@ -343,6 +345,35 @@ class TestOrderLifecycleContract:
 class TestSplitPayment:
     """Multi-line payments + pay-time percent discount (money math)."""
 
+    def test_ordinary_implicit_payment_still_creates_one_positive_line(
+        self, order_factory, cashier_user, regular_user,
+    ):
+        from decimal import Decimal
+        from base.models import CashRegister, OrderPayment
+
+        CashRegister.objects.create(current_balance=Decimal('0'))
+        order = order_factory(user=regular_user, cashier=cashier_user)
+        _start_active_shift(cashier_user, order.branch_id)
+
+        result, status = CustomerOrderService.mark_as_paid(
+            order.id,
+            cashier_id=cashier_user.id,
+            user_id=cashier_user.id,
+            user_role='CASHIER',
+            payment_method='CASH',
+        )
+
+        assert status == 200, result
+        order.refresh_from_db()
+        payment = OrderPayment.objects.get(order=order)
+        assert order.payment_method == 'CASH'
+        assert order.payment_action_id is not None
+        assert payment.payment_action_id == order.payment_action_id
+        assert payment.line_index == 0
+        assert payment.method == 'CASH'
+        assert payment.amount == Decimal('10.00')
+        assert CashRegister.objects.get().current_balance == Decimal('10.00')
+
     def test_split_exact_only_cash_hits_drawer(self, order_factory, cashier_user, regular_user):
         from decimal import Decimal
         from django.utils import timezone
@@ -367,7 +398,61 @@ class TestSplitPayment:
             order.payment_action_id,
         }
         assert [row.line_index for row in payment_rows] == [0, 1]
+        assert [(row.method, row.amount) for row in payment_rows] == [
+            ('HUMO', Decimal('6.00')),
+            ('CASH', Decimal('4.00')),
+        ]
         assert CashRegister.objects.first().current_balance == Decimal('4.00')
+
+    def test_full_discount_creates_no_zero_payment_or_sync_dead_letter(
+        self, order_factory, cashier_user, regular_user, settings,
+    ):
+        from decimal import Decimal
+        from base.models import CashRegister, OrderPayment, SyncQueueRecord
+        from base.services.tender import tender_integrity_issues
+
+        # Exercise the real durable on-save queue.  The order header must still
+        # be queued, but a zero-valued OrderPayment must never be materialized
+        # (and therefore can never become rejected sync evidence).
+        settings.SYNC_ENABLED = True
+        CashRegister.objects.create(current_balance=Decimal('0'))
+        order = order_factory(user=regular_user, cashier=cashier_user)
+        _start_active_shift(cashier_user, order.branch_id)
+
+        result, status = CustomerOrderService.mark_as_paid(
+            order.id,
+            cashier_id=cashier_user.id,
+            user_id=cashier_user.id,
+            user_role='CASHIER',
+            payment_method='CASH',
+            discount_percent=100,
+        )
+
+        assert status == 200, result
+        order.refresh_from_db()
+        assert order.is_paid is True
+        assert order.total_amount == Decimal('0.00')
+        assert order.discount_percent == Decimal('100.00')
+        assert order.payment_method is None
+        # The checkout action remains replayable even though it represents no
+        # collected tender and therefore creates no OrderPayment child.
+        assert order.payment_action_id is not None
+        assert not OrderPayment.objects.filter(order=order).exists()
+        assert SyncQueueRecord.objects.filter(
+            model_name='order', record_uuid=order.uuid,
+        ).exists()
+        assert not SyncQueueRecord.objects.filter(
+            model_name='orderpayment',
+        ).exists()
+        assert not SyncQueueRecord.objects.filter(
+            model_name='orderpayment',
+            last_error__startswith='[REJECTED]',
+        ).exists()
+        assert tender_integrity_issues(
+            type(order).objects.filter(pk=order.pk),
+            require_concrete=True,
+        ) == []
+        assert CashRegister.objects.get().current_balance == Decimal('0.00')
 
     def test_discount_with_cash_change(self, order_factory, cashier_user, regular_user):
         from decimal import Decimal

@@ -10,11 +10,15 @@ This is the "I'm tired, just tell me what to do" guide. Three projects, two serv
 | **Control server** | `78.111.91.113` → `control.78.111.91.113.nip.io` | Licensing/plans/billing **and** hosts the desktop auto-updates at `/updates`. |
 | **Desktop app** | Your PC | The Windows till app. Self-updates from the control server. |
 
-**SSH into either server** (one key works for both):
+**SSH into either server** using the release operator's own protected key:
 ```bash
-cp "/c/Users/mythi/OneDrive/Desktop/Server/alpha_pos.pem" /tmp/alpha_pos_key && chmod 600 /tmp/alpha_pos_key
-ssh -i /tmp/alpha_pos_key root@78.111.90.65      # POS server
-ssh -i /tmp/alpha_pos_key root@78.111.91.113     # control server
+export RELEASE_KEY="<path-to-private-ssh-key>"
+export POS_HOST="<pos-server>"
+export CONTROL_HOST="<control-server>"
+export RELEASE_USER="<release-user>"
+
+ssh -i "$RELEASE_KEY" "${RELEASE_USER}@${POS_HOST}"
+ssh -i "$RELEASE_KEY" "${RELEASE_USER}@${CONTROL_HOST}"
 ```
 
 ---
@@ -22,6 +26,21 @@ ssh -i /tmp/alpha_pos_key root@78.111.91.113     # control server
 ## 1. Release a new desktop update (tills auto-update)
 
 Run on **this PC** (the build box — it has the signing keys in `update_keys/`):
+
+**Required cashier preflight:** Alpha POS Desktop 1.0.34 supports Smart POS
+**0.0.5 or newer**. Earlier cashier builds could submit payment with an empty
+body; the hardened backend intentionally rejects that request instead of
+silently recording it as cash.
+
+There is no reliable server-side version detection for an ordinary checkout.
+Before upgrading, manually record the Smart POS version from each station's
+trusted version display or deployment record. Stop if any version is below
+0.0.5 or cannot be verified. With checkouts stopped and preferably after shift
+close, record the local queue counts and cash/card totals. Upgrade one canary
+station first, perform controlled cash, card, and any supported split-tender
+checkouts, and verify one local order/payment record per sale plus a clean sync
+queue before updating the remaining stations. General API connectivity alone
+does not pass this gate.
 
 ```bash
 cd /c/Users/mythi/OneDrive/Desktop/AlphaPOS-Split/alpha_pos_local
@@ -34,21 +53,121 @@ powershell -ExecutionPolicy Bypass -File build_installer.ps1
 # 3. Sign + package it:
 ../.venv/Scripts/python.exe tools/release.py --publish --bundle dist/AlphaPOS
 
-# 4. Upload to the CONTROL server (that's what tills download from):
-scp -i /tmp/alpha_pos_key -r update_repo/metadata root@78.111.91.113:/srv/alpha_pos_updates/
-scp -i /tmp/alpha_pos_key update_repo/targets/AlphaPOS-<NEWVERSION>.tar.gz root@78.111.91.113:/srv/alpha_pos_updates/targets/
+# 4. Set release-specific, non-secret values:
+export VERSION="<NEWVERSION>"
+export TARGET="AlphaPOS-${VERSION}.tar.gz"
+export RELEASE_KEY="<path-to-private-ssh-key>"
+export CONTROL_HOST="<control-server>"
+export RELEASE_USER="<release-user>"
+export UPDATE_BASE_URL="https://<control-server>/updates"
+export LIVE_REPO="<control-host-update-repo-path>"
+export STAGE_REPO="${LIVE_REPO}/.staging-${VERSION}-$(date +%s)"
+
+# 5. Verify the archive against the hash and length in signed targets.json:
+../.venv/Scripts/python.exe - "$TARGET" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+name = sys.argv[1]
+archive = Path("update_repo/targets") / name
+metadata = json.loads(
+    Path("update_repo/metadata/targets.json").read_text(encoding="utf-8")
+)
+expected = metadata["signed"]["targets"].get(name)
+if expected is None:
+    raise SystemExit(f"{name} is not advertised by signed targets.json")
+actual_length = archive.stat().st_size
+hasher = hashlib.sha256()
+with archive.open("rb") as stream:
+    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        hasher.update(chunk)
+actual_hash = hasher.hexdigest()
+if actual_length != expected["length"]:
+    raise SystemExit("target length does not match signed targets.json")
+if actual_hash != expected["hashes"]["sha256"]:
+    raise SystemExit("target SHA-256 does not match signed targets.json")
+print(f"verified {name}: {actual_length} bytes, sha256={actual_hash}")
+PY
+
+# 6. Stage only the new target and ordinary-release metadata:
+ssh -i "$RELEASE_KEY" "${RELEASE_USER}@${CONTROL_HOST}" \
+  "install -d -m 0755 '$STAGE_REPO/targets' '$STAGE_REPO/metadata'"
+scp -i "$RELEASE_KEY" "update_repo/targets/$TARGET" \
+  "${RELEASE_USER}@${CONTROL_HOST}:$STAGE_REPO/targets/$TARGET"
+for role in targets snapshot timestamp; do
+  scp -i "$RELEASE_KEY" "update_repo/metadata/${role}.json" \
+    "${RELEASE_USER}@${CONTROL_HOST}:$STAGE_REPO/metadata/${role}.json"
+done
+
+# 7. Recheck the staged target on the server before exposing any metadata:
+ssh -i "$RELEASE_KEY" "${RELEASE_USER}@${CONTROL_HOST}" \
+  python3 - "$STAGE_REPO" "$TARGET" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+stage = Path(sys.argv[1])
+name = sys.argv[2]
+archive = stage / "targets" / name
+metadata = json.loads(
+    (stage / "metadata" / "targets.json").read_text(encoding="utf-8")
+)
+expected = metadata["signed"]["targets"].get(name)
+if expected is None:
+    raise SystemExit(f"{name} is not advertised by staged targets.json")
+actual_length = archive.stat().st_size
+hasher = hashlib.sha256()
+with archive.open("rb") as stream:
+    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        hasher.update(chunk)
+actual_hash = hasher.hexdigest()
+if actual_length != expected["length"]:
+    raise SystemExit("staged target length mismatch")
+if actual_hash != expected["hashes"]["sha256"]:
+    raise SystemExit("staged target SHA-256 mismatch")
+print(f"verified staged {name}")
+PY
+
+# 8. Promote by same-filesystem atomic renames in dependency-safe order.
+#    timestamp.json MUST be last. Stop immediately if any command fails.
+ssh -i "$RELEASE_KEY" "${RELEASE_USER}@${CONTROL_HOST}" \
+  sh -s -- "$STAGE_REPO" "$LIVE_REPO" "$TARGET" <<'SH'
+set -eu
+stage=$1
+live=$2
+target=$3
+mv -f -- "$stage/targets/$target" "$live/targets/$target"
+mv -f -- "$stage/metadata/targets.json" "$live/metadata/targets.json"
+mv -f -- "$stage/metadata/snapshot.json" "$live/metadata/snapshot.json"
+mv -f -- "$stage/metadata/timestamp.json" "$live/metadata/timestamp.json"
+rmdir "$stage/targets" "$stage/metadata" "$stage"
+SH
 ```
 
 Every till self-updates on its next launch. Verify it's live:
 ```bash
-curl https://control.78.111.91.113.nip.io/updates/metadata/timestamp.json   # expect 200
+curl --fail --head "$UPDATE_BASE_URL/targets/$TARGET"
+curl --fail "$UPDATE_BASE_URL/metadata/timestamp.json" >/dev/null
 ```
 
-**Two warnings:**
+**Release rules:**
 - **Back up `update_keys/`** (offline). Lose the root key = every till must be reinstalled.
-- The update metadata **expires after 1 day**. If you don't release for a while, tills
-  reject it as stale. Fix: raise `expiration_days.timestamp` in `.tufup-repo-config` and
-  re-run steps 3–4, or just re-publish when you next release.
+- Never upload `update_keys/`, a private installer, or any support/restaurant
+  configuration to the public update repository.
+- `root.json` is unchanged during an ordinary release. Do not stage or replace it.
+- The local repository currently requests 30 days for timestamp, snapshot, and
+  targets metadata (root is configured separately), but each signed `expires`
+  value is authoritative. Check the configuration and hosted timestamp instead
+  of assuming:
+  ```bash
+  ../.venv/Scripts/python.exe -c "import json; print(json.load(open('.tufup-repo-config'))['expiration_days'])"
+  curl --fail --silent "$UPDATE_BASE_URL/metadata/timestamp.json" | \
+    ../.venv/Scripts/python.exe -c "import json,sys; print(json.load(sys.stdin)['signed']['expires'])"
+  ```
+  Re-publish and safely promote fresh metadata before it expires.
 
 ---
 
@@ -59,7 +178,7 @@ It runs **only on the POS server** — the desktop has no AI (no keys on tills).
 
 **Change the Gemini key / model:**
 ```bash
-ssh -i /tmp/alpha_pos_key root@78.111.90.65
+ssh -i "$RELEASE_KEY" "${RELEASE_USER}@${POS_HOST}"
 cd /root/alpha_pos_server
 # edit .env: GEMINI_API_KEY=...   (AI_PROVIDER=gemini, GEMINI_MODEL=gemini-2.5-flash)
 docker compose -f docker-compose.yaml -f docker-compose.edge.yml up -d web
@@ -68,7 +187,7 @@ docker compose -f docker-compose.yaml -f docker-compose.edge.yml up -d web
 
 **Ask it a question manually (to test):**
 ```bash
-ssh -i /tmp/alpha_pos_key root@78.111.90.65 \
+ssh -i "$RELEASE_KEY" "${RELEASE_USER}@${POS_HOST}" \
   "docker exec -i alpha_pos_server-web-1 python manage.py shell" <<'PY'
 from stock.services.ai_assistant_service import AIStockAssistant
 print(AIStockAssistant.process_query("What are the sales today?")["response"])
@@ -82,11 +201,11 @@ The real app calls it at `POST …/ai/query/` (admin login required).
 
 If the plans page is empty, seed the standard tiers on the control server:
 ```bash
-ssh -i /tmp/alpha_pos_key root@78.111.91.113 \
+ssh -i "$RELEASE_KEY" "${RELEASE_USER}@${CONTROL_HOST}" \
   "docker exec -i pos_control-web-1 python manage.py seed_plans"
 ```
-Check: `curl https://control.78.111.91.113.nip.io/api/v1/plans`. Edit prices at
-`https://control.78.111.91.113.nip.io/admin/billing/subscriptionplan/`.
+Check: `curl "https://<control-server>/api/v1/plans"`. Edit prices at
+`https://<control-server>/admin/billing/subscriptionplan/`.
 Use an individually provisioned administrator account; production credentials
 must never be stored in this repository.
 
@@ -95,8 +214,10 @@ must never be stored in this repository.
 ## 4. Redeploy a server after pushing code
 
 ```bash
-ssh -i /tmp/alpha_pos_key root@78.111.90.65   "cd /root/alpha_pos_server && ./deploy.sh 78.111.90.65"
-ssh -i /tmp/alpha_pos_key root@78.111.91.113  "cd /root/pos_control && ./deploy.sh 78.111.91.113"
+ssh -i "$RELEASE_KEY" "${RELEASE_USER}@${POS_HOST}" \
+  "cd <path-to-alpha_pos_server> && ./deploy.sh <pos-public-ip>"
+ssh -i "$RELEASE_KEY" "${RELEASE_USER}@${CONTROL_HOST}" \
+  "cd <path-to-pos_control> && ./deploy.sh <control-public-ip>"
 ```
 Deploy pulls latest git, rebuilds containers, runs migrations, (re)creates admin users.
 

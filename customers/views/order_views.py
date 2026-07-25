@@ -338,23 +338,32 @@ def update_order_type(request, order_id):
 @require_POST
 @login_required
 @role_required(*STAFF_ROLES)
-@idempotent('orders.pay')
+@idempotent(
+    'orders.pay',
+    fallback_key_from_request=True,
+    expose_action_id=True,
+    recover_inflight_after_seconds=5,
+)
 def pay_order(request, order_id):
     cashier_id = request.user.id if request.user.role in ('CASHIER', 'MANAGER') else None
-    payment_method = 'CASH'
-    payments = None              # split: [{"method","amount"}, ...]
-    discount_percent = 0
-    if request.body:
-        body, _ = parse_json_body(request)
-        if body:
-            payment_method = body.get('payment_method', 'CASH')
-            payments = body.get('payments')
-            discount_percent = body.get('discount_percent', 0)
+    body, error = parse_json_body(request)
+    if error:
+        return json_response(error)
+
+    payment_kwargs = {}
+    if 'payment_method' in body:
+        payment_kwargs['payment_method'] = body['payment_method']
+    if 'payments' in body:
+        payment_kwargs['payments'] = body['payments']
+
     result, status_code = CustomerOrderService.mark_as_paid(
         order_id, cashier_id,
         user_id=request.user.id, user_role=request.user.role,
-        payment_method=payment_method, payments=payments,
-        discount_percent=discount_percent,
+        discount_percent=body.get('discount_percent', 0),
+        payment_action_id=getattr(
+            request, 'idempotency_action_id', None,
+        ),
+        **payment_kwargs,
     )
     return JsonResponse(result, status=status_code)
 

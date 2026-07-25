@@ -4,8 +4,6 @@ something else squats on 8765 (instead of loading the wrong server)."""
 import http.server
 import threading
 
-import pytest
-
 from desktop import control_server as cs
 
 
@@ -46,19 +44,22 @@ def test_serve_falls_back_when_port_squatted_by_other_app():
         def log_message(self, *a):
             pass
 
-    try:
-        other = http.server.ThreadingHTTPServer(('127.0.0.1', 8765), _Other)
-    except OSError:
-        pytest.skip('port 8765 already in use on this machine')
+    # Use an OS-assigned isolated port. On Windows, SO_REUSEADDR can let this
+    # test bind 8765 even while the real desktop panel is already listening;
+    # requests may then reach either listener and make the test nondeterministic
+    # (and, worse, interfere with the operator's running app).
+    original_port = cs.CONTROL_PORT
+    other = http.server.ThreadingHTTPServer(('127.0.0.1', 0), _Other)
+    squatted_port = other.server_address[1]
     threading.Thread(target=other.serve_forever, daemon=True).start()
     try:
-        httpd = cs.serve()                       # 8765 taken by a non-panel app
+        httpd = cs.serve(preferred_port=squatted_port)
         try:
-            assert cs.CONTROL_PORT != 8765       # bound a free fallback instead
+            assert cs.CONTROL_PORT != squatted_port
             assert httpd.server_address[1] == cs.CONTROL_PORT
         finally:
             httpd.server_close()
     finally:
         other.shutdown()
         other.server_close()
-        cs.CONTROL_PORT = 8765                    # restore module default
+        cs.CONTROL_PORT = original_port

@@ -1,6 +1,6 @@
 /* AlphaPOS desktop UI — generated; do not edit directly.
  * Run: node tools/compile_desktop_ui.js
- * source-sha256: c79eaae7fdf36f96e978725e783b6d86f7477946d2395b96392876bba6d3aee0
+ * source-sha256: 543e850882b571f2dab205be2956f632959668c64d96bc9de63c7416237a4c05
  */
 (function () {
 'use strict';
@@ -3612,7 +3612,7 @@ function RecoveryPanel() {
     api.cloud_resync_failed().then(r => {
       setBusy(false);
       const n = r && r.requeued || 0;
-      app.toast(t("tests.retryDone").replace("{n}", n));
+      app.toast(r && r.ok ? t("tests.retryDone").replace("{n}", n) : r && r.error || "Recovery push failed");
       refresh();
     });
   };

@@ -5,6 +5,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -1620,6 +1621,276 @@ def test_cloud_sync_bridge_treats_disabled_pull_as_an_explicit_skip(monkeypatch)
     assert result['ok'] is True
     assert result['pull']['success'] is True
     assert result['pull']['skipped'] is True
+
+
+@pytest.mark.django_db
+def test_dead_letter_recovery_does_not_hide_push_failure(monkeypatch, settings):
+    from base.models import SyncQueueRecord
+    from base.services.sync.service import SyncService
+    from desktop.bridge import Api
+
+    settings.SYNC_MAX_QUEUE_ATTEMPTS = 3
+    record_uuid = uuid.uuid4()
+    row = SyncQueueRecord.objects.create(
+        model_name='order',
+        record_uuid=record_uuid,
+        payload={'uuid': str(record_uuid)},
+        attempts=3,
+        last_error='[REJECTED] invalid settlement evidence',
+    )
+    monkeypatch.setattr(
+        SyncService,
+        'push',
+        lambda: {
+            'success': False,
+            'message': 'HTTP 401: Invalid authorization',
+        },
+    )
+    api = Api()
+    api.server.ensure_django = lambda: None
+
+    result = api.cloud_resync_failed()
+
+    row.refresh_from_db()
+    assert result['ok'] is False
+    assert result['requeued'] == 1
+    assert result['error'] == 'HTTP 401: Invalid authorization'
+    assert row.attempts == 0
+    assert row.last_error == (
+        '[RETRYING] [REJECTED] invalid settlement evidence'
+    )
+
+
+@pytest.mark.django_db
+def test_dead_letter_recovery_reports_only_confirmed_push_success(
+    monkeypatch, settings,
+):
+    from base.models import SyncQueueRecord
+    from base.services.sync.service import SyncService
+    from desktop.bridge import Api
+
+    settings.SYNC_MAX_QUEUE_ATTEMPTS = 3
+    record_uuid = uuid.uuid4()
+    SyncQueueRecord.objects.create(
+        model_name='order',
+        record_uuid=record_uuid,
+        payload={'uuid': str(record_uuid)},
+        attempts=3,
+        last_error='[REJECTED] repaired record',
+    )
+    monkeypatch.setattr(
+        SyncService,
+        'push',
+        lambda: {'success': True, 'synced': 1, 'errors': []},
+    )
+    api = Api()
+    api.server.ensure_django = lambda: None
+
+    result = api.cloud_resync_failed()
+
+    assert result['ok'] is True
+    assert result['requeued'] == 1
+    assert result['push']['synced'] == 1
+
+
+@pytest.mark.django_db
+def test_recovery_surfaces_explicit_rejections_even_when_attempt_cap_changes(
+    monkeypatch, settings,
+):
+    from base.models import SyncQueueRecord
+    from base.services.sync.service import SyncService
+    from desktop.bridge import Api
+
+    # This row was rejected under an older cap of 3. Raising or disabling the
+    # generic retry cap must not make the prefix-excluded row disappear from
+    # the recovery panel forever.
+    settings.SYNC_MAX_QUEUE_ATTEMPTS = 0
+    record_uuid = uuid.uuid4()
+    row = SyncQueueRecord.objects.create(
+        model_name='orderpayment',
+        record_uuid=record_uuid,
+        payload={'uuid': str(record_uuid)},
+        attempts=3,
+        last_error='[REJECTED] PAYMENT_CONFLICT: amount differs',
+    )
+    monkeypatch.setattr(
+        SyncService,
+        'push',
+        lambda: {'success': True, 'synced': 1, 'errors': []},
+    )
+    api = Api()
+    api.server.ensure_django = lambda: None
+
+    before = api.cloud_dead_letters()
+    recovered = api.cloud_resync_failed()
+
+    row.refresh_from_db()
+    assert before['total'] == 1
+    assert before['by_model'] == {'orderpayment': 1}
+    assert recovered['ok'] is True
+    assert recovered['requeued'] == 1
+    assert row.attempts == 0
+    assert row.last_error == (
+        '[RETRYING] [REJECTED] PAYMENT_CONFLICT: amount differs'
+    )
+
+
+@pytest.mark.django_db
+def test_dead_letter_recovery_retains_original_and_latest_push_failures(
+    monkeypatch, settings,
+):
+    from base.models import SyncQueueRecord
+    from base.services.sync.service import SyncService
+    from desktop.bridge import Api
+
+    settings.SYNC_MAX_QUEUE_ATTEMPTS = 3
+    record_uuid = uuid.uuid4()
+    row = SyncQueueRecord.objects.create(
+        model_name='order',
+        record_uuid=record_uuid,
+        payload={'uuid': str(record_uuid)},
+        attempts=3,
+        last_error='[REJECTED] PAYMENT_CONFLICT: total differs',
+    )
+
+    def failed_push():
+        row.refresh_from_db()
+        assert row.last_error == (
+            '[RETRYING] [REJECTED] PAYMENT_CONFLICT: total differs'
+        )
+        SyncQueueRecord.objects.filter(pk=row.pk).update(
+            last_error='HTTP 401: Invalid authorization',
+        )
+        return {
+            'success': False,
+            'message': 'HTTP 401: Invalid authorization',
+        }
+
+    monkeypatch.setattr(SyncService, 'push', failed_push)
+    api = Api()
+    api.server.ensure_django = lambda: None
+
+    result = api.cloud_resync_failed()
+
+    row.refresh_from_db()
+    assert result['ok'] is False
+    assert row.attempts == 0
+    assert row.last_error == (
+        '[RETRYING] [REJECTED] PAYMENT_CONFLICT: total differs'
+        ' | latest push: HTTP 401: Invalid authorization'
+    )
+
+
+@pytest.mark.django_db
+def test_dead_letter_recovery_is_repeatable_and_keeps_original_rejection(
+    monkeypatch, settings,
+):
+    from base.models import SyncQueueRecord
+    from base.services.sync.queue import SyncQueue
+    from base.services.sync.service import SyncService
+    from desktop.bridge import Api
+
+    settings.SYNC_MAX_QUEUE_ATTEMPTS = 3
+    record_uuid = uuid.uuid4()
+    row = SyncQueueRecord.objects.create(
+        model_name='order',
+        record_uuid=record_uuid,
+        payload={'uuid': str(record_uuid)},
+        attempts=3,
+        last_error='[REJECTED] PAYMENT_CONFLICT: amount differs',
+    )
+    failures = iter((
+        'HTTP 503: temporarily unavailable',
+        'HTTP 401: Invalid authorization',
+    ))
+
+    def failed_push():
+        error = next(failures)
+        row.refresh_from_db()
+        SyncQueue.mark_batch_deferred(
+            [str(record_uuid)],
+            error,
+            model_name='order',
+            generations={str(record_uuid): str(row.generation)},
+        )
+        return {'success': False, 'message': error}
+
+    monkeypatch.setattr(SyncService, 'push', failed_push)
+    api = Api()
+    api.server.ensure_django = lambda: None
+
+    first = api.cloud_resync_failed()
+    second = api.cloud_resync_failed()
+
+    row.refresh_from_db()
+    assert first['ok'] is False
+    assert first['requeued'] == 1
+    assert second['ok'] is False
+    assert second['requeued'] == 1
+    assert row.attempts == 0
+    assert row.last_error == (
+        '[RETRYING] [REJECTED] PAYMENT_CONFLICT: amount differs'
+        ' | latest push: HTTP 401: Invalid authorization'
+    )
+
+
+@pytest.mark.django_db
+def test_dead_letter_recovery_cas_does_not_clobber_fresh_rejection(
+    monkeypatch, settings,
+):
+    from base.models import SyncQueueRecord
+    from base.services.sync.service import SyncService
+    from desktop.bridge import Api
+    from django.db.models.query import QuerySet
+
+    settings.SYNC_MAX_QUEUE_ATTEMPTS = 3
+    record_uuid = uuid.uuid4()
+    row = SyncQueueRecord.objects.create(
+        model_name='order',
+        record_uuid=record_uuid,
+        payload={'uuid': str(record_uuid)},
+        attempts=3,
+        last_error='[REJECTED] original receiver diagnosis',
+    )
+    real_update = QuerySet.update
+    raced = False
+
+    def racing_update(queryset, **kwargs):
+        nonlocal raced
+        replacement = kwargs.get('last_error')
+        if (
+            not raced
+            and isinstance(replacement, str)
+            and replacement.startswith('[RETRYING]')
+            and ' | latest push:' in replacement
+        ):
+            raced = True
+            real_update(
+                SyncQueueRecord.objects.filter(pk=row.pk),
+                last_error='[REJECTED] fresh authoritative rejection',
+            )
+        return real_update(queryset, **kwargs)
+
+    def failed_push():
+        SyncQueueRecord.objects.filter(pk=row.pk).update(
+            last_error='HTTP 401: Invalid authorization',
+        )
+        return {
+            'success': False,
+            'message': 'HTTP 401: Invalid authorization',
+        }
+
+    monkeypatch.setattr(QuerySet, 'update', racing_update)
+    monkeypatch.setattr(SyncService, 'push', failed_push)
+    api = Api()
+    api.server.ensure_django = lambda: None
+
+    result = api.cloud_resync_failed()
+
+    row.refresh_from_db()
+    assert result['ok'] is False
+    assert raced is True
+    assert row.last_error == '[REJECTED] fresh authoritative rejection'
 
 
 def test_database_flush_clears_old_setup_signature_and_reports_restart_failure(
