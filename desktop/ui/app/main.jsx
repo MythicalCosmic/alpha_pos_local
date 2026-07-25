@@ -7,9 +7,9 @@ const ACCENTS = ["#1e6b4c", "#27486e", "#8a4a2c", "#5b4a7a"];
 
 // Live cloud-sync pill labels (self-contained, trilingual — no i18n.js surgery).
 const SYNC_L = {
-  en: { live: "Sync live", off: "Sync off", down: "Not connected", busy: "Syncing…", pending: "queued", closePending: "Shift close pending", closeConflict: "Shift close conflict" },
-  uz: { live: "Sinx faol", off: "Sinx o‘chiq", down: "Ulanmagan", busy: "Sinxlash…", pending: "navbatda", closePending: "Smena yopilishi kutilmoqda", closeConflict: "Smena yopilishida ziddiyat" },
-  ru: { live: "Синхр. активна", off: "Синхр. выкл", down: "Нет связи", busy: "Синхр…", pending: "в очереди", closePending: "Закрытие смены ожидается", closeConflict: "Конфликт закрытия смены" },
+  en: { live: "Sync live", off: "Sync off", down: "Not connected", busy: "Syncing…", pending: "queued", replayPending: "Full cloud replay pending", closePending: "Shift close pending", closeConflict: "Shift close conflict" },
+  uz: { live: "Sinx faol", off: "Sinx o‘chiq", down: "Ulanmagan", busy: "Sinxlash…", pending: "navbatda", replayPending: "Bulutni to‘liq qayta olish kutilmoqda", closePending: "Smena yopilishi kutilmoqda", closeConflict: "Smena yopilishida ziddiyat" },
+  ru: { live: "Синхр. активна", off: "Синхр. выкл", down: "Нет связи", busy: "Синхр…", pending: "в очереди", replayPending: "Ожидается полная загрузка из облака", closePending: "Закрытие смены ожидается", closeConflict: "Конфликт закрытия смены" },
 };
 
 const NAV = [
@@ -435,11 +435,18 @@ function SyncPill({ sync, busy, onSync, sl }) {
   const closeState = String(close.state || "").toUpperCase();
   const closeConflict = closeState === "CONFLICT" || Number(close.conflict_count || 0) > 0;
   const closePending = !closeConflict && (closeState === "PENDING" || Number(close.pending_count || 0) > 0);
-  const color = closeConflict ? "#d23b3b" : (closePending ? "var(--warn)" : (!enabled ? "var(--ink-3)" : (online ? "var(--ok)" : "#d23b3b")));
-  const label = busy ? sl.busy : (closeConflict ? sl.closeConflict : (closePending ? sl.closePending : (!enabled ? sl.off : (online ? sl.live : sl.down))));
+  const replayPending = !!sync.full_pull_pending || String(sync.full_pull_state || "").toLowerCase() === "pending";
+  const color = closeConflict ? "#d23b3b" : ((closePending || replayPending) ? "var(--warn)" : (!enabled ? "var(--ink-3)" : (online ? "var(--ok)" : "#d23b3b")));
+  const label = busy ? sl.busy : (closeConflict ? sl.closeConflict : (closePending ? sl.closePending : (replayPending ? sl.replayPending : (!enabled ? sl.off : (online ? sl.live : sl.down)))));
   const pending = sync.pending_count || 0;
-  const title = [label, close.message || "", pending ? (pending + " " + sl.pending) : "", sync.last_error || ""]
-    .filter(Boolean).join("   ·   ");
+  const title = [
+    label,
+    close.message || "",
+    replayPending ? sl.replayPending : "",
+    pending ? (pending + " " + sl.pending) : "",
+    sync.last_pull_error || "",
+    sync.last_error || "",
+  ].filter((value, index, all) => value && all.indexOf(value) === index).join("   ·   ");
   return (
     <button title={title} onClick={onSync} disabled={busy}
       style={{

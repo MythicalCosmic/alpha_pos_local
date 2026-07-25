@@ -1685,6 +1685,37 @@ def test_cloud_sync_bridge_treats_disabled_pull_as_an_explicit_skip(monkeypatch)
     assert result['pull']['skipped'] is True
 
 
+def test_force_pull_bridge_commits_replay_before_transport(monkeypatch):
+    from base.services.sync.service import SyncService
+    from base.services.sync.status import SyncStatus
+    from desktop.bridge import Api
+
+    calls = []
+    monkeypatch.setattr(
+        SyncStatus,
+        'request_full_pull',
+        classmethod(lambda cls: calls.append('requested') or True),
+    )
+    monkeypatch.setattr(
+        SyncService,
+        'pull_from_cloud',
+        classmethod(lambda cls: {
+            'success': False,
+            'message': 'Cannot reach cloud server',
+            'offline': True,
+        }),
+    )
+    api = Api()
+    api.server.ensure_django = lambda: None
+
+    result = api.cloud_force_pull()
+
+    assert calls == ['requested']
+    assert result['ok'] is False
+    assert result['replay_requested'] is True
+    assert result['will_retry'] is True
+
+
 @pytest.mark.django_db
 def test_dead_letter_recovery_does_not_hide_push_failure(monkeypatch, settings):
     from base.models import SyncQueueRecord

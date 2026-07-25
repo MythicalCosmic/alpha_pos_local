@@ -19,6 +19,7 @@ def _start_active_shift(cashier, branch_id):
         status='ACTIVE',
         start_time=timezone.now(),
         branch_id=branch_id,
+        device_id='pytest-terminal',
     )
 
 
@@ -383,6 +384,7 @@ class TestSplitPayment:
         Shift.objects.create(
             user=cashier_user, status='ACTIVE', start_time=timezone.now(),
             branch_id=order.branch_id,
+            device_id='pytest-terminal',
         )
         result, status = CustomerOrderService.mark_as_paid(
             order.id, cashier_id=cashier_user.id, user_id=cashier_user.id, user_role='CASHIER',
@@ -463,6 +465,7 @@ class TestSplitPayment:
         Shift.objects.create(
             user=cashier_user, status='ACTIVE', start_time=timezone.now(),
             branch_id=order.branch_id,
+            device_id='pytest-terminal',
         )
         # 10% off -> effective 9; pay 5 HUMO + 10 CASH (6 of the cash is change)
         result, status = CustomerOrderService.mark_as_paid(
@@ -547,9 +550,14 @@ class TestCashierShiftSelfService:
         from core.shifts.service import ShiftService
         from base.models import Shift
 
+        version_before_login = cashier_user.sync_version
         res, st = AuthService.login(
             'cashier1@test.local', 'cashierpass', '127.0.0.1', 'pytest')
         assert st == 200
+        cashier_user.refresh_from_db()
+        assert cashier_user.sync_version == version_before_login
+        assert cashier_user.last_login_at is not None
+        assert cashier_user.last_login_api == '127.0.0.1'
         # Login opened no shift as a side effect.
         assert ShiftRepository.get_active_for_user(cashier_user.id) is None
         assert Shift.objects.filter(user=cashier_user, status='ACTIVE').count() == 0
@@ -576,6 +584,35 @@ class TestCashierShiftSelfService:
         active = ShiftRepository.get_active_for_user(cashier_user.id)
         assert active is not None
         assert active.status == 'ACTIVE'
+
+    def test_local_password_change_cannot_diverge_cloud_identity(
+        self, cashier_user,
+    ):
+        from customers.services.auth_service import AuthService
+
+        old_hash = cashier_user.password
+        old_version = cashier_user.sync_version
+        login, status = AuthService.login(
+            'cashier1@test.local', 'cashierpass', '127.0.0.1', 'pytest',
+        )
+        assert status == 200
+
+        result, status = AuthService.change_password(
+            login['data']['token'], 'cashierpass', 'different-password',
+        )
+
+        cashier_user.refresh_from_db()
+        assert status == 403
+        assert result['code'] == 'cloud_managed_credentials'
+        assert 'cloud administrator' in result['message']
+        assert cashier_user.password == old_hash
+        assert cashier_user.sync_version == old_version
+
+        result, status = AuthService.change_password(
+            login['data']['token'], 'wrong-current-password', 'another-password',
+        )
+        assert status == 403
+        assert result['code'] == 'cloud_managed_credentials'
 
 
 class TestInstantProducts:

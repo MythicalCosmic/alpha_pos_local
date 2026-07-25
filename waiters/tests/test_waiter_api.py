@@ -51,6 +51,47 @@ def _order(waiter, status='PREPARING', is_paid=False, table=None, total='10.00')
 
 
 @pytest.mark.django_db
+def test_waiter_login_does_not_create_replicated_user_generation():
+    from waiters.services.auth_service import WaiterAuthService
+
+    waiter = _waiter()
+    version_before = waiter.sync_version
+
+    result, status = WaiterAuthService.login(
+        email=waiter.email,
+        password='1234',
+        ip_address='127.0.0.1',
+        user_agent='pytest',
+    )
+
+    assert status == 200, result
+    token = result['data']['token']
+    waiter.refresh_from_db()
+    assert waiter.sync_version == version_before
+    assert waiter.last_login_at is not None
+    assert waiter.last_login_api == '127.0.0.1'
+
+    old_hash = waiter.password
+    result, status = WaiterAuthService.change_password(
+        token, '1234', 'different-password',
+    )
+    waiter.refresh_from_db()
+    assert status == 403
+    assert result['code'] == 'cloud_managed_credentials'
+    assert 'cloud administrator' in result['message']
+    assert waiter.password == old_hash
+    assert waiter.sync_version == version_before
+
+    result, status = WaiterAuthService.change_password(
+        token,
+        'wrong-current-password',
+        'another-password',
+    )
+    assert status == 403
+    assert result['code'] == 'cloud_managed_credentials'
+
+
+@pytest.mark.django_db
 def test_waiter_cancel_uses_live_payment_rows_only():
     from decimal import Decimal
     from base.models import CashRegister, OrderPayment, Shift

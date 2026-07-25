@@ -27,7 +27,7 @@ ssh -i "$RELEASE_KEY" "${RELEASE_USER}@${CONTROL_HOST}"
 
 Run on **this PC** (the build box — it has the signing keys in `update_keys/`):
 
-**Required cashier preflight:** Alpha POS Desktop 1.0.35 supports Smart POS
+**Required cashier preflight:** Alpha POS Desktop 1.0.36 supports Smart POS
 **0.0.5 or newer**. Earlier cashier builds could submit payment with an empty
 body; the hardened backend intentionally rejects that request instead of
 silently recording it as cash.

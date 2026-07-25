@@ -24,9 +24,42 @@ EDITION = 'local'
 # written at cashier login has a table to land in.
 INSTALLED_APPS = build_installed_apps(['customers', 'waiters', 'couriers'])  # noqa: F405
 
-# Local-only request/response evidence. It sits after authentication middleware
-# so cashier identity is available, and never ships on the cloud server edition.
-MIDDLEWARE = [*MIDDLEWARE, 'desktop.order_http_audit.OrderMutationEvidenceMiddleware']  # noqa: F405
+# Local-only request/response evidence. It must wrap LoginTransitionGuard so a
+# rejected cookie/Bearer conflict is still durably captured, while remaining
+# after Django's AuthenticationMiddleware. It never ships on the cloud edition.
+_ORDER_HTTP_AUDIT_MIDDLEWARE = (
+    'desktop.order_http_audit.OrderMutationEvidenceMiddleware'
+)
+_LOGIN_TRANSITION_GUARD_MIDDLEWARE = (
+    'base.middlewares.login_transition_guard.LoginTransitionGuardMiddleware'
+)
+_DJANGO_AUTH_MIDDLEWARE = (
+    'django.contrib.auth.middleware.AuthenticationMiddleware'
+)
+
+
+def _with_order_http_audit(middleware):
+    ordered = [
+        entry for entry in middleware
+        if entry != _ORDER_HTTP_AUDIT_MIDDLEWARE
+    ]
+    auth_index = ordered.index(_DJANGO_AUTH_MIDDLEWARE)
+    if _LOGIN_TRANSITION_GUARD_MIDDLEWARE in ordered:
+        guard_index = ordered.index(_LOGIN_TRANSITION_GUARD_MIDDLEWARE)
+        if guard_index <= auth_index:
+            raise RuntimeError(
+                'LoginTransitionGuardMiddleware must follow '
+                'AuthenticationMiddleware'
+            )
+        ordered.insert(guard_index, _ORDER_HTTP_AUDIT_MIDDLEWARE)
+    else:
+        # Compatibility with an older pinned core during a staged upgrade.
+        # Once the guard is present, the branch above guarantees wrapping.
+        ordered.insert(auth_index + 1, _ORDER_HTTP_AUDIT_MIDDLEWARE)
+    return ordered
+
+
+MIDDLEWARE = _with_order_http_audit(MIDDLEWARE)  # noqa: F405
 
 ROOT_URLCONF = 'config.urls'
 WSGI_APPLICATION = 'config.wsgi.application'

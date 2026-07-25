@@ -37,3 +37,33 @@ def test_raw_evidence_manage_action_opens_its_actual_configuration_page():
         '<Btn size="sm" variant="ghost" '
         'onClick={() => app.nav("localAudit")}'
     ) in source
+
+
+def test_sync_recovery_actions_wrap_in_the_supported_narrow_window():
+    source = (
+        ROOT / 'desktop' / 'ui' / 'app' / 'screens-ops.jsx'
+    ).read_text(encoding='utf-8')
+
+    assert 'gap: 12, flexWrap: "wrap"' in source
+
+
+def test_sync_pill_surfaces_durable_full_replay_and_pull_errors():
+    source = (
+        ROOT / 'desktop' / 'ui' / 'app' / 'main.jsx'
+    ).read_text(encoding='utf-8')
+
+    assert source.count('replayPending:') == 3
+    assert 'sync.full_pull_pending' in source
+    assert 'sync.full_pull_state' in source
+    assert 'sync.last_pull_error' in source
+
+
+def test_force_pull_saved_replay_is_reported_as_queued_not_failed():
+    source = (
+        ROOT / 'desktop' / 'ui' / 'app' / 'screens-ops.jsx'
+    ).read_text(encoding='utf-8')
+
+    assert 'r && r.replay_requested && r.will_retry' in source
+    queued = source.index('? t("tests.forcePullQueued")')
+    raw_error = source.index(': (r && r.error) || t("tests.forcePullQueued")')
+    assert queued < raw_error

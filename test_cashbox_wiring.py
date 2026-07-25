@@ -41,7 +41,12 @@ def test_cashier_can_record_drawer_expense_end_to_end():
     cashier = User.objects.create(
         first_name='Cash', last_name='Ier', email='till@t.local',
         role='CASHIER', status='ACTIVE', password=hash_password('1234'))
-    shift = Shift.objects.create(user=cashier, start_time=timezone.now(), status='ACTIVE')
+    shift = Shift.objects.create(
+        user=cashier,
+        start_time=timezone.now(),
+        status='ACTIVE',
+        device_id='pytest-terminal',
+    )
     sale = Order.objects.create(
         user=cashier,
         cashier=cashier,

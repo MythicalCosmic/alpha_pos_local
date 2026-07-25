@@ -1,6 +1,6 @@
 /* AlphaPOS desktop UI — generated; do not edit directly.
  * Run: node tools/compile_desktop_ui.js
- * source-sha256: 543e850882b571f2dab205be2956f632959668c64d96bc9de63c7416237a4c05
+ * source-sha256: 5382173d1a2056a684751ed379958fc3149211083eff4002347c5542e24a5cbe
  */
 (function () {
 'use strict';
@@ -298,6 +298,10 @@ window.I18N = {
     "tests.stuckSome": "stuck and not reaching the cloud",
     "tests.retryStuck": "Retry stuck records",
     "tests.retryDone": "Requeued: {n}",
+    "tests.forcePull": "Replay cloud updates",
+    "tests.forcePullConfirm": "Replay the complete cloud feed? Existing local financial evidence stays protected, but this can take several minutes.",
+    "tests.forcePullDone": "Complete cloud replay finished.",
+    "tests.forcePullQueued": "Replay was saved and will retry automatically.",
     "fis.title": "Fiscalization",
     "fis.sub": "Off = fully bypassed (no receipts) — the default for this launch. Mock = local test. Sandbox / Live = real provider when you go fiscal.",
     "fis.mode": "Mode",
@@ -554,6 +558,10 @@ window.I18N = {
     "tests.stuckSome": "tiqilib qolgan va bulutga yetmayapti",
     "tests.retryStuck": "Tiqilganlarni qayta yuborish",
     "tests.retryDone": "Navbatga qaytarildi: {n}",
+    "tests.forcePull": "Bulut yangilanishlarini qayta olish",
+    "tests.forcePullConfirm": "Butun bulut oqimi qayta olinsinmi? Mahalliy moliyaviy dalillar himoyalangan, ammo bu bir necha daqiqa olishi mumkin.",
+    "tests.forcePullDone": "Bulutni to'liq qayta olish tugadi.",
+    "tests.forcePullQueued": "Qayta olish saqlandi va avtomatik takrorlanadi.",
     "fis.title": "Fiskalizatsiya",
     "fis.sub": "O'chiq = to'liq chetlab o'tilgan (cheksiz) — ushbu launch uchun standart. Mock = lokal test. Sandbox / Live = haqiqiy provayder.",
     "fis.mode": "Rejim",
@@ -810,6 +818,10 @@ window.I18N = {
     "tests.stuckSome": "застряло и не доходит до облака",
     "tests.retryStuck": "Повторить застрявшие",
     "tests.retryDone": "Возвращено в очередь: {n}",
+    "tests.forcePull": "Повторить загрузку из облака",
+    "tests.forcePullConfirm": "Повторно загрузить весь облачный поток? Локальные финансовые данные останутся защищены, но это может занять несколько минут.",
+    "tests.forcePullDone": "Полная повторная загрузка из облака завершена.",
+    "tests.forcePullQueued": "Запрос сохранен и будет повторяться автоматически.",
     "fis.title": "Фискализация",
     "fis.sub": "Выкл = полностью отключена (без чеков) — по умолчанию. Mock = локальный тест. Sandbox / Live = реальный провайдер.",
     "fis.mode": "Режим",
@@ -3596,6 +3608,7 @@ function RecoveryPanel() {
   } = app;
   const [stuck, setStuck] = React.useState(null);
   const [busy, setBusy] = React.useState(false);
+  const [pullBusy, setPullBusy] = React.useState(false);
   const refresh = React.useCallback(() => {
     api.cloud_dead_letters().then(r => {
       if (r && r.ok) setStuck({
@@ -3618,6 +3631,15 @@ function RecoveryPanel() {
   };
   const total = stuck ? stuck.total : null;
   const models = stuck ? Object.keys(stuck.by_model) : [];
+  const forcePull = () => {
+    if (!window.confirm(t("tests.forcePullConfirm"))) return;
+    setPullBusy(true);
+    api.cloud_force_pull().then(r => {
+      setPullBusy(false);
+      const replayQueued = !!(r && r.replay_requested && r.will_retry);
+      app.toast(r && r.ok ? t("tests.forcePullDone") : replayQueued ? t("tests.forcePullQueued") : r && r.error || t("tests.forcePullQueued"));
+    });
+  };
   return React.createElement(Card, {
     title: t("tests.recovery"),
     tone: total > 0 ? "warn" : undefined,
@@ -3668,7 +3690,12 @@ function RecoveryPanel() {
     icon: "refresh",
     onClick: retry,
     disabled: busy || !total
-  }, busy ? t("common.running") : t("tests.retryStuck"))));
+  }, busy ? t("common.running") : t("tests.retryStuck")), React.createElement(Btn, {
+    variant: "ghost",
+    icon: "download",
+    onClick: forcePull,
+    disabled: pullBusy
+  }, pullBusy ? t("common.running") : t("tests.forcePull"))));
 }
 function TestsScreen() {
   const app = useApp();
@@ -4287,6 +4314,7 @@ const SYNC_L = {
     down: "Not connected",
     busy: "Syncing…",
     pending: "queued",
+    replayPending: "Full cloud replay pending",
     closePending: "Shift close pending",
     closeConflict: "Shift close conflict"
   },
@@ -4296,6 +4324,7 @@ const SYNC_L = {
     down: "Ulanmagan",
     busy: "Sinxlash…",
     pending: "navbatda",
+    replayPending: "Bulutni to‘liq qayta olish kutilmoqda",
     closePending: "Smena yopilishi kutilmoqda",
     closeConflict: "Smena yopilishida ziddiyat"
   },
@@ -4305,6 +4334,7 @@ const SYNC_L = {
     down: "Нет связи",
     busy: "Синхр…",
     pending: "в очереди",
+    replayPending: "Ожидается полная загрузка из облака",
     closePending: "Закрытие смены ожидается",
     closeConflict: "Конфликт закрытия смены"
   }
@@ -4921,10 +4951,11 @@ function SyncPill({
   const closeState = String(close.state || "").toUpperCase();
   const closeConflict = closeState === "CONFLICT" || Number(close.conflict_count || 0) > 0;
   const closePending = !closeConflict && (closeState === "PENDING" || Number(close.pending_count || 0) > 0);
-  const color = closeConflict ? "#d23b3b" : closePending ? "var(--warn)" : !enabled ? "var(--ink-3)" : online ? "var(--ok)" : "#d23b3b";
-  const label = busy ? sl.busy : closeConflict ? sl.closeConflict : closePending ? sl.closePending : !enabled ? sl.off : online ? sl.live : sl.down;
+  const replayPending = !!sync.full_pull_pending || String(sync.full_pull_state || "").toLowerCase() === "pending";
+  const color = closeConflict ? "#d23b3b" : closePending || replayPending ? "var(--warn)" : !enabled ? "var(--ink-3)" : online ? "var(--ok)" : "#d23b3b";
+  const label = busy ? sl.busy : closeConflict ? sl.closeConflict : closePending ? sl.closePending : replayPending ? sl.replayPending : !enabled ? sl.off : online ? sl.live : sl.down;
   const pending = sync.pending_count || 0;
-  const title = [label, close.message || "", pending ? pending + " " + sl.pending : "", sync.last_error || ""].filter(Boolean).join("   ·   ");
+  const title = [label, close.message || "", replayPending ? sl.replayPending : "", pending ? pending + " " + sl.pending : "", sync.last_pull_error || "", sync.last_error || ""].filter((value, index, all) => value && all.indexOf(value) === index).join("   ·   ");
   return React.createElement("button", {
     title: title,
     onClick: onSync,

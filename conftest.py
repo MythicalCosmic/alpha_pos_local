@@ -33,6 +33,12 @@ def _clear_caches():
 
 
 @pytest.fixture(autouse=True)
+def _terminal_device(settings):
+    """Django endpoint tests run as one real, device-identified POS terminal."""
+    settings.DEVICE_ID = 'pytest-terminal'
+
+
+@pytest.fixture(autouse=True)
 def _active_license(db, _clear_caches):
     """Every test should run against an ACTIVE license — the kill switch
     middleware otherwise refuses every business endpoint with 503 (since

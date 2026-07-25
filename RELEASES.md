@@ -16,7 +16,7 @@ each till:  on launch, updater.py checks /updates, downloads the newer signed bu
 
 ## Cashier-frontend compatibility gate
 
-Alpha POS Desktop 1.0.35 requires **Smart POS 0.0.5 or newer** on every
+Alpha POS Desktop 1.0.36 requires **Smart POS 0.0.5 or newer** on every
 cashier station. Early Smart POS builds sent an empty checkout body. The
 desktop backend no longer treats that ambiguous request as cash; a non-zero
 order without valid tender evidence is intentionally rejected.

@@ -1,17 +1,15 @@
 import logging
-
-logger = logging.getLogger(__name__)
 import secrets
 from datetime import timedelta
 from django.conf import settings
 from django.utils import timezone
-from django.contrib.auth.password_validation import validate_password
-from django.core.exceptions import ValidationError
 from base.repositories import UserRepository, SessionRepository
-from base.security.hashing import verify_password, verify_password_dummy, hash_password
+from base.security.hashing import verify_password, verify_password_dummy
 from base.helpers.response import ServiceResponse
 from notifications.handlers.shift import ShiftNotification
 from base.models import User
+
+logger = logging.getLogger(__name__)
 
 SESSION_TTL_DAYS = 7
 
@@ -86,9 +84,17 @@ class AuthService:
             expires_at=timezone.now() + timedelta(days=SESSION_TTL_DAYS),
         )
 
-        user.last_login_at = timezone.now()
-        user.last_login_api = ip_address[:20]
-        user.save(update_fields=['last_login_at', 'last_login_api'])
+        # Login telemetry is node-local runtime state, not a user-management
+        # edit. Calling SyncMixin.save() here used to increment the cloud-owned
+        # User's sync_version on every PIN entry and enqueue the identity for an
+        # outbound push, eventually making real cloud edits look stale.
+        login_at = timezone.now()
+        User._base_manager.filter(pk=user.pk).update(
+            last_login_at=login_at,
+            last_login_api=(ip_address or '')[:20],
+        )
+        user.last_login_at = login_at
+        user.last_login_api = (ip_address or '')[:20]
 
         if user.role == User.RoleChoices.CASHIER:
             user_name = f'{user.first_name} {user.last_name}'.strip()
@@ -157,22 +163,15 @@ class AuthService:
         session, user = AuthService._get_session_user(session_key)
         if not user:
             return ServiceResponse.unauthorized("Invalid session")
-        if not verify_password(current_password, user.password):
-            return ServiceResponse.error("Current password is incorrect")
-        try:
-            validate_password(new_password, user=user)
-        except ValidationError as exc:
-            return ServiceResponse.validation_error(
-                errors={"new_password": list(exc.messages)},
-                message="Password does not meet requirements",
-            )
-        user.password = hash_password(new_password)
-        user.save(update_fields=['password'])
-        # Revoke any other live sessions so a leaked token can't survive
-        # the user's own remediation. The current session stays — the user
-        # just authenticated with the old password to reach this point.
-        SessionRepository.delete_by_user_except(user, session_key)
-        return ServiceResponse.success(message="Password changed")
+        return {
+            "success": False,
+            "code": "cloud_managed_credentials",
+            "message": (
+                "Cashier credentials are managed by the cloud administrator. "
+                "Change the password there so every terminal stays identical."
+            ),
+        }, 403
+
 
     @staticmethod
     def get_active_sessions(session_key):

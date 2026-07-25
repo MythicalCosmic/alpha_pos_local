@@ -771,6 +771,30 @@ class Api:
         return _sync_response(SyncService.pull_from_cloud(), operation='Cloud pull')
 
     @_safe
+    def cloud_force_pull(self):
+        """Durably rewind and replay the complete cloud feed.
+
+        Clearing the cursor is committed before transport begins. If the cloud
+        is offline or another pull owns the lease, the background worker still
+        sees the blank cursor and completes the replay later; a button click can
+        therefore never be falsely reported as having consumed the request.
+        """
+        self.server.ensure_django()
+        from base.services.sync.service import SyncService
+        from base.services.sync.status import SyncStatus
+
+        if not SyncStatus.request_full_pull():
+            return {
+                'ok': False,
+                'error': 'Full pull is available only on a configured local branch.',
+            }
+        result = SyncService.pull_from_cloud()
+        response = _sync_response(result, operation='Full cloud replay')
+        response['replay_requested'] = True
+        response['will_retry'] = not response['ok']
+        return response
+
+    @_safe
     def cloud_sync_now(self):
         """Push pending local records + pull cloud changes right now — the same
         thing the background worker does every interval, on demand."""

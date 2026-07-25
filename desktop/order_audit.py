@@ -56,6 +56,10 @@ _RECENT_HOURS = 2
 _MAX_PLAIN_TELEGRAM_BYTES = 45 * 1024 * 1024
 _AUTO_SEND_SECONDS = 30
 _AUTO_SEGMENT_BYTES = 8 * 1024 * 1024
+_MIB = 1024 * 1024
+_DEFAULT_MAX_DATASET_BYTES = 128 * _MIB
+_DEFAULT_MAX_ARCHIVE_BYTES = 4096 * _MIB
+_DEFAULT_ARCHIVE_RETENTION_DAYS = 7
 _SENSITIVE_KEY_RE = re.compile(
     r'(?:password|passwd|secret|token|authorization|api[_-]?key|private[_-]?key)',
     re.IGNORECASE,
@@ -510,6 +514,47 @@ def _auto_send_enabled_from_state() -> bool:
     return settings.get('auto_send', True) is not False
 
 
+def _configured_storage_limits() -> tuple[int, int, int]:
+    """Return bounded, operator-configurable forensic storage limits."""
+    try:
+        current = config_store.read_config()
+    except Exception:  # noqa: BLE001 - defaults keep the collector available
+        logger.warning(
+            'order audit storage settings unreadable; using safe defaults',
+            exc_info=True,
+        )
+        current = {}
+
+    def megabytes(key: str, default_bytes: int, *, maximum_mb: int) -> int:
+        try:
+            value = int(str(current.get(key, '') or '').strip())
+        except (TypeError, ValueError):
+            value = default_bytes // _MIB
+        return min(max(value, 1), maximum_mb) * _MIB
+
+    try:
+        retention_days = int(str(
+            current.get('ORDER_AUDIT_ARCHIVE_RETENTION_DAYS', '')
+            or _DEFAULT_ARCHIVE_RETENTION_DAYS
+        ).strip())
+    except (TypeError, ValueError):
+        retention_days = _DEFAULT_ARCHIVE_RETENTION_DAYS
+
+    return (
+        megabytes(
+            'ORDER_AUDIT_MAX_FILE_MB',
+            _DEFAULT_MAX_DATASET_BYTES,
+            maximum_mb=1024,
+        ),
+        megabytes(
+            'ORDER_AUDIT_MAX_ARCHIVE_MB',
+            _DEFAULT_MAX_ARCHIVE_BYTES,
+            maximum_mb=16384,
+        ),
+        min(max(retention_days, 1), 365),
+    )
+
+
 def _redact_sync_value(value: Any, *, key: str = '') -> Any:
     """Preserve business evidence while refusing to export credentials.
 
@@ -543,9 +588,38 @@ def _redact_sync_value(value: Any, *, key: str = '') -> Any:
 
 
 class OrderAuditCollector:
-    def __init__(self, *, dataset: Path = RAW_DATASET, index_file: Path = INDEX_FILE):
+    def __init__(
+        self, *, dataset: Path = RAW_DATASET, index_file: Path = INDEX_FILE,
+        max_dataset_bytes: int | None = None,
+        max_archive_bytes: int | None = None,
+        archive_retention_days: int | None = None,
+    ):
         self.dataset = Path(dataset)
         self.index_file = Path(index_file)
+        configured_file, configured_archive, configured_days = (
+            _configured_storage_limits()
+        )
+        self.max_dataset_bytes = max(
+            1,
+            int(
+                configured_file
+                if max_dataset_bytes is None else max_dataset_bytes
+            ),
+        )
+        self.max_archive_bytes = max(
+            0,
+            int(
+                configured_archive
+                if max_archive_bytes is None else max_archive_bytes
+            ),
+        )
+        self.archive_retention_days = max(
+            0,
+            int(
+                configured_days
+                if archive_retention_days is None else archive_retention_days
+            ),
+        )
         # Raw evidence contains customer/order PII and is deliberately reachable
         # through the owner support workflow. It must not inherit a broad
         # Windows profile ACL. Repair every existing object with the correct
@@ -563,17 +637,156 @@ class OrderAuditCollector:
         self._last_auto_send_at: str | None = None
         self._delivery_errors: dict[str, str] = {}
         self._delivery_offsets: dict[str, int] = {}
+        self._archive_delivery_offsets: dict[str, dict[str, int]] = {}
         self._last_record_sha256 = ''
         self._last_error = ''
+        self._last_rotation_at: str | None = None
+        self._last_pruned_at: str | None = None
+        self._pruned_archive_count = 0
         self._index_dirty = 0
         self._index_written_at = 0.0
         self._load_index()
+        if self._prune_archives():
+            self._index_dirty += 1
+            self._flush_index(force=True)
+
+    def _archive_files(self) -> list[Path]:
+        pattern = f'{self.dataset.stem}.*{self.dataset.suffix}'
+        return sorted(
+            (
+                path for path in self.dataset.parent.glob(pattern)
+                if path.is_file() and path != self.dataset
+            ),
+            key=lambda path: path.name,
+        )
+
+    def _evidence_files(self) -> list[Path]:
+        files = self._archive_files()
+        if self.dataset.exists():
+            files.append(self.dataset)
+        return files
+
+    def _archive_manifest(self) -> list[dict[str, Any]]:
+        manifest = []
+        for path in self._archive_files():
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            manifest.append({
+                'name': path.name,
+                'bytes': stat.st_size,
+                'mtime_ns': stat.st_mtime_ns,
+            })
+        return manifest
+
+    def _delete_archive(self, path: Path) -> bool:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logger.warning(
+                'order audit archive could not be pruned: %s',
+                path.name,
+                exc_info=True,
+            )
+            return False
+        self._archive_delivery_offsets.pop(path.name, None)
+        self._pruned_archive_count += 1
+        self._last_pruned_at = _iso(_utc_now())
+        logger.info('pruned retained order audit archive %s', path.name)
+        return True
+
+    def _prune_archives(self) -> bool:
+        """Enforce both age and aggregate-byte retention across old segments."""
+        changed = False
+        archives = self._archive_files()
+        if self.archive_retention_days:
+            cutoff = _utc_now().timestamp() - (
+                self.archive_retention_days * 24 * 60 * 60
+            )
+            for path in list(archives):
+                try:
+                    expired = path.stat().st_mtime < cutoff
+                except OSError:
+                    expired = False
+                if expired and self._delete_archive(path):
+                    changed = True
+            archives = self._archive_files()
+
+        sized: list[tuple[Path, int]] = []
+        for path in archives:
+            try:
+                sized.append((path, path.stat().st_size))
+            except OSError:
+                continue
+        total = sum(size for _path, size in sized)
+        for path, size in sized:
+            if total <= self.max_archive_bytes:
+                break
+            if self._delete_archive(path):
+                total -= size
+                changed = True
+        return changed
+
+    def _rotate_if_needed(self, incoming_bytes: int) -> bool:
+        """Start a fresh append-only segment before the active file exceeds cap."""
+        try:
+            current_size = self.dataset.stat().st_size
+        except FileNotFoundError:
+            return False
+        if (
+            current_size <= 0
+            or current_size + max(0, int(incoming_bytes))
+            <= self.max_dataset_bytes
+        ):
+            return False
+
+        # Keep a crash-truncated tail isolated from the first JSON object in the
+        # next segment when all segments are later concatenated for export.
+        with self.dataset.open('ab', buffering=0) as current:
+            with self.dataset.open('rb') as check:
+                check.seek(-1, os.SEEK_END)
+                if check.read(1) != b'\n':
+                    current.write(b'\n')
+                    os.fsync(current.fileno())
+
+        stamp = _utc_now().strftime('%Y%m%dT%H%M%S%fZ')
+        archive = self.dataset.with_name(
+            f'{self.dataset.stem}.{stamp}.{uuid.uuid4().hex[:8]}'
+            f'{self.dataset.suffix}'
+        )
+        os.replace(self.dataset, archive)
+        self.dataset.touch()
+        config_store._harden_windows_private_path(self.dataset)
+
+        # Delivery cursors are segment-relative. Preserve the old generation's
+        # cursors, then start all known recipients at byte zero in the new file.
+        self._archive_delivery_offsets[archive.name] = {
+            str(chat_id): max(0, int(offset))
+            for chat_id, offset in self._delivery_offsets.items()
+        }
+        self._delivery_offsets = {
+            str(chat_id): 0 for chat_id in self._delivery_offsets
+        }
+        self._last_rotation_at = _iso(_utc_now())
+        self._index_dirty += 1
+        self._prune_archives()
+        # Persist the generation change before the next append. If power fails
+        # in that tiny gap, old evidence and its delivery cursors remain known.
+        self._flush_index(force=True)
+        return True
 
     def _load_index(self) -> None:
         # The index is only a deduplication cache, never the evidence source. If
         # the raw file was intentionally removed, ignore a stale cache and let
         # the startup sweep rebuild a complete dataset.
-        if not self.dataset.exists() or self.dataset.stat().st_size == 0:
+        evidence_files = [
+            path for path in self._evidence_files()
+            if path.exists() and path.stat().st_size > 0
+        ]
+        if not evidence_files:
             return
         data: dict[str, Any] = {}
         try:
@@ -596,17 +809,93 @@ class OrderAuditCollector:
                 str(key): max(0, int(value or 0))
                 for key, value in (data.get('delivery_offsets') or {}).items()
             }
+            self._archive_delivery_offsets = {
+                str(name): {
+                    str(key): max(0, int(value or 0))
+                    for key, value in (offsets or {}).items()
+                }
+                for name, offsets in (
+                    data.get('archive_delivery_offsets') or {}
+                ).items()
+                if isinstance(offsets, dict)
+            }
             self._last_record_sha256 = str(data.get('last_record_sha256') or '')
+            self._last_rotation_at = data.get('last_rotation_at')
+            self._last_pruned_at = data.get('last_pruned_at')
+            self._pruned_archive_count = max(
+                0, int(data.get('pruned_archive_count') or 0),
+            )
         except Exception:  # noqa: BLE001
             logger.warning('order audit index unreadable; rebuilding safely', exc_info=True)
             data = {}
         # Raw JSONL is the authority. A power loss may happen after its fsync but
         # before the deliberately throttled cache flush. Rebuild whenever the
         # byte boundary disagrees so the next append continues the real chain.
-        if int(data.get('dataset_bytes') or -1) != self.dataset.stat().st_size:
+        dataset_bytes = self.dataset.stat().st_size if self.dataset.exists() else 0
+        try:
+            stored_bytes = int(data.get('dataset_bytes'))
+        except (TypeError, ValueError):
+            stored_bytes = -1
+        archive_manifest_matches = (
+            (data.get('archive_manifest') or []) == self._archive_manifest()
+        )
+        if (
+            not archive_manifest_matches
+            or stored_bytes < 0
+            or stored_bytes > dataset_bytes
+        ):
             self._rebuild_cache_from_raw()
             self._index_dirty += 1
             self._flush_index(force=True)
+        elif stored_bytes < dataset_bytes:
+            # The usual power-loss window is a few fsynced lines newer than the
+            # throttled index. Recover only that active-file tail; rescanning
+            # several gigabytes of immutable archives would delay POS startup.
+            if not self._recover_appended_tail(stored_bytes):
+                self._rebuild_cache_from_raw()
+            self._index_dirty += 1
+            self._flush_index(force=True)
+
+    def _apply_recovered_record(self, record: dict[str, Any]) -> None:
+        self._record_count += 1
+        self._last_capture_at = (
+            record.get('captured_at') or self._last_capture_at
+        )
+        if record.get('record_type') == 'export_manifest':
+            self._last_export_at = (
+                record.get('captured_at') or self._last_export_at
+            )
+        if record.get('record_type') == 'order_snapshot':
+            order = record.get('order') or {}
+            key = order.get('uuid') or f"pk:{order.get('id')}"
+            fingerprint = (
+                record.get('capture') or {}
+            ).get('snapshot_sha256')
+            if key and fingerprint:
+                self._fingerprints[str(key)] = str(fingerprint)
+        candidate = (record.get('integrity') or {}).get('record_sha256')
+        if candidate:
+            self._last_record_sha256 = str(candidate)
+
+    def _recover_appended_tail(self, start_offset: int) -> bool:
+        if not self.dataset.exists():
+            return start_offset == 0
+        with self.dataset.open('rb') as source:
+            if start_offset:
+                source.seek(start_offset - 1)
+                if source.read(1) != b'\n':
+                    return False
+            source.seek(start_offset)
+            for raw_line in source:
+                if not raw_line.endswith(b'\n'):
+                    continue
+                try:
+                    record = json.loads(raw_line)
+                except (UnicodeDecodeError, ValueError, TypeError):
+                    continue
+                if isinstance(record, dict):
+                    self._apply_recovered_record(record)
+        return True
 
     def _rebuild_cache_from_raw(self) -> None:
         fingerprints: dict[str, str] = {}
@@ -614,28 +903,38 @@ class OrderAuditCollector:
         last_capture_at = None
         last_export_at = None
         last_sha = ''
-        with self.dataset.open('rb') as source:
-            for raw_line in source:
-                if not raw_line.endswith(b'\n'):
-                    # Crash-truncated tail is isolated by the next append.
-                    continue
-                try:
-                    record = json.loads(raw_line)
-                except (UnicodeDecodeError, ValueError, TypeError):
-                    continue
-                record_count += 1
-                last_capture_at = record.get('captured_at') or last_capture_at
-                if record.get('record_type') == 'export_manifest':
-                    last_export_at = record.get('captured_at') or last_export_at
-                if record.get('record_type') == 'order_snapshot':
-                    order = record.get('order') or {}
-                    key = order.get('uuid') or f"pk:{order.get('id')}"
-                    fingerprint = (record.get('capture') or {}).get('snapshot_sha256')
-                    if key and fingerprint:
-                        fingerprints[str(key)] = str(fingerprint)
-                candidate = (record.get('integrity') or {}).get('record_sha256')
-                if candidate:
-                    last_sha = str(candidate)
+        for evidence_file in self._evidence_files():
+            with evidence_file.open('rb') as source:
+                for raw_line in source:
+                    if not raw_line.endswith(b'\n'):
+                        # Crash-truncated tails remain isolated from later
+                        # complete records, including across rotated segments.
+                        continue
+                    try:
+                        record = json.loads(raw_line)
+                    except (UnicodeDecodeError, ValueError, TypeError):
+                        continue
+                    record_count += 1
+                    last_capture_at = (
+                        record.get('captured_at') or last_capture_at
+                    )
+                    if record.get('record_type') == 'export_manifest':
+                        last_export_at = (
+                            record.get('captured_at') or last_export_at
+                        )
+                    if record.get('record_type') == 'order_snapshot':
+                        order = record.get('order') or {}
+                        key = order.get('uuid') or f"pk:{order.get('id')}"
+                        fingerprint = (
+                            record.get('capture') or {}
+                        ).get('snapshot_sha256')
+                        if key and fingerprint:
+                            fingerprints[str(key)] = str(fingerprint)
+                    candidate = (
+                        record.get('integrity') or {}
+                    ).get('record_sha256')
+                    if candidate:
+                        last_sha = str(candidate)
         self._fingerprints = fingerprints
         self._record_count = record_count
         self._last_capture_at = last_capture_at
@@ -656,8 +955,13 @@ class OrderAuditCollector:
             'last_auto_send_error': self._combined_delivery_error(),
             'delivery_errors': self._delivery_errors,
             'delivery_offsets': self._delivery_offsets,
+            'archive_delivery_offsets': self._archive_delivery_offsets,
             'last_record_sha256': self._last_record_sha256,
             'dataset_bytes': self.dataset.stat().st_size if self.dataset.exists() else 0,
+            'archive_manifest': self._archive_manifest(),
+            'last_rotation_at': self._last_rotation_at,
+            'last_pruned_at': self._last_pruned_at,
+            'pruned_archive_count': self._pruned_archive_count,
             'fingerprints': self._fingerprints,
         }
         config_store._write_protected(
@@ -667,7 +971,15 @@ class OrderAuditCollector:
         self._index_dirty = 0
         self._index_written_at = time.monotonic()
 
-    def _append(self, record: dict[str, Any]) -> None:
+    def _append(self, record: dict[str, Any]) -> bool:
+        # Estimate before binding the integrity predecessor because retention
+        # during rotation may intentionally remove that predecessor. The final
+        # envelope adds fewer than 256 bytes to this canonical representation.
+        provisional = json.dumps(
+            record, ensure_ascii=False, sort_keys=True, separators=(',', ':'),
+            default=str,
+        ).encode('utf-8')
+        rotated = self._rotate_if_needed(len(provisional) + 256)
         record['integrity'] = {
             'previous_record_sha256': self._last_record_sha256 or None,
         }
@@ -702,6 +1014,7 @@ class OrderAuditCollector:
             os.fsync(fh.fileno())
         self._last_record_sha256 = record_sha256
         _AUTO_WAKE.set()
+        return rotated
 
     def record_event(
         self, record_type: str, payload: dict[str, Any], *, reason: str,
@@ -724,12 +1037,12 @@ class OrderAuditCollector:
                 'event': payload,
             }
             with self._lock:
-                self._append(record)
+                rotated = self._append(record)
                 self._record_count += 1
                 self._last_capture_at = captured_at
                 self._last_error = ''
                 self._index_dirty += 1
-                self._flush_index()
+                self._flush_index(force=rotated)
             return True
         except Exception as exc:  # noqa: BLE001
             self._last_error = _safe_error(exc)
@@ -740,12 +1053,32 @@ class OrderAuditCollector:
         with self._lock:
             return max(0, int(self._delivery_offsets.get(str(chat_id), 0)))
 
-    def mark_delivered(self, chat_id: str, end_offset: int) -> None:
+    def mark_delivered(
+        self, chat_id: str, end_offset: int, *, source_name: str | None = None,
+    ) -> None:
         """Advance only after Telegram confirms receipt (at-least-once)."""
         with self._lock:
             key = str(chat_id)
-            current = max(0, int(self._delivery_offsets.get(key, 0)))
-            self._delivery_offsets[key] = max(current, int(end_offset))
+            source_name = str(source_name or self.dataset.name)
+            if source_name == self.dataset.name:
+                current = max(0, int(self._delivery_offsets.get(key, 0)))
+                self._delivery_offsets[key] = max(current, int(end_offset))
+            else:
+                archive_names = {path.name for path in self._archive_files()}
+                if source_name in archive_names:
+                    offsets = self._archive_delivery_offsets.setdefault(
+                        source_name, {},
+                    )
+                    current = max(0, int(offsets.get(key, 0)))
+                    offsets[key] = max(current, int(end_offset))
+                else:
+                    # Retention may expire an archive while its already-frozen
+                    # transport copy is in flight. Its successful ACK needs no
+                    # cursor because that source no longer exists locally.
+                    logger.info(
+                        'delivery ACK arrived after audit source retention: %s',
+                        source_name,
+                    )
             self._last_auto_send_at = _iso(_utc_now())
             self._delivery_errors.pop(key, None)
             self._index_dirty += 1
@@ -800,13 +1133,13 @@ class OrderAuditCollector:
                     },
                     'order': payload,
                 }
-                self._append(record)
+                rotated = self._append(record)
                 self._fingerprints[key] = fingerprint
                 self._record_count += 1
                 self._last_capture_at = captured_at
                 self._index_dirty += 1
                 self._last_error = ''
-                self._flush_index()
+                self._flush_index(force=rotated)
             return True
         except Exception as exc:  # noqa: BLE001
             self._last_error = str(exc)
@@ -820,21 +1153,46 @@ class OrderAuditCollector:
     def status(self, *, chat_ids: list[str] | None = None) -> dict[str, Any]:
         with self._lock:
             size = self.dataset.stat().st_size if self.dataset.exists() else 0
+            archives = self._archive_files()
+            archive_bytes = sum(
+                path.stat().st_size for path in archives if path.exists()
+            )
             if chat_ids:
-                # A newly provisioned recipient starts at byte zero even if an
-                # older recipient already acknowledged the complete file.
+                pending_bytes = 0
+                # A newly provisioned recipient starts at byte zero in every
+                # retained generation, even if an older recipient acknowledged it.
+                for archive in archives:
+                    archive_size = archive.stat().st_size
+                    offsets = self._archive_delivery_offsets.get(
+                        archive.name, {},
+                    )
+                    slowest_offset = min(
+                        max(0, int(offsets.get(str(chat_id), 0)))
+                        for chat_id in chat_ids
+                    )
+                    pending_bytes += max(0, archive_size - slowest_offset)
                 slowest_offset = min(
                     max(0, int(self._delivery_offsets.get(str(chat_id), 0)))
                     for chat_id in chat_ids
                 )
+                pending_bytes += max(0, size - slowest_offset)
             else:
-                slowest_offset = 0
+                pending_bytes = size + archive_bytes
             return {
                 'enabled': _enabled_from_state(),
                 'auto_send': _auto_send_enabled_from_state(),
                 'dataset': str(self.dataset),
                 'exists': self.dataset.exists(),
                 'bytes': size,
+                'archive_count': len(archives),
+                'archive_bytes': archive_bytes,
+                'total_retained_bytes': size + archive_bytes,
+                'max_dataset_bytes': self.max_dataset_bytes,
+                'max_archive_bytes': self.max_archive_bytes,
+                'archive_retention_days': self.archive_retention_days,
+                'last_rotation_at': self._last_rotation_at,
+                'last_pruned_at': self._last_pruned_at,
+                'pruned_archive_count': self._pruned_archive_count,
                 'order_count': len(self._fingerprints),
                 'record_count': self._record_count,
                 'last_capture_at': self._last_capture_at,
@@ -843,7 +1201,7 @@ class OrderAuditCollector:
                 'last_auto_send_error': self._combined_delivery_error(),
                 'delivery_errors': dict(self._delivery_errors),
                 'delivery_offsets': dict(self._delivery_offsets),
-                'auto_pending_bytes': max(0, size - slowest_offset),
+                'auto_pending_bytes': pending_bytes,
                 'last_error': self._last_error,
             }
 
@@ -876,8 +1234,11 @@ class OrderAuditCollector:
             export_dir.mkdir(parents=True, exist_ok=True)
             stamp = _utc_now().strftime('%Y%m%dT%H%M%SZ')
             target = export_dir / f'alpha-pos-orders-{stamp}-{export_id[:8]}.jsonl'
-            with self.dataset.open('rb') as source, target.open('wb') as output:
-                shutil.copyfileobj(source, output, length=1024 * 1024)
+            evidence_files = self._evidence_files()
+            with target.open('wb') as output:
+                for evidence_file in evidence_files:
+                    with evidence_file.open('rb') as source:
+                        shutil.copyfileobj(source, output, length=1024 * 1024)
                 output.flush()
                 os.fsync(output.fileno())
         if target.stat().st_size > _MAX_PLAIN_TELEGRAM_BYTES:
@@ -891,6 +1252,7 @@ class OrderAuditCollector:
             'prepared_at': prepared_at,
             'orders': len(self._fingerprints),
             'records': self._record_count,
+            'segments': len(evidence_files),
             'bytes': target.stat().st_size,
         }
 
@@ -905,16 +1267,44 @@ class OrderAuditCollector:
         """
         chat_id = str(chat_id)
         with self._lock:
-            size = self.dataset.stat().st_size if self.dataset.exists() else 0
-            start = self.delivery_offset(chat_id)
-            if start > size:
-                # Dataset was intentionally reset. The old cursor cannot point
-                # into a new file.
-                start = 0
-            if start >= size:
-                return None, {'start_offset': start, 'end_offset': start, 'bytes': 0}
+            source_path: Path | None = None
+            start = 0
+            size = 0
+            for candidate in self._archive_files():
+                candidate_size = candidate.stat().st_size
+                candidate_offsets = self._archive_delivery_offsets.get(
+                    candidate.name, {},
+                )
+                candidate_start = max(
+                    0, int(candidate_offsets.get(chat_id, 0)),
+                )
+                if candidate_start > candidate_size:
+                    candidate_start = 0
+                if candidate_start < candidate_size:
+                    source_path = candidate
+                    start = candidate_start
+                    size = candidate_size
+                    break
 
-            with self.dataset.open('rb') as source:
+            if source_path is None:
+                source_path = self.dataset
+                size = (
+                    source_path.stat().st_size if source_path.exists() else 0
+                )
+                start = self.delivery_offset(chat_id)
+                if start > size:
+                    # Dataset was intentionally reset. The old cursor cannot
+                    # point into a new file.
+                    start = 0
+            if start >= size:
+                return None, {
+                    'source_name': source_path.name,
+                    'start_offset': start,
+                    'end_offset': start,
+                    'bytes': 0,
+                }
+
+            with source_path.open('rb') as source:
                 source.seek(start)
                 raw = source.read(max(1, int(max_bytes)))
                 if source.tell() < size and not raw.endswith(b'\n'):
@@ -925,7 +1315,12 @@ class OrderAuditCollector:
             # isolates it with a newline; never publish half a JSON object.
             last_newline = raw.rfind(b'\n')
             if last_newline < 0:
-                return None, {'start_offset': start, 'end_offset': start, 'bytes': 0}
+                return None, {
+                    'source_name': source_path.name,
+                    'start_offset': start,
+                    'end_offset': start,
+                    'bytes': 0,
+                }
             raw = raw[:last_newline + 1]
             end = start + len(raw)
 
@@ -933,13 +1328,21 @@ class OrderAuditCollector:
             export_dir.mkdir(parents=True, exist_ok=True)
             stamp = _utc_now().strftime('%Y%m%dT%H%M%SZ')
             chat_tag = hashlib.sha256(chat_id.encode('utf-8')).hexdigest()[:8]
+            source_tag = hashlib.sha256(
+                source_path.name.encode('utf-8'),
+            ).hexdigest()[:8]
             target = export_dir / (
-                f'alpha-pos-evidence-{stamp}-{chat_tag}-{start}-{end}.jsonl.gz'
+                f'alpha-pos-evidence-{stamp}-{chat_tag}-{source_tag}-'
+                f'{start}-{end}.jsonl.gz'
             )
             with gzip.open(target, 'wb', compresslevel=6) as output:
                 output.write(raw)
 
         return target, {
+            'source_name': source_path.name,
+            'source_kind': (
+                'active' if source_path == self.dataset else 'archive'
+            ),
             'start_offset': start,
             'end_offset': end,
             'bytes': len(raw),
@@ -1577,12 +1980,17 @@ def _deliver_pending_once() -> dict[str, int]:
             caption = (
                 'Alpha POS local raw evidence (automatic)\n'
                 f'Branch: {branch}\nDevice: {_device_id()}\n'
+                f'Segment: {metadata["source_kind"]}\n'
                 f'Raw bytes: {metadata["start_offset"]}-'
                 f'{metadata["end_offset"]}\n'
                 f'SHA-256: {metadata["sha256"]}'
             )
             _post_telegram_document(token, chat_id, path, caption)
-            _COLLECTOR.mark_delivered(chat_id, metadata['end_offset'])
+            _COLLECTOR.mark_delivered(
+                chat_id,
+                metadata['end_offset'],
+                source_name=metadata['source_name'],
+            )
             result['sent'] += 1
         except Exception as exc:  # noqa: BLE001
             result['failed'] += 1

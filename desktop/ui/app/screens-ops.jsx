@@ -47,6 +47,7 @@ function RecoveryPanel() {
   const { t } = app;
   const [stuck, setStuck] = React.useState(null); // { total, by_model }
   const [busy, setBusy] = React.useState(false);
+  const [pullBusy, setPullBusy] = React.useState(false);
 
   const refresh = React.useCallback(() => {
     api.cloud_dead_letters().then((r) => {
@@ -71,6 +72,21 @@ function RecoveryPanel() {
 
   const total = stuck ? stuck.total : null;
   const models = stuck ? Object.keys(stuck.by_model) : [];
+  const forcePull = () => {
+    if (!window.confirm(t("tests.forcePullConfirm"))) return;
+    setPullBusy(true);
+    api.cloud_force_pull().then((r) => {
+      setPullBusy(false);
+      const replayQueued = !!(r && r.replay_requested && r.will_retry);
+      app.toast(
+        r && r.ok
+          ? t("tests.forcePullDone")
+          : replayQueued
+            ? t("tests.forcePullQueued")
+            : (r && r.error) || t("tests.forcePullQueued")
+      );
+    });
+  };
 
   return (
     <Card title={t("tests.recovery")} tone={total > 0 ? "warn" : undefined} style={{ marginTop: 28 }}>
@@ -83,6 +99,7 @@ function RecoveryPanel() {
         {total === 0 && <span style={{ fontSize: 12.5, color: "var(--ok)" }}>{t("tests.stuckNone")}</span>}
         {total > 0 && <span style={{ fontSize: 12.5, color: "var(--ink-3)" }}>{t("tests.stuckSome")}</span>}
         <Btn variant={total > 0 ? "primary" : "ghost"} icon="refresh" onClick={retry} disabled={busy || !total}>{busy ? t("common.running") : t("tests.retryStuck")}</Btn>
+        <Btn variant="ghost" icon="download" onClick={forcePull} disabled={pullBusy}>{pullBusy ? t("common.running") : t("tests.forcePull")}</Btn>
       </div>
     </Card>
   );

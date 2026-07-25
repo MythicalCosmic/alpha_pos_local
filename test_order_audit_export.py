@@ -1,5 +1,6 @@
 import json
 import gzip
+import hashlib
 import queue
 import sys
 import threading
@@ -9,6 +10,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
+from django.conf import settings
 from django.http import JsonResponse
 from django.test import RequestFactory
 
@@ -72,6 +74,27 @@ def test_default_automatic_delivery_is_on_when_setting_is_absent(monkeypatch):
     monkeypatch.undo()
     monkeypatch.setattr(order_audit.config_store, 'read_state', lambda: {})
     assert order_audit._auto_send_enabled_from_state() is True
+
+
+def test_order_http_audit_wraps_login_transition_guard_after_django_auth():
+    from config import settings as local_settings
+
+    auth = local_settings._DJANGO_AUTH_MIDDLEWARE
+    audit = local_settings._ORDER_HTTP_AUDIT_MIDDLEWARE
+    guard = local_settings._LOGIN_TRANSITION_GUARD_MIDDLEWARE
+    simulated = local_settings._with_order_http_audit([
+        'before',
+        auth,
+        guard,
+        'after',
+    ])
+    assert simulated.index(auth) < simulated.index(audit)
+    assert simulated.index(audit) + 1 == simulated.index(guard)
+
+    actual = list(settings.MIDDLEWARE)
+    assert actual.index(auth) < actual.index(audit)
+    if guard in actual:
+        assert actual.index(audit) + 1 == actual.index(guard)
 
 
 def test_repeated_order_signals_coalesce_one_pending_graph_capture(monkeypatch):
@@ -280,6 +303,104 @@ def test_records_form_a_verifiable_hash_chain(tmp_path):
         assert hashlib.sha256(canonical).hexdigest() == claimed
 
 
+def test_rotation_bounds_active_file_and_export_keeps_all_retained_segments(
+    tmp_path,
+):
+    collector = order_audit.OrderAuditCollector(
+        dataset=tmp_path / 'orders.raw.jsonl',
+        index_file=tmp_path / '.index.json',
+        max_dataset_bytes=1,
+        max_archive_bytes=1024 * 1024,
+        archive_retention_days=365,
+    )
+    for sequence in range(1, 4):
+        assert collector.record_event(
+            'test_event', {'sequence': sequence}, reason='rotation_test',
+        )
+
+    status = collector.status()
+    assert status['archive_count'] == 2
+    assert status['bytes'] <= max(
+        path.stat().st_size for path in collector._evidence_files()
+    )
+    retained = [
+        json.loads(line)
+        for path in collector._evidence_files()
+        for line in path.read_text(encoding='utf-8').splitlines()
+    ]
+    assert [row['event']['sequence'] for row in retained] == [1, 2, 3]
+    assert retained[0]['integrity']['previous_record_sha256'] is None
+    for previous, current in zip(retained, retained[1:]):
+        assert current['integrity']['previous_record_sha256'] == (
+            previous['integrity']['record_sha256']
+        )
+
+    export, metadata = collector.prepare_export()
+    exported = [
+        json.loads(line)
+        for line in export.read_text(encoding='utf-8').splitlines()
+    ]
+    assert [row['event']['sequence'] for row in exported[:-1]] == [1, 2, 3]
+    assert exported[-1]['record_type'] == 'export_manifest'
+    assert metadata['segments'] == 4
+
+
+def test_rotation_preserves_pending_delivery_cursor_per_segment(tmp_path):
+    collector = order_audit.OrderAuditCollector(
+        dataset=tmp_path / 'orders.raw.jsonl',
+        index_file=tmp_path / '.index.json',
+        max_dataset_bytes=1,
+        max_archive_bytes=1024 * 1024,
+        archive_retention_days=365,
+    )
+    collector.record_event('test_event', {'sequence': 1}, reason='delivery_test')
+    collector.record_event('test_event', {'sequence': 2}, reason='delivery_test')
+
+    first, first_meta = collector.prepare_incremental_export(
+        'owner', max_bytes=1,
+    )
+    assert first_meta['source_kind'] == 'archive'
+    with gzip.open(first, 'rb') as source:
+        assert json.loads(source.read())['event']['sequence'] == 1
+    collector.mark_delivered(
+        'owner',
+        first_meta['end_offset'],
+        source_name=first_meta['source_name'],
+    )
+
+    second, second_meta = collector.prepare_incremental_export(
+        'owner', max_bytes=1,
+    )
+    assert second_meta['source_kind'] == 'active'
+    with gzip.open(second, 'rb') as source:
+        assert json.loads(source.read())['event']['sequence'] == 2
+
+
+def test_archive_byte_cap_prunes_old_segments(tmp_path):
+    collector = order_audit.OrderAuditCollector(
+        dataset=tmp_path / 'orders.raw.jsonl',
+        index_file=tmp_path / '.index.json',
+        max_dataset_bytes=1,
+        max_archive_bytes=0,
+        archive_retention_days=365,
+    )
+    collector.record_event('test_event', {'sequence': 1}, reason='retention_test')
+    pruned_hash = json.loads(
+        collector.dataset.read_text(encoding='utf-8'),
+    )['integrity']['record_sha256']
+    collector.record_event('test_event', {'sequence': 2}, reason='retention_test')
+
+    status = collector.status()
+    assert status['archive_count'] == 0
+    assert status['archive_bytes'] == 0
+    assert status['pruned_archive_count'] == 1
+    current = json.loads(collector.dataset.read_text(encoding='utf-8'))
+    assert current['event']['sequence'] == 2
+    # A retained-out predecessor stays represented by its non-recoverable
+    # digest, making the policy-created chain gap explicit instead of silent.
+    assert current['integrity']['previous_record_sha256'] == pruned_hash
+
+
 def test_restart_recovers_raw_chain_head_when_cache_lags_after_crash(tmp_path):
     dataset = tmp_path / 'orders.raw.jsonl'
     index = tmp_path / '.index.json'
@@ -298,6 +419,47 @@ def test_restart_recovers_raw_chain_head_when_cache_lags_after_crash(tmp_path):
     assert latest['integrity']['previous_record_sha256'] == (
         prior['integrity']['record_sha256']
     )
+
+
+def test_restart_recovers_only_active_tail_when_archives_are_unchanged(
+    tmp_path, monkeypatch,
+):
+    dataset = tmp_path / 'orders.raw.jsonl'
+    index = tmp_path / '.index.json'
+    collector = order_audit.OrderAuditCollector(
+        dataset=dataset,
+        index_file=index,
+        max_dataset_bytes=1,
+        max_archive_bytes=1024 * 1024,
+        archive_retention_days=365,
+    )
+    collector.record_event('test_event', {'sequence': 1}, reason='tail_test')
+    collector.record_event('test_event', {'sequence': 2}, reason='tail_test')
+    assert collector.status()['archive_count'] == 1
+
+    # Simulate power loss after the active JSONL fsync but before the
+    # deliberately throttled index update.
+    collector.max_dataset_bytes = 1024 * 1024
+    monkeypatch.setattr(collector, '_flush_index', lambda **_kwargs: None)
+    collector.record_event('test_event', {'sequence': 3}, reason='tail_test')
+
+    def full_rebuild_would_delay_startup(_self):
+        raise AssertionError('unchanged archives must not be rescanned')
+
+    monkeypatch.setattr(
+        order_audit.OrderAuditCollector,
+        '_rebuild_cache_from_raw',
+        full_rebuild_would_delay_startup,
+    )
+    recovered = order_audit.OrderAuditCollector(
+        dataset=dataset,
+        index_file=index,
+        max_dataset_bytes=1024 * 1024,
+        max_archive_bytes=1024 * 1024,
+        archive_retention_days=365,
+    )
+    assert recovered.status()['record_count'] == 3
+    assert recovered.status()['archive_count'] == 1
 
 
 def test_external_payment_is_separate_from_drawer_but_in_combined_tender(tmp_path):
@@ -822,6 +984,154 @@ def test_local_order_http_request_is_fsynced_before_view_and_response_is_kept(
     assert completed['status_code'] == 409
     assert completed['user']['id'] == 4
     assert completed['response']['json']['error']['message'] == 'declined'
+
+
+def test_local_order_http_audit_records_safe_auth_and_client_resolution(
+    tmp_path, monkeypatch,
+):
+    collector = order_audit.OrderAuditCollector(
+        dataset=tmp_path / 'orders.raw.jsonl',
+        index_file=tmp_path / '.index.json',
+    )
+    monkeypatch.setattr(order_audit, '_COLLECTOR', collector)
+    cookie_session = 'cookie-session-secret-that-must-never-be-written'
+    bearer_session = 'bearer-session-secret-that-must-never-be-written'
+    login_password = 'login-password-that-must-never-be-written'
+    request = RequestFactory().post(
+        '/auth-login?session_key=also-secret&mode=fast',
+        data=json.dumps({
+            'user_id': 44,
+            'password': login_password,
+        }),
+        content_type='application/json',
+        HTTP_COOKIE=f'session_key={cookie_session}',
+        HTTP_AUTHORIZATION=f'Bearer {bearer_session}',
+        HTTP_USER_AGENT='AlphaPOS-Test-UA/1.0',
+        HTTP_X_DEVICE_ID='till-ruxsora-smart',
+        REMOTE_ADDR='192.0.2.44',
+    )
+
+    def view(_active_request):
+        # Simulate the canonical transition guard's token-free conflict reply.
+        return JsonResponse(
+            {'success': False, 'code': 'session_credential_conflict'},
+            status=401,
+        )
+
+    response = order_http_audit.OrderMutationEvidenceMiddleware(view)(request)
+    assert response.status_code == 401
+    raw_dataset = collector.dataset.read_text(encoding='utf-8')
+    assert cookie_session not in raw_dataset
+    assert bearer_session not in raw_dataset
+    assert login_password not in raw_dataset
+    assert 'also-secret' not in raw_dataset
+
+    received, completed = [
+        json.loads(line)['event']['payload']
+        for line in raw_dataset.splitlines()
+    ]
+    assert received['body']['json']['password'] == '[REDACTED]'
+    assert received['query']['parameter_names'] == ['mode', 'session_key']
+    assert received['client']['remote_addr'] == '192.0.2.44'
+    assert received['client']['user_agent']['value'] == 'AlphaPOS-Test-UA/1.0'
+    assert received['client']['x_device_id']['value'] == 'till-ruxsora-smart'
+    auth = received['auth_evidence']
+    assert auth['cookie']['present'] is True
+    assert auth['bearer']['present'] is True
+    assert auth['header_scheme'] == 'bearer'
+    assert auth['both_present'] is True
+    assert auth['credential_conflict'] is True
+    assert auth['selected_source'] == 'conflict'
+    assert auth['selected_session_fingerprint']['present'] is False
+    assert auth['resolved_session_fingerprint']['present'] is False
+
+    resolved = completed['auth_evidence']
+    assert resolved['resolved_matches_selected'] is False
+    assert resolved['resolved_matches_cookie'] is False
+    assert resolved['resolved_matches_bearer'] is False
+    assert resolved['resolved_user'] == {'authenticated': False}
+    assert completed['user']['authenticated'] is False
+
+
+def test_local_order_http_audit_resolves_matching_dual_credential_custom_user(
+    tmp_path, monkeypatch,
+):
+    collector = order_audit.OrderAuditCollector(
+        dataset=tmp_path / 'orders.raw.jsonl',
+        index_file=tmp_path / '.index.json',
+    )
+    monkeypatch.setattr(order_audit, '_COLLECTOR', collector)
+    session = 'same-session-secret-that-must-never-be-written'
+    request = RequestFactory().post(
+        '/orders/create',
+        data=json.dumps({'total_amount': '296000'}),
+        content_type='application/json',
+        HTTP_COOKIE=f'session_key={session}',
+        HTTP_AUTHORIZATION=f'bEaReR {session}',
+    )
+
+    def view(active_request):
+        # The custom login_required decorator sets a base.User, which has no
+        # Django ``is_authenticated`` property, plus the resolved session.
+        active_request.user = _row(
+            pk=44, uuid='cashier-44', role='CASHIER',
+            email='cashier44@example.test',
+        )
+        active_request.session_key = session
+        return JsonResponse({'success': True}, status=201)
+
+    response = order_http_audit.OrderMutationEvidenceMiddleware(view)(request)
+    assert response.status_code == 201
+    raw_dataset = collector.dataset.read_text(encoding='utf-8')
+    assert session not in raw_dataset
+    received, completed = [
+        json.loads(line)['event']['payload']
+        for line in raw_dataset.splitlines()
+    ]
+    auth = received['auth_evidence']
+    assert auth['header_scheme'] == 'bearer'
+    assert auth['credential_conflict'] is False
+    assert auth['selected_source'] == 'cookie+bearer'
+    assert auth['selected_session_fingerprint']['sha256'] == hashlib.sha256(
+        session.encode('utf-8'),
+    ).hexdigest()
+
+    resolved = completed['auth_evidence']
+    assert resolved['resolved_matches_selected'] is True
+    assert resolved['resolved_matches_cookie'] is True
+    assert resolved['resolved_matches_bearer'] is True
+    assert resolved['resolved_user'] == {
+        'authenticated': True,
+        'email': 'cashier44@example.test',
+        'id': 44,
+        'role': 'CASHIER',
+        'uuid': 'cashier-44',
+    }
+    assert completed['user']['authenticated'] is True
+    assert completed['user']['id'] == 44
+
+
+def test_custom_user_detection_honours_explicit_anonymous_marker():
+    request = RequestFactory().post('/orders/create')
+    request.user = _row(
+        pk=44, uuid='cashier-44', role='CASHIER', email='cashier@example.test',
+        is_authenticated=False,
+    )
+    assert order_http_audit._user_evidence(request) == {
+        'authenticated': False,
+    }
+
+
+def test_auth_evidence_does_not_expose_malformed_header_as_scheme():
+    raw_credential = 'MalformedCredentialWithoutSchemeSeparator123456789'
+    request = RequestFactory().post(
+        '/orders/create',
+        HTTP_AUTHORIZATION=raw_credential,
+    )
+    evidence = order_http_audit._auth_evidence(request)
+    assert evidence['header_scheme'] == 'other'
+    assert evidence['header']['present'] is True
+    assert raw_credential not in json.dumps(evidence)
 
 
 def test_local_order_http_audit_failure_is_fail_open(monkeypatch, caplog):

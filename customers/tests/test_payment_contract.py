@@ -34,6 +34,7 @@ def _start_shift(cashier, branch_id):
         status=Shift.Status.ACTIVE,
         start_time=timezone.now(),
         branch_id=branch_id,
+        device_id='pytest-terminal',
     )
 
 

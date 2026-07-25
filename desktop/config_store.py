@@ -123,6 +123,12 @@ CONFIG_FIELDS = [
     # Owner-only recipients for raw order/sync evidence. A blank value disables
     # delivery; raw evidence never falls back to the broader staff recipient list.
     ('ORDER_AUDIT_TELEGRAM_CHAT_IDS', ''),
+    # The local forensic stream is intentionally bounded. A new JSONL segment
+    # starts at this size, while older segments remain available for automatic
+    # delivery/manual export until either retention boundary is reached.
+    ('ORDER_AUDIT_MAX_FILE_MB', '128'),
+    ('ORDER_AUDIT_MAX_ARCHIVE_MB', '4096'),
+    ('ORDER_AUDIT_ARCHIVE_RETENTION_DAYS', '7'),
     # Separate owner-facing LOCAL order/shift notifications. These credentials
     # never fall back to the staff bot or raw-evidence channel, and delivery goes
     # directly from this PC to Telegram rather than through AlphaPOS cloud.
