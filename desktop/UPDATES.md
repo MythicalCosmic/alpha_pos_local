@@ -59,13 +59,16 @@ This creates:
 
 ### 2. Bundle the trust root and helper
 
-`AlphaPOS.spec` includes both:
+`AlphaPOS.spec` always includes the helper and receives the trusted root from
+the build script through `ALPHA_POS_TUF_ROOT`:
 
 ```python
 datas += [
-    ('update_repo/metadata/root.json', 'tuf_root'),
     ('desktop/update_helper.ps1', 'desktop'),
 ]
+_tuf_root = os.environ.get('ALPHA_POS_TUF_ROOT')
+if _tuf_root and os.path.exists(_tuf_root):
+    datas += [(_tuf_root, 'tuf_root')]
 ```
 
 ### 3. Configure the update repository URL

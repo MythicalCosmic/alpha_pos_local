@@ -57,6 +57,7 @@ _TOKEN_RE = re.compile(r'(?<!\d)\d{5,15}:[A-Za-z0-9_-]{20,128}')
 _CHAT_ID_RE = re.compile(r'(?:-?\d{1,32}|@[A-Za-z0-9_]{5,32})\Z')
 _DB_LOCK = threading.RLock()
 _START_LOCK = threading.RLock()
+_PROCESS_SHUTDOWN = threading.Event()
 _STOP = threading.Event()
 _WAKE = threading.Event()
 _THREAD: threading.Thread | None = None
@@ -2022,9 +2023,28 @@ def _worker() -> None:
             logger.debug('local Telegram audit worker DB close failed', exc_info=True)
 
 
+def begin_process_shutdown() -> None:
+    """Permanently prevent this process from starting the notifier again.
+
+    A late control-panel poll can race updater shutdown after the worker has
+    already been joined.  Ordinary ``stop_background_notifier`` deliberately
+    remains restartable for normal maintenance, while this process-lifetime
+    latch makes the updater/exit boundary one-way.
+    """
+    with _START_LOCK:
+        _PROCESS_SHUTDOWN.set()
+        _STOP.set()
+        _WAKE.set()
+
+
 def start_background_notifier() -> bool:
     global _STARTED, _THREAD
     with _START_LOCK:
+        if _PROCESS_SHUTDOWN.is_set():
+            logger.debug(
+                'local Telegram audit start ignored during process shutdown',
+            )
+            return False
         if _STARTED and _THREAD is not None and _THREAD.is_alive():
             return False
         _STOP.clear()

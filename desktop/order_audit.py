@@ -956,6 +956,13 @@ _SYNC_EVENT_QUEUE: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
 _START_LOCK = threading.Lock()
 _STARTED = False
 _STOP = threading.Event()
+# A normal controlled stop may be followed by a restart in the same process
+# (for example after a temporary operator action).  Application exit, updater
+# handoff, and Factory Reset are different: once teardown begins, a late
+# control-panel status poll must never resurrect this DB-owning worker while
+# embedded PostgreSQL is being stopped.  This latch is deliberately one-way for
+# the lifetime of the process.
+_PROCESS_SHUTDOWN = threading.Event()
 _AUTO_WAKE = threading.Event()
 _THREAD: threading.Thread | None = None
 _SENDER_THREAD: threading.Thread | None = None
@@ -1341,9 +1348,24 @@ def _collector_worker() -> None:
             logger.debug('order audit: worker DB close failed', exc_info=True)
 
 
+def begin_process_shutdown() -> None:
+    """Permanently block collector restarts during process-level teardown."""
+    # Serialize with start_background_collector's second latch check.  Without
+    # the shared lock, a status request could pass its check just before this
+    # event was set and still create a new thread after teardown had begun.
+    with _START_LOCK:
+        _PROCESS_SHUTDOWN.set()
+        _STOP.set()
+        _AUTO_WAKE.set()
+
+
 def start_background_collector() -> bool:
     global _STARTED, _THREAD, _SENDER_THREAD
+    if _PROCESS_SHUTDOWN.is_set():
+        return False
     with _START_LOCK:
+        if _PROCESS_SHUTDOWN.is_set():
+            return False
         if _STARTED:
             return False
         _STOP.clear()

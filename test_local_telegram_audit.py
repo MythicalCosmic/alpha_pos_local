@@ -433,6 +433,60 @@ def test_worker_cycle_recovers_after_unexpected_exception(monkeypatch):
     assert calls == ['load', 'load']
 
 
+def test_process_shutdown_latch_blocks_late_notifier_restart(monkeypatch):
+    starts = []
+    monkeypatch.setattr(audit, '_PROCESS_SHUTDOWN', audit.threading.Event())
+    monkeypatch.setattr(audit, '_STOP', audit.threading.Event())
+    monkeypatch.setattr(audit, '_WAKE', audit.threading.Event())
+    monkeypatch.setattr(audit, '_STARTED', False)
+    monkeypatch.setattr(audit, '_THREAD', None)
+    monkeypatch.setattr(
+        audit, '_register_signals', lambda: starts.append('signals'),
+    )
+    monkeypatch.setattr(
+        audit, 'cleanup_stale_reports', lambda: starts.append('cleanup'),
+    )
+    monkeypatch.setattr(
+        audit, '_reset_inflight', lambda: starts.append('inflight'),
+    )
+
+    audit.begin_process_shutdown()
+
+    assert audit._PROCESS_SHUTDOWN.is_set()
+    assert audit._STOP.is_set()
+    assert audit._WAKE.is_set()
+    assert audit.start_background_notifier() is False
+    assert starts == []
+    assert audit._THREAD is None
+    assert audit._STARTED is False
+
+
+def test_ordinary_notifier_stop_remains_restartable(monkeypatch):
+    monkeypatch.setattr(audit, '_PROCESS_SHUTDOWN', audit.threading.Event())
+    monkeypatch.setattr(audit, '_STOP', audit.threading.Event())
+    monkeypatch.setattr(audit, '_WAKE', audit.threading.Event())
+    monkeypatch.setattr(audit, '_STARTED', False)
+    monkeypatch.setattr(audit, '_THREAD', None)
+    monkeypatch.setattr(audit, '_register_signals', lambda: None)
+    monkeypatch.setattr(audit, '_unregister_signals', lambda: None)
+    monkeypatch.setattr(audit, 'cleanup_stale_reports', lambda: 0)
+    monkeypatch.setattr(audit, '_reset_inflight', lambda: None)
+    monkeypatch.setattr(audit, 'load_config', lambda: _config(enabled=False))
+
+    try:
+        assert audit.start_background_notifier() is True
+        first = audit._THREAD
+        assert first is not None and first.is_alive()
+        assert audit.stop_background_notifier(timeout=1) is True
+        assert audit._PROCESS_SHUTDOWN.is_set() is False
+
+        assert audit.start_background_notifier() is True
+        second = audit._THREAD
+        assert second is not None and second is not first and second.is_alive()
+    finally:
+        audit.stop_background_notifier(timeout=1)
+
+
 def _create_paid_order(
     *,
     user,

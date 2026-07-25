@@ -497,6 +497,7 @@ class Api:
         # fully joined before the destructive wipe can be considered complete.
         try:
             from desktop import order_audit
+            order_audit.begin_process_shutdown()
             if not order_audit.stop_background_collector(timeout=35):
                 return {
                     'ok': False,
@@ -507,6 +508,7 @@ class Api:
             return {'ok': False, 'error': 'Could not stop order audit safely.'}
         try:
             from desktop import local_telegram_audit
+            local_telegram_audit.begin_process_shutdown()
             if not local_telegram_audit.stop_background_notifier(timeout=35):
                 return {
                     'ok': False,

@@ -12,7 +12,7 @@ import pytest
 from django.test import override_settings
 
 from desktop import config_store, control_server, pg_embedded
-from desktop.server_manager import ServerManager
+from desktop.server_manager import ServerManager, _is_truthy
 
 
 def _config_paths(monkeypatch, tmp_path):
@@ -597,6 +597,68 @@ class _WaitSequence:
         self.delays.append(delay)
         self.iterations -= 1
         return self.iterations < 0
+
+
+@pytest.mark.parametrize(
+    ('raw', 'expected'),
+    [
+        ('1', True),
+        ('true', True),
+        (' TRUE ', True),
+        ('yes', True),
+        ('On', True),
+        ('', False),
+        ('0', False),
+        ('false', False),
+        ('off', False),
+        ('unexpected', False),
+        (None, False),
+    ],
+)
+def test_license_heartbeat_disabled_uses_explicit_truthy_values(raw, expected):
+    assert _is_truthy(raw) is expected
+
+
+@override_settings(LICENSE_HEARTBEAT_DISABLED=None)
+def test_disabled_heartbeat_never_starts_or_retries(monkeypatch):
+    from licensing.services import heartbeat
+
+    monkeypatch.setenv('LICENSE_HEARTBEAT_DISABLED', 'yes')
+    monkeypatch.setattr(
+        heartbeat,
+        'do_heartbeat',
+        lambda: pytest.fail('disabled heartbeat attempted a request'),
+    )
+    manager = ServerManager()
+    manager._ensure_heartbeat_worker()
+
+    assert manager._hb_thread is None
+    state = manager._worker_state['heartbeat']
+    assert state['last_status'] == 'disabled'
+    assert state['last_error'] == ''
+    assert state['consecutive_failures'] == 0
+    assert state['next_run_in_s'] is None
+
+    stop = _WaitSequence(iterations=1)
+    manager._heartbeat_loop(stop)
+    assert stop.delays == []
+
+
+@override_settings(LICENSE_HEARTBEAT_DISABLED='ON')
+def test_disabled_heartbeat_status_is_exposed_without_an_error(monkeypatch):
+    manager = ServerManager()
+    manager._ensure_heartbeat_worker()
+    monkeypatch.setattr(manager, 'is_running', lambda: True)
+    monkeypatch.setattr(manager, 'lan_ip', lambda **_kwargs: '127.0.0.1')
+    monkeypatch.setattr(config_store, 'env_status', lambda: {'loaded': True})
+    monkeypatch.setattr(pg_embedded, 'migration_status', lambda: {'warning': ''})
+
+    heartbeat = manager.status()['workers']['heartbeat']
+
+    assert heartbeat['alive'] is False
+    assert heartbeat['last_status'] == 'disabled'
+    assert heartbeat['last_error'] == ''
+    assert heartbeat['consecutive_failures'] == 0
 
 
 @override_settings(

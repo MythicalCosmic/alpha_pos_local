@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -19,6 +20,12 @@ logger = logging.getLogger('desktop.server')
 # scheduler to add a 15-minute backoff made a short restart look like a dead till
 # long after the hub was healthy again.
 _SYNC_RECOVERY_DELAY_MAX_S = 60
+_TRUTHY_VALUES = frozenset({'1', 'true', 'yes', 'on'})
+
+
+def _is_truthy(value):
+    """Parse the explicit values accepted by operator-owned ``.env`` files."""
+    return str(value or '').strip().lower() in _TRUTHY_VALUES
 
 
 def _setup_signature_and_schema_current():
@@ -115,13 +122,48 @@ class ServerManager:
             self._worker_state[name].update(values)
 
     # -- Automatic license heartbeat ----------------------------------------
+    @staticmethod
+    def _heartbeat_disabled():
+        """Honor the documented operator-only offline-license switch.
+
+        ``LICENSE_HEARTBEAT_DISABLED`` intentionally remains outside the
+        ordinary desktop configuration form and private release payload. It is
+        a vendor/operator control retained as an unmanaged ``.env`` key.
+        """
+        from django.conf import settings as dj
+
+        value = getattr(dj, 'LICENSE_HEARTBEAT_DISABLED', None)
+        if value is None:
+            value = os.environ.get('LICENSE_HEARTBEAT_DISABLED', '')
+        return _is_truthy(value)
+
+    def _mark_heartbeat_disabled(self):
+        self._record_worker(
+            'heartbeat',
+            consecutive_failures=0,
+            last_status='disabled',
+            last_error='',
+            next_run_in_s=None,
+        )
+
     def _ensure_heartbeat_worker(self):
         """Phone home to the control center every LICENSE_HEARTBEAT_INTERVAL so
         the license/billing verdict (active/suspended/expired) stays fresh
-        without the operator clicking. Self-gates: do_heartbeat() is a no-op
-        when no control-center URL is configured (offline-activated installs)."""
+        without the operator clicking. Explicitly offline-activated installs
+        disable this worker with ``LICENSE_HEARTBEAT_DISABLED``."""
         with self._worker_lock:
             if not self._desired_running:
+                return
+            if self._heartbeat_disabled():
+                was_disabled = (
+                    self._worker_state['heartbeat']['last_status'] == 'disabled'
+                )
+                # Wake a worker that was already waiting when an operator
+                # enabled offline mode, then expose a non-error terminal state.
+                self._hb_stop_event.set()
+                self._mark_heartbeat_disabled()
+                if not was_disabled:
+                    logger.info('heartbeat worker disabled by configuration')
                 return
             if self._hb_thread is not None and self._hb_thread.is_alive():
                 return
@@ -143,9 +185,17 @@ class ServerManager:
         immediate instead of sleeping one second at a time.
         """
         stop_event = stop_event or self._hb_stop_event
+        if self._heartbeat_disabled():
+            self._mark_heartbeat_disabled()
+            return
         delay = 5
         failures = 0
         while not stop_event.wait(delay):
+            # Re-check before every attempt so a live transition to intentional
+            # offline mode cannot emit one more request or enter retry backoff.
+            if self._heartbeat_disabled():
+                self._mark_heartbeat_disabled()
+                return
             attempted = self._utc_now()
             self._record_worker(
                 'heartbeat', last_attempt_at=attempted, next_run_in_s=None,

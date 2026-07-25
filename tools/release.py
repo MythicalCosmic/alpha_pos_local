@@ -17,7 +17,7 @@ ALPHA_POS_UPDATE_URL, promoting the target first and timestamp metadata last
 update_repo/metadata/root.json inside the next installer as tuf_root/root.json
 so clients can bootstrap trust.
 
-NOTE: tufup's API differs slightly across versions. This targets tufup ~0.9.
+NOTE: tufup's API differs slightly across versions. This targets tufup 0.10.
 If you bump tufup, re-check Repository.add_bundle / publish_changes signatures.
 """
 from __future__ import annotations

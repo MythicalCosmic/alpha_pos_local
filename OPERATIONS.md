@@ -27,7 +27,7 @@ ssh -i "$RELEASE_KEY" "${RELEASE_USER}@${CONTROL_HOST}"
 
 Run on **this PC** (the build box — it has the signing keys in `update_keys/`):
 
-**Required cashier preflight:** Alpha POS Desktop 1.0.34 supports Smart POS
+**Required cashier preflight:** Alpha POS Desktop 1.0.35 supports Smart POS
 **0.0.5 or newer**. Earlier cashier builds could submit payment with an empty
 body; the hardened backend intentionally rejects that request instead of
 silently recording it as cash.
@@ -41,6 +41,10 @@ station first, perform controlled cash, card, and any supported split-tender
 checkouts, and verify one local order/payment record per sale plus a clean sync
 queue before updating the remaining stations. General API connectivity alone
 does not pass this gate.
+
+The following release block uses **Git Bash syntax**, including `export`,
+forward slashes, heredocs, and line continuations. Do not paste it directly
+into PowerShell.
 
 ```bash
 cd /c/Users/mythi/OneDrive/Desktop/AlphaPOS-Split/alpha_pos_local
@@ -152,6 +156,13 @@ Every till self-updates on its next launch. Verify it's live:
 curl --fail --head "$UPDATE_BASE_URL/targets/$TARGET"
 curl --fail "$UPDATE_BASE_URL/metadata/timestamp.json" >/dev/null
 ```
+
+Availability probes are not a release proof. Before allowing wider rollout,
+download the public target and all four public metadata roles into a clean
+directory, verify the TUF signature chain from the installer-bundled trusted
+`root.json`, and confirm the downloaded target's signed length and SHA-256.
+Then exercise one installed canary through the normal updater and inspect its
+shutdown, helper, startup, backend-health, and rollback state.
 
 **Release rules:**
 - **Back up `update_keys/`** (offline). Lose the root key = every till must be reinstalled.

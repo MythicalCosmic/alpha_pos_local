@@ -318,13 +318,29 @@ def _confirm_update_start_when_ready(*, ready_event=None, shutdown_event=None,
     return False
 
 
-def _stop_optional_workers(*, context='shutdown', support_timeout=None):
+def _stop_optional_workers(
+        *, context='shutdown', support_timeout=None, process_shutdown=False):
     """Stop independent desktop workers without failure coupling.
 
     Importing ``desktop.order_audit`` can itself fail when its local evidence
     store is unreadable. That must not skip support-tunnel or local-Telegram
     cleanup during an updater handoff or ordinary exit.
     """
+    if process_shutdown:
+        # The localhost panel remains responsive during most of teardown. Its
+        # status requests normally self-heal optional workers, but once a
+        # process exit/update/reset begins they must not recreate DB-owning
+        # threads after those threads have been joined.
+        for module_name in ('order_audit', 'local_telegram_audit'):
+            try:
+                module = __import__(
+                    f'desktop.{module_name}', fromlist=[module_name],
+                )
+                module.begin_process_shutdown()
+            except Exception:  # noqa: BLE001 - continue the enclosing shutdown
+                logger.exception(
+                    '%s: %s shutdown latch failed', context, module_name,
+                )
     try:
         from desktop import support_tunnel
         if support_timeout is None:
@@ -357,7 +373,10 @@ def _graceful_update_shutdown(httpd):
         force_exit = threading.Timer(20.0, lambda: os._exit(0))
         force_exit.daemon = True
         force_exit.start()
-        _stop_optional_workers(context='update shutdown', support_timeout=5)
+        _stop_optional_workers(
+            context='update shutdown', support_timeout=5,
+            process_shutdown=True,
+        )
         try:
             control_server._API.stop_server()
         except Exception:  # noqa: BLE001
@@ -527,7 +546,9 @@ def main():
             pass
 
     # Window closed → stop the POS server + embedded Postgres and exit.
-    _stop_optional_workers(context='application shutdown')
+    _stop_optional_workers(
+        context='application shutdown', process_shutdown=True,
+    )
     try:
         control_server._API.stop_server()
     except Exception:  # noqa: BLE001

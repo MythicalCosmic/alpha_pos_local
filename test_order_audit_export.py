@@ -59,6 +59,7 @@ def _collector_enabled(monkeypatch):
     monkeypatch.setattr(order_audit, '_enabled_from_state', lambda: True)
     monkeypatch.setattr(order_audit, '_desktop_version', lambda: '1.0.test')
     monkeypatch.setattr(order_audit, '_device_id', lambda: 'test-device')
+    monkeypatch.setattr(order_audit, '_PROCESS_SHUTDOWN', threading.Event())
 
 
 def test_default_toggle_is_on_when_setting_is_absent(monkeypatch):
@@ -895,6 +896,89 @@ def test_collector_stop_joins_writer_before_reset(monkeypatch):
     assert not thread.is_alive()
     assert order_audit._STARTED is False
     assert order_audit._THREAD is None
+
+
+def test_process_shutdown_latch_blocks_status_triggered_collector_restart(
+        monkeypatch):
+    starts = []
+
+    class FakeThread:
+        def start(self):
+            starts.append(True)
+
+    monkeypatch.setattr(order_audit.threading, 'Thread', lambda **_kwargs: FakeThread())
+    monkeypatch.setattr(order_audit, '_register_signals', lambda: None)
+    monkeypatch.setattr(order_audit, '_STARTED', False)
+    monkeypatch.setattr(order_audit, '_THREAD', None)
+    monkeypatch.setattr(order_audit, '_SENDER_THREAD', None)
+
+    order_audit.begin_process_shutdown()
+
+    assert order_audit._PROCESS_SHUTDOWN.is_set()
+    assert order_audit._STOP.is_set()
+    assert order_audit._AUTO_WAKE.is_set()
+    assert order_audit.start_background_collector() is False
+    assert starts == []
+
+
+def test_normal_collector_stop_remains_restartable(monkeypatch):
+    started = threading.Event()
+
+    def worker():
+        started.set()
+        order_audit._STOP.wait(5)
+
+    monkeypatch.setattr(order_audit, '_collector_worker', worker)
+    monkeypatch.setattr(order_audit, '_auto_sender_worker', worker)
+    monkeypatch.setattr(order_audit, '_register_signals', lambda: None)
+    monkeypatch.setattr(order_audit, '_STARTED', False)
+    monkeypatch.setattr(order_audit, '_THREAD', None)
+    monkeypatch.setattr(order_audit, '_SENDER_THREAD', None)
+    monkeypatch.setattr(order_audit, '_STOP', threading.Event())
+
+    assert order_audit.start_background_collector() is True
+    assert started.wait(1)
+    assert order_audit.stop_background_collector(timeout=1) is True
+    assert order_audit.start_background_collector() is True
+    assert order_audit.stop_background_collector(timeout=1) is True
+
+
+def test_process_shutdown_latches_optional_workers_before_stop(monkeypatch):
+    from desktop import app, local_telegram_audit, support_tunnel
+
+    calls = []
+    monkeypatch.setattr(
+        order_audit, 'begin_process_shutdown',
+        lambda: calls.append('order_latch'),
+    )
+    monkeypatch.setattr(
+        local_telegram_audit, 'begin_process_shutdown',
+        lambda: calls.append('telegram_latch'),
+    )
+    monkeypatch.setattr(
+        support_tunnel, 'stop',
+        lambda **kwargs: calls.append(('support_stop', kwargs.get('timeout'))),
+    )
+    monkeypatch.setattr(
+        order_audit, 'stop_background_collector',
+        lambda **_kwargs: calls.append('order_stop') or True,
+    )
+    monkeypatch.setattr(
+        local_telegram_audit, 'stop_background_notifier',
+        lambda **_kwargs: calls.append('telegram_stop') or True,
+    )
+
+    app._stop_optional_workers(
+        context='test shutdown', support_timeout=5, process_shutdown=True,
+    )
+
+    assert calls == [
+        'order_latch',
+        'telegram_latch',
+        ('support_stop', 5),
+        'order_stop',
+        'telegram_stop',
+    ]
 
 
 def test_factory_reset_aborts_when_audit_writer_cannot_quiesce(monkeypatch):
