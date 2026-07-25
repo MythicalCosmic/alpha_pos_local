@@ -39,6 +39,11 @@ order and tender totals were complete.
   UUID.
 - Stores hard-delete tombstones even while transport is disabled, allowing a
   later reconnect to remove the same record on the cloud.
+- Publishes the server's legacy-courier cleanup through the ordinary change
+  feed instead of applying an invisible bulk database update.
+- Disables Django's unsafe bulk-delete admin shortcut for synced data; ordinary
+  one-record admin deletion remains available through the sync-aware soft
+  delete path.
 - Removes login timestamps from replicated User payloads so routine logins no
   longer create false identity versions or hide later cloud changes.
 - Rebases natural-key UUID convergence and its exact outbound queue generation
