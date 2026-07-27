@@ -14,11 +14,15 @@ from django.urls import path, include
 
 from base.services.sync.views import get_sync_urls
 from notifications.views import qr_order_views
+from desktop.version import __version__
 
 
 def healthz(_request):
-    sha = os.environ.get('APP_GIT_SHA', 'unknown')
-    return HttpResponse(f'ok {sha}', content_type='text/plain')
+    # Frozen restaurant builds do not always receive APP_GIT_SHA. Never return
+    # "unknown": the release version is the minimum evidence needed to verify
+    # that a checkout-hardening rollout actually reached the till.
+    build_identity = os.environ.get('APP_GIT_SHA') or f'desktop-{__version__}'
+    return HttpResponse(f'ok {build_identity}', content_type='text/plain')
 
 
 urlpatterns = [

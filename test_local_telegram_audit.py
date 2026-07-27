@@ -664,8 +664,9 @@ def test_shift_close_report_uses_half_open_canonical_money_and_explicit_differen
     assert 'Customer cancellation before handoff' in text
     assert (
         'CASH | expected 75.00 UZS | counted 74.00 UZS | '
-        'difference -1.00 UZS | confirmed 75.00 UZS'
+        'difference -1.00 UZS | status COUNTED | cashier count COUNTED'
     ) in text
+    assert 'manager confirmed NOT YET' in text
     assert str(expense.uuid) in text
     assert 'amount 15.00 UZS' in text
     assert 'category Supplies' in text

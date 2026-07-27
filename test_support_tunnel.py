@@ -496,12 +496,18 @@ def test_probe_accepts_real_local_health_contract_and_rejects_lookalikes(
     monkeypatch,
 ):
     from config.urls import healthz
+    from desktop.version import __version__
 
     monkeypatch.setenv('APP_GIT_SHA', 'abc1234-release.1')
     actual = healthz(None).content
     assert actual == b'ok abc1234-release.1'
     assert support_tunnel._valid_backend_health_body(actual) is True
     assert support_tunnel._valid_backend_health_body(b'ok') is True
+
+    monkeypatch.delenv('APP_GIT_SHA')
+    versioned = healthz(None).content
+    assert versioned == f'ok desktop-{__version__}'.encode()
+    assert support_tunnel._valid_backend_health_body(versioned) is True
 
     for malformed in (
         b'not-ok',

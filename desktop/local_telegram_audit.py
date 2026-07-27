@@ -772,6 +772,11 @@ def _money(value: Any) -> str:
         return str(value or '0.00')
 
 
+def _evidence_money(value: Any) -> str:
+    """Format nullable audit evidence without inventing a numeric zero."""
+    return 'UNAVAILABLE' if value is None else f'{_money(value)} UZS'
+
+
 def _person_name(person: Any) -> str:
     if person is None:
         return '\u2014'
@@ -1619,6 +1624,14 @@ def build_shift_report(
         is_deleted=False,
     ).order_by('method', 'id')
     settlement_count = settlement_rows.count()
+    # Core owns the distinction between an omitted blind count, an explicit
+    # cashier count (including an explicit zero), and a manager-confirmed
+    # settlement.  Do not infer COUNTED merely because the shift is closed.
+    from core.shifts.service import ShiftService
+    settlement_contracts = {
+        row['method']: row
+        for row in ShiftService._shift_settlement(shift)
+    }
 
     directory = Path(output_dir) if output_dir is not None else AUDIT_DIR / 'reports'
     directory.mkdir(parents=True, exist_ok=True)
@@ -1714,13 +1727,61 @@ def build_shift_report(
             'confirmed_amount', 'created_at', 'updated_at',
         )[:REPORT_MAX_SETTLEMENT_ROWS]
         for row in settlement_values:
-            line = (
-                f'{row["method"]} | expected {_money(row["expected_amount"])} UZS | '
-                f'counted {_money(row["counted_amount"])} UZS | '
-                f'difference {_money(row["difference"])} UZS | '
-                f'confirmed {_money(row["confirmed_amount"])} UZS | '
-                f'frozen {_format_datetime(row["created_at"])} | '
-                f'updated {_format_datetime(row["updated_at"])}'
+            contract = settlement_contracts.get(row['method'], {})
+            status = contract.get('status', 'UNKNOWN')
+            expected = contract.get('expected', row['expected_amount'])
+            frozen_expected = contract.get(
+                'frozen_expected', row['expected_amount'],
+            )
+            expected_source = contract.get('expected_source')
+            cashier_count_submitted = contract.get(
+                'cashier_count_submitted',
+                status not in {'UNCOUNTED'},
+            )
+            cashier_count_status = contract.get(
+                'cashier_count_status',
+                'COUNTED' if cashier_count_submitted else 'UNCOUNTED',
+            )
+            confirmed = contract.get('confirmed')
+            confirmation_difference = contract.get(
+                'confirmation_difference',
+            )
+            if not cashier_count_submitted:
+                line = (
+                    f'{row["method"]} | status {status} | '
+                    f'cashier count {cashier_count_status} | '
+                    f'expected {_evidence_money(expected)} | '
+                    'counted NOT SUBMITTED | difference NOT APPLICABLE | '
+                    f'frozen {_format_datetime(row["created_at"])} | '
+                    f'updated {_format_datetime(row["updated_at"])}'
+                )
+            else:
+                counted = contract.get('counted', row['counted_amount'])
+                difference = contract.get('difference', row['difference'])
+                line = (
+                    f'{row["method"]} | expected {_evidence_money(expected)} | '
+                    f'counted {_evidence_money(counted)} | '
+                    f'difference {_evidence_money(difference)} | '
+                    f'status {status} | '
+                    f'cashier count {cashier_count_status} | '
+                    f'frozen {_format_datetime(row["created_at"])} | '
+                    f'updated {_format_datetime(row["updated_at"])}'
+                )
+            if confirmed is None:
+                line += ' | manager confirmed NOT YET'
+            else:
+                line += (
+                    f' | manager confirmed {_evidence_money(confirmed)}'
+                    ' | manager variance '
+                    f'{_evidence_money(confirmation_difference)}'
+                )
+            line += (
+                f' | expected source {expected_source or "UNKNOWN"}'
+                f' | frozen expected {_money(frozen_expected)} UZS'
+                ' | frozen difference '
+                f'{_money(contract.get("frozen_difference", row["difference"]))} UZS'
+                ' | difference source '
+                f'{contract.get("difference_source") or "UNKNOWN"}'
             )
             if markdown:
                 line = '- ' + line.replace('|', '\\|')

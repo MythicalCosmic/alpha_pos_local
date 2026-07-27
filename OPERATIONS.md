@@ -27,15 +27,16 @@ ssh -i "$RELEASE_KEY" "${RELEASE_USER}@${CONTROL_HOST}"
 
 Run on **this PC** (the build box — it has the signing keys in `update_keys/`):
 
-**Required cashier preflight:** Alpha POS Desktop 1.0.36 supports Smart POS
-**0.0.5 or newer**. Earlier cashier builds could submit payment with an empty
-body; the hardened backend intentionally rejects that request instead of
-silently recording it as cash.
+**Required cashier preflight:** Alpha POS Desktop 1.0.37 supports Smart POS
+**0.0.11 or newer**. Smart POS 0.0.11 must send explicit tender lines, retain a
+stable payment idempotency key across uncertain retries, and preserve CASH
+given for customer change. The hardened backend rejects ambiguous payment
+evidence instead of silently recording it as cash.
 
 There is no reliable server-side version detection for an ordinary checkout.
 Before upgrading, manually record the Smart POS version from each station's
 trusted version display or deployment record. Stop if any version is below
-0.0.5 or cannot be verified. With checkouts stopped and preferably after shift
+0.0.11 or cannot be verified. With checkouts stopped and preferably after shift
 close, record the local queue counts and cash/card totals. Upgrade one canary
 station first, perform controlled cash, card, and any supported split-tender
 checkouts, and verify one local order/payment record per sale plus a clean sync
