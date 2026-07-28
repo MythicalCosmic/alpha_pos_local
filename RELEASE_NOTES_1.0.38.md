@@ -23,10 +23,12 @@ completes the backend/local codebase structure cleanup.
   were removed without changing the accounting or synchronization contracts.
 - Shared-core full replay pagination now uses a bounded machine-to-machine
   page size instead of the smaller public API pagination ceiling.
+- Long full-replay pages retain their database lease for the complete bounded
+  apply window, preventing the periodic worker from taking over mid-replay.
 
 ## Verification
 
-- Shared core: 941 passed, 2 edition-specific skips.
+- Shared core: 942 passed, 2 edition-specific skips.
 - Desktop/local edition: 502 passed, 11 platform/database-specific skips.
 - Django checks, Ruff, compilation, and diff validation passed.
 
