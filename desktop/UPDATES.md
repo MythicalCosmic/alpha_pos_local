@@ -153,7 +153,7 @@ The automated success, failure, rollback and no-console contracts run with:
 
 ```powershell
 $env:DEBUG='True'; $env:SECRET_KEY='test'
-..\.venv\Scripts\python.exe -m pytest test_updater_flow.py -q
+..\.venv\Scripts\python.exe -m pytest tests/release/test_updater_flow.py -q
 ```
 
 For a manual dummy run, create sibling `current` and `staged` directories under

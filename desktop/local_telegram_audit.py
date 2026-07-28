@@ -616,23 +616,6 @@ def _mark_sent(event_key: str, chat_id: str) -> None:
             connection.close()
 
 
-def _mark_suppressed(event_key: str, chat_id: str) -> None:
-    with _DB_LOCK:
-        connection = _connect()
-        try:
-            with connection:
-                connection.execute(
-                    """
-                    UPDATE deliveries
-                    SET state='suppressed', sent_at=?, last_error=''
-                    WHERE event_key=? AND chat_id=?
-                    """,
-                    (time.time(), event_key, chat_id),
-                )
-        finally:
-            connection.close()
-
-
 def _mark_failed(row: dict[str, Any], exc: Any, *, token: str) -> str:
     attempts = int(row.get('attempts') or 0) + 1
     delay = min(MAX_RETRY_SECONDS, 5.0 * (2 ** min(attempts - 1, 10)))

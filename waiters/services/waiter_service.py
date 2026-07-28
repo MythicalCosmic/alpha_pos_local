@@ -5,8 +5,6 @@ from datetime import datetime
 from decimal import Decimal
 
 from django.db.models import Count, Q, Sum
-from django.utils import timezone
-
 from base.helpers.response import ServiceResponse
 from base.models import AppSettings, Order, OrderRefund, PaymentMethodConfig
 

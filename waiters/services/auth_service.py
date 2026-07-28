@@ -6,6 +6,7 @@ from django.utils import timezone
 from base.repositories import UserRepository, SessionRepository
 from base.security.hashing import verify_password, verify_password_dummy
 from base.helpers.response import ServiceResponse
+from base.services.branch_scope import resolve_actor_branch
 from notifications.handlers.shift import ShiftNotification
 from base.models import User
 
@@ -18,14 +19,14 @@ class WaiterAuthService:
     @staticmethod
     def _user_data(user):
         return {
-            'id': user.id,
-            'uuid': str(user.uuid),
-            'email': user.email,
-            'first_name': user.first_name,
-            'last_name': user.last_name,
-            'role': user.role,
-            'status': user.status,
-            'branch_id': user.branch_id,
+            "id": user.id,
+            "uuid": str(user.uuid),
+            "email": user.email,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "role": user.role,
+            "status": user.status,
+            "branch_id": resolve_actor_branch(user),
         }
 
     @staticmethod
@@ -58,8 +59,8 @@ class WaiterAuthService:
         if user.role != User.RoleChoices.WAITER:
             return ServiceResponse.forbidden("Only waiter accounts can log in here")
 
-        branch_id = getattr(settings, 'BRANCH_ID', '')
-        if branch_id and user.branch_id and user.branch_id != branch_id:
+        branch_id = str(getattr(settings, "BRANCH_ID", "") or "").strip()
+        if branch_id and resolve_actor_branch(user) != branch_id:
             return ServiceResponse.forbidden("You are not authorized for this branch")
 
         session_key = secrets.token_hex(32)
@@ -79,12 +80,12 @@ class WaiterAuthService:
         login_at = timezone.now()
         User._base_manager.filter(pk=user.pk).update(
             last_login_at=login_at,
-            last_login_api=(ip_address or '')[:20],
+            last_login_api=(ip_address or "")[:20],
         )
         user.last_login_at = login_at
-        user.last_login_api = (ip_address or '')[:20]
+        user.last_login_api = (ip_address or "")[:20]
 
-        user_name = f'{user.first_name} {user.last_name}'.strip()
+        user_name = f"{user.first_name} {user.last_name}".strip()
         ShiftNotification.on_cashier_login(user.id, user_name)
 
         # Shifts are manual: login no longer opens one. The waiter opens it
@@ -92,14 +93,17 @@ class WaiterAuthService:
 
         try:
             from hr.services import AttendanceService
+
             AttendanceService.auto_check_in(user.id)
         except Exception:
-            logger.exception('auto_check_in failed during waiter login (user=%s)', user.id)
+            logger.exception(
+                "auto_check_in failed during waiter login (user=%s)", user.id
+            )
 
         return ServiceResponse.success(
             data={
-                'token': session_key,
-                'user': WaiterAuthService._user_data(user),
+                "token": session_key,
+                "user": WaiterAuthService._user_data(user),
             },
             message="Login successful",
         )
@@ -121,9 +125,12 @@ class WaiterAuthService:
         if user:
             try:
                 from hr.services import AttendanceService
+
                 AttendanceService.auto_check_out(user.id)
             except Exception:
-                logger.exception('auto_check_out failed during waiter logout (user=%s)', user.id)
+                logger.exception(
+                    "auto_check_out failed during waiter logout (user=%s)", user.id
+                )
 
         SessionRepository.invalidate_cache(session_key)
         SessionRepository.delete(session)
@@ -143,7 +150,9 @@ class WaiterAuthService:
         if not user:
             return ServiceResponse.unauthorized("Invalid session")
         data = WaiterAuthService._user_data(user)
-        data['last_login_at'] = user.last_login_at.isoformat() if user.last_login_at else None
+        data["last_login_at"] = (
+            user.last_login_at.isoformat() if user.last_login_at else None
+        )
         return ServiceResponse.success(data=data, message="User data retrieved")
 
     @staticmethod
@@ -160,7 +169,6 @@ class WaiterAuthService:
             ),
         }, 403
 
-
     @staticmethod
     def get_active_sessions(session_key):
         session, user = WaiterAuthService._get_session_user(session_key)
@@ -169,13 +177,16 @@ class WaiterAuthService:
         sessions = SessionRepository.get_by_user(user)
         return ServiceResponse.success(
             data={
-                'sessions': [
+                "sessions": [
                     {
-                        'id': s.id,
-                        'ip_address': s.ip_address,
-                        'user_agent': s.user_agent,
-                        'last_activity': s.last_activity.isoformat() if s.last_activity else None,
-                        'is_current': s.payload == SessionRepository.hash_token(session_key),
+                        "id": s.id,
+                        "ip_address": s.ip_address,
+                        "user_agent": s.user_agent,
+                        "last_activity": s.last_activity.isoformat()
+                        if s.last_activity
+                        else None,
+                        "is_current": s.payload
+                        == SessionRepository.hash_token(session_key),
                     }
                     for s in sessions
                 ],
@@ -192,7 +203,9 @@ class WaiterAuthService:
         if not target or target.user_id_id != session.user_id_id:
             return ServiceResponse.not_found("Session not found")
         if target.payload == SessionRepository.hash_token(session_key):
-            return ServiceResponse.error("Cannot revoke current session, use logout instead")
+            return ServiceResponse.error(
+                "Cannot revoke current session, use logout instead"
+            )
         # target.payload is the stored hash; deleting the row fires the
         # post_delete signal which drops session:{hash} from the cache.
         SessionRepository.delete(target)

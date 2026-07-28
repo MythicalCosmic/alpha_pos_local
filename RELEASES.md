@@ -16,7 +16,7 @@ each till:  on launch, updater.py checks /updates, downloads the newer signed bu
 
 ## Cashier-frontend compatibility gate
 
-Alpha POS Desktop 1.0.37 requires **Smart POS 0.0.11 or newer** on every
+Alpha POS Desktop 1.0.38 requires **Smart POS 0.0.11 or newer** on every
 cashier station. Smart POS 0.0.11 is the first release approved for explicit
 tender validation, persistent payment idempotency, and auditable CASH change.
 The desktop backend rejects a non-zero order without valid tender evidence.

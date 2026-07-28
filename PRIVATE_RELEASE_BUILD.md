@@ -11,7 +11,7 @@ The version remains controlled by `desktop/version.py`. After the release owner
 sets the intended version, run:
 
 ```powershell
-$Version = '1.0.37'
+$Version = '1.0.38'
 powershell -ExecutionPolicy Bypass -File .\build_installer.ps1 `
   -PrivateSupportConfig ".\DELIVERABLES\AlphaPOS-$Version-Support-Config.json"
 ```

@@ -1,0 +1,1 @@
+"""Cashier authentication tests."""

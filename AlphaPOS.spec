@@ -15,7 +15,9 @@ def collect_runtime_submodules(package):
     return collect_submodules(
         package,
         filter=lambda name: all(
-            part not in {'test', 'tests'} and not part.startswith('test_')
+            part not in {'test', 'tests'}
+            and not part.startswith('test_')
+            and not part.endswith('_test')
             for part in name.split('.')
         ),
     )
@@ -27,6 +29,7 @@ def collect_runtime_data(package, **kwargs):
         if all(
             part.lower() not in {'test', 'tests'}
             and not part.lower().startswith('test_')
+            and not part.lower().endswith('_test.py')
             for part in os.path.normpath(row[0]).split(os.sep)
         )
     ]
@@ -121,12 +124,9 @@ datas += collect_data_files('webview')  # WebView2 assemblies in webview/lib
 for app in APPS:
     datas += collect_runtime_data(app, include_py_files=True)
 
-# Core's NON-app packages from the (editable / submodule) core: the shared config
-# base (`alpha_pos_core` = settings_base/urls/asgi) and the shims (`core` =
-# shifts/attendance/realtime/sync_ws). PyInstaller's module graph misses editable-
-# install packages, so collect their .py as data (same way the apps above are
-# bundled) — otherwise the frozen app ModuleNotFounds on `config.settings`'
-# `from alpha_pos_core.settings_base import *` and on `core.shifts`.
+# Collect the shared settings package and the non-app ``core`` services
+# (shift orchestration and realtime). PyInstaller's module graph can miss
+# editable packages, so include their Python sources explicitly.
 for _pkg in ('core', 'alpha_pos_core'):
     datas += collect_runtime_data(_pkg, include_py_files=True)
     hiddenimports += collect_runtime_submodules(_pkg)

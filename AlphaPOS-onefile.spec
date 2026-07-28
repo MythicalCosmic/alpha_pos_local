@@ -19,7 +19,9 @@ def collect_runtime_submodules(package):
     return collect_submodules(
         package,
         filter=lambda name: all(
-            part not in {'test', 'tests'} and not part.startswith('test_')
+            part not in {'test', 'tests'}
+            and not part.startswith('test_')
+            and not part.endswith('_test')
             for part in name.split('.')
         ),
     )
@@ -31,6 +33,7 @@ def collect_runtime_data(package, **kwargs):
         if all(
             part.lower() not in {'test', 'tests'}
             and not part.lower().startswith('test_')
+            and not part.lower().endswith('_test.py')
             for part in os.path.normpath(row[0]).split(os.sep)
         )
     ]

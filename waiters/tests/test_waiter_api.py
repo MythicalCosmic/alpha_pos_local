@@ -6,16 +6,18 @@
 Service-level tests (the local-edition convention — see customers/tests). The
 waiters app is only installed on the local edition, so the whole module is
 skipped where it isn't (e.g. a core-only or server test run)."""
+
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
 from django.apps import apps
+from django.test import override_settings
 from django.utils import timezone
 
 pytestmark = pytest.mark.skipif(
-    not apps.is_installed('waiters'),
-    reason='waiters app — runs on the local edition',
+    not apps.is_installed("waiters"),
+    reason="waiters app — runs on the local edition",
 )
 
 
@@ -23,31 +25,92 @@ pytestmark = pytest.mark.skipif(
 def operating_now(monkeypatch):
     """Keep "today" stats tests out of the intentional 03:00-07:00 quiet gap."""
     fixed = datetime(
-        2026, 7, 23, 12, 0, tzinfo=ZoneInfo('Asia/Tashkent'),
+        2026,
+        7,
+        23,
+        12,
+        0,
+        tzinfo=ZoneInfo("Asia/Tashkent"),
     )
-    monkeypatch.setattr(timezone, 'now', lambda: fixed)
+    monkeypatch.setattr(timezone, "now", lambda: fixed)
     return fixed
 
 
-def _waiter(email='waiter1@test.local'):
+def _waiter(email="waiter1@test.local"):
     from base.models import User
     from base.security.hashing import hash_password
+
     return User.objects.create(
-        first_name='Wai', last_name='Ter', email=email,
-        password=hash_password('1234'), role=User.RoleChoices.WAITER,
+        first_name="Wai",
+        last_name="Ter",
+        email=email,
+        password=hash_password("1234"),
+        role=User.RoleChoices.WAITER,
         status=User.UserStatus.ACTIVE,
     )
 
 
-def _order(waiter, status='PREPARING', is_paid=False, table=None, total='10.00'):
+def _order(waiter, status="PREPARING", is_paid=False, table=None, total="10.00"):
     from base.models import Order
+
     return Order.objects.create(
-        user=waiter, cashier=waiter, order_type='HALL', status=status,
-        is_paid=is_paid, display_id=Order.objects.count() + 1,
-        subtotal=total, total_amount=total, table=table,
-        payment_method='CASH' if is_paid else None,
+        user=waiter,
+        cashier=waiter,
+        order_type="HALL",
+        status=status,
+        is_paid=is_paid,
+        display_id=Order.objects.count() + 1,
+        subtotal=total,
+        total_amount=total,
+        table=table,
+        payment_method="CASH" if is_paid else None,
         paid_at=timezone.now() if is_paid else None,
     )
+
+
+@pytest.mark.parametrize("identity_branch", ["", "cloud", "CLOUD"])
+@pytest.mark.django_db
+@override_settings(DEPLOYMENT_MODE="local", BRANCH_ID="branch1")
+def test_global_waiter_identity_can_log_in_on_bound_local_branch(
+    identity_branch,
+):
+    from waiters.services.auth_service import WaiterAuthService
+
+    waiter = _waiter(
+        email=f'global-waiter-{identity_branch or "blank"}@test.local',
+    )
+    waiter.branch_id = identity_branch
+    waiter.save(update_fields=["branch_id"])
+
+    result, status = WaiterAuthService.login(
+        email=waiter.email,
+        password="1234",
+        ip_address="127.0.0.1",
+        user_agent="pytest",
+    )
+
+    assert status == 200, result
+    assert result["data"]["user"]["branch_id"] == "branch1"
+
+
+@pytest.mark.django_db
+@override_settings(DEPLOYMENT_MODE="local", BRANCH_ID="branch1")
+def test_concrete_foreign_waiter_identity_is_denied_on_local_branch():
+    from waiters.services.auth_service import WaiterAuthService
+
+    waiter = _waiter(email="foreign-waiter@test.local")
+    waiter.branch_id = "branch2"
+    waiter.save(update_fields=["branch_id"])
+
+    result, status = WaiterAuthService.login(
+        email=waiter.email,
+        password="1234",
+        ip_address="127.0.0.1",
+        user_agent="pytest",
+    )
+
+    assert status == 403
+    assert result["message"] == "You are not authorized for this branch"
 
 
 @pytest.mark.django_db
@@ -59,36 +122,38 @@ def test_waiter_login_does_not_create_replicated_user_generation():
 
     result, status = WaiterAuthService.login(
         email=waiter.email,
-        password='1234',
-        ip_address='127.0.0.1',
-        user_agent='pytest',
+        password="1234",
+        ip_address="127.0.0.1",
+        user_agent="pytest",
     )
 
     assert status == 200, result
-    token = result['data']['token']
+    token = result["data"]["token"]
     waiter.refresh_from_db()
     assert waiter.sync_version == version_before
     assert waiter.last_login_at is not None
-    assert waiter.last_login_api == '127.0.0.1'
+    assert waiter.last_login_api == "127.0.0.1"
 
     old_hash = waiter.password
     result, status = WaiterAuthService.change_password(
-        token, '1234', 'different-password',
+        token,
+        "1234",
+        "different-password",
     )
     waiter.refresh_from_db()
     assert status == 403
-    assert result['code'] == 'cloud_managed_credentials'
-    assert 'cloud administrator' in result['message']
+    assert result["code"] == "cloud_managed_credentials"
+    assert "cloud administrator" in result["message"]
     assert waiter.password == old_hash
     assert waiter.sync_version == version_before
 
     result, status = WaiterAuthService.change_password(
         token,
-        'wrong-current-password',
-        'another-password',
+        "wrong-current-password",
+        "another-password",
     )
     assert status == 403
-    assert result['code'] == 'cloud_managed_credentials'
+    assert result["code"] == "cloud_managed_credentials"
 
 
 @pytest.mark.django_db
@@ -102,69 +167,74 @@ def test_waiter_cancel_uses_live_payment_rows_only():
         user=waiter,
         status=Shift.Status.ACTIVE,
         start_time=timezone.now() - timedelta(hours=1),
-        branch_id='main',
+        branch_id="main",
     )
-    order = _order(waiter, is_paid=True, total='10.00')
-    order.payment_method = 'MIXED'
-    order.save(update_fields=['payment_method'])
+    order = _order(waiter, is_paid=True, total="10.00")
+    order.payment_method = "MIXED"
+    order.save(update_fields=["payment_method"])
     # Creating the paid order takes the branch accounting lock and therefore
     # creates its zero-balance register. Reuse that owner row and seed the cash
     # this test expects the cancellation to return.
     register = CashRegister.objects.get(
-        branch_id=order.branch_id, is_deleted=False,
+        branch_id=order.branch_id,
+        is_deleted=False,
     )
-    register.current_balance = Decimal('4.00')
-    register.save(update_fields=['current_balance'])
-    OrderPayment.objects.create(order=order, method='HUMO', amount='6.00')
-    OrderPayment.objects.create(order=order, method='CASH', amount='4.00')
-    stale = OrderPayment.objects.create(order=order, method='UZCARD', amount='9.00')
+    register.current_balance = Decimal("4.00")
+    register.save(update_fields=["current_balance"])
+    OrderPayment.objects.create(order=order, method="HUMO", amount="6.00")
+    OrderPayment.objects.create(order=order, method="CASH", amount="4.00")
+    stale = OrderPayment.objects.create(order=order, method="UZCARD", amount="9.00")
     stale.delete()
 
     result, status = WaiterOrderService.cancel_order(order.id, waiter.id)
     assert status == 200, result
     register.refresh_from_db()
-    assert register.current_balance == Decimal('0.00')
+    assert register.current_balance == Decimal("0.00")
 
 
 @pytest.mark.django_db
 class TestRequestPayment:
     def test_stamps_once_and_is_idempotent(self):
         from waiters.services.order_service import WaiterOrderService
+
         w = _waiter()
         o = _order(w)
 
         res, st = WaiterOrderService.request_payment(o.id, w.id)
-        assert st == 200 and res['success']
+        assert st == 200 and res["success"]
         o.refresh_from_db()
         assert o.payment_requested_at is not None
         first = o.payment_requested_at
 
         # Repeat call must not move the timestamp.
         res2, st2 = WaiterOrderService.request_payment(o.id, w.id)
-        assert st2 == 200 and res2['success']
+        assert st2 == 200 and res2["success"]
         o.refresh_from_db()
         assert o.payment_requested_at == first
 
     def test_rejects_paid_order(self):
         from waiters.services.order_service import WaiterOrderService
+
         w = _waiter()
         o = _order(w, is_paid=True)
         res, st = WaiterOrderService.request_payment(o.id, w.id)
-        assert st == 400 and not res['success']
+        assert st == 400 and not res["success"]
         o.refresh_from_db()
         assert o.payment_requested_at is None
 
     def test_rejects_cancelled_order(self):
         from waiters.services.order_service import WaiterOrderService
+
         w = _waiter()
-        o = _order(w, status='CANCELED')
+        o = _order(w, status="CANCELED")
         res, st = WaiterOrderService.request_payment(o.id, w.id)
-        assert st == 400 and not res['success']
+        assert st == 400 and not res["success"]
 
     def test_forbids_another_waiters_order(self):
         from waiters.services.order_service import WaiterOrderService
-        w1 = _waiter('w1@test.local')
-        w2 = _waiter('w2@test.local')
+
+        w1 = _waiter("w1@test.local")
+        w2 = _waiter("w2@test.local")
         o = _order(w1)
         res, st = WaiterOrderService.request_payment(o.id, w2.id)
         assert st == 403
@@ -173,6 +243,7 @@ class TestRequestPayment:
 
     def test_missing_order_404(self):
         from waiters.services.order_service import WaiterOrderService
+
         w = _waiter()
         res, st = WaiterOrderService.request_payment(999999, w.id)
         assert st == 404
@@ -182,100 +253,108 @@ class TestRequestPayment:
         highlight orders awaiting collection."""
         from waiters.services.order_service import WaiterOrderService
         from customers.services.order_service import CustomerOrderService
+
         w = _waiter()
         o = _order(w)
         WaiterOrderService.request_payment(o.id, w.id)
 
         res, st = CustomerOrderService.get_all_orders()
         assert st == 200
-        row = next(r for r in res['data']['orders'] if r['id'] == o.id)
-        assert row['payment_requested_at'] is not None
+        row = next(r for r in res["data"]["orders"] if r["id"] == o.id)
+        assert row["payment_requested_at"] is not None
 
 
 @pytest.mark.django_db
-@pytest.mark.usefixtures('operating_now')
+@pytest.mark.usefixtures("operating_now")
 class TestWaiterStats:
     def test_counts_and_sales(self):
         from waiters.services.waiter_service import WaiterService
+
         w = _waiter()
-        _order(w, status='COMPLETED', is_paid=True, total='30.00')
-        _order(w, status='PREPARING', is_paid=False, total='10.00')
-        _order(w, status='CANCELED', total='5.00')
+        _order(w, status="COMPLETED", is_paid=True, total="30.00")
+        _order(w, status="PREPARING", is_paid=False, total="10.00")
+        _order(w, status="CANCELED", total="5.00")
 
         res, st = WaiterService.get_stats(w.id)
         assert st == 200
-        d = res['data']
-        assert d['orders_count'] == 3
-        assert d['paid_count'] == 1
-        assert d['active_count'] == 1        # the unpaid PREPARING one
-        assert d['cancelled_count'] == 1
-        assert d['sales_total'] == '30.00'   # paid orders only
+        d = res["data"]
+        assert d["orders_count"] == 3
+        assert d["paid_count"] == 1
+        assert d["active_count"] == 1  # the unpaid PREPARING one
+        assert d["cancelled_count"] == 1
+        assert d["sales_total"] == "30.00"  # paid orders only
 
     def test_scoped_to_the_waiter(self):
         from waiters.services.waiter_service import WaiterService
-        w1 = _waiter('w1@test.local')
-        w2 = _waiter('w2@test.local')
-        _order(w1, is_paid=True, total='99.00')
+
+        w1 = _waiter("w1@test.local")
+        w2 = _waiter("w2@test.local")
+        _order(w1, is_paid=True, total="99.00")
 
         res, st = WaiterService.get_stats(w2.id)
         assert st == 200
-        assert res['data']['orders_count'] == 0
-        assert res['data']['sales_total'] == '0.00'
+        assert res["data"]["orders_count"] == 0
+        assert res["data"]["sales_total"] == "0.00"
 
     def test_tables_served_is_distinct(self):
         from base.models import Place, Table
         from waiters.services.waiter_service import WaiterService
+
         w = _waiter()
-        place = Place.objects.create(name='Main')
-        t1 = Table.objects.create(place=place, number='1')
-        t2 = Table.objects.create(place=place, number='2')
+        place = Place.objects.create(name="Main")
+        t1 = Table.objects.create(place=place, number="1")
+        t2 = Table.objects.create(place=place, number="2")
         _order(w, table=t1)
-        _order(w, table=t1)   # same table — counted once
+        _order(w, table=t1)  # same table — counted once
         _order(w, table=t2)
-        _order(w)             # no table — not counted
+        _order(w)  # no table — not counted
 
         res, st = WaiterService.get_stats(w.id)
         assert st == 200
-        assert res['data']['tables_served'] == 2
+        assert res["data"]["tables_served"] == 2
 
     def test_date_window_defaults_to_today(self):
         from base.models import Order
         from waiters.services.waiter_service import WaiterService
+
         w = _waiter()
-        old = _order(w, is_paid=True, total='50.00')
+        old = _order(w, is_paid=True, total="50.00")
         # auto_now_add stamps "now"; rewrite it to yesterday via .update (which
         # bypasses auto_now_add) so it falls outside the default today window.
         yesterday = timezone.now() - timedelta(days=1)
         Order.objects.filter(pk=old.pk).update(
-            created_at=yesterday, paid_at=yesterday,
+            created_at=yesterday,
+            paid_at=yesterday,
         )
-        _order(w, is_paid=True, total='20.00')   # today
+        _order(w, is_paid=True, total="20.00")  # today
 
         res, _ = WaiterService.get_stats(w.id)
-        assert res['data']['orders_count'] == 1
-        assert res['data']['sales_total'] == '20.00'
+        assert res["data"]["orders_count"] == 1
+        assert res["data"]["sales_total"] == "20.00"
 
         from base.services.business_day import business_date
+
         res2, _ = WaiterService.get_stats(
-            w.id, date_from=business_date(yesterday).isoformat())
-        assert res2['data']['orders_count'] == 2
-        assert res2['data']['sales_total'] == '70.00'
+            w.id, date_from=business_date(yesterday).isoformat()
+        )
+        assert res2["data"]["orders_count"] == 2
+        assert res2["data"]["sales_total"] == "70.00"
 
     def test_late_payment_counts_on_settlement_date(self):
         from base.models import Order
         from waiters.services.waiter_service import WaiterService
 
         waiter = _waiter()
-        order = _order(waiter, is_paid=True, status='COMPLETED', total='40.00')
+        order = _order(waiter, is_paid=True, status="COMPLETED", total="40.00")
         yesterday = timezone.now() - timedelta(days=1)
         Order.objects.filter(pk=order.pk).update(created_at=yesterday)
 
         res, status = WaiterService.get_stats(waiter.id)
 
         assert status == 200
-        assert res['data']['orders_count'] == 0
-        assert res['data']['paid_count'] == 1
-        assert res['data']['sales_total'] == '40.00'
+        assert res["data"]["orders_count"] == 0
+        assert res["data"]["paid_count"] == 1
+        assert res["data"]["sales_total"] == "40.00"
 
     def test_pre_cutover_payment_belongs_to_previous_business_day(self):
         from datetime import datetime
@@ -285,42 +364,53 @@ class TestWaiterStats:
         from waiters.services.waiter_service import WaiterService
 
         waiter = _waiter()
-        order = _order(waiter, is_paid=True, status='COMPLETED', total='25.00')
+        order = _order(waiter, is_paid=True, status="COMPLETED", total="25.00")
         before_cutover = datetime(
-            2026, 7, 2, 1, 0, tzinfo=ZoneInfo('Asia/Tashkent'),
+            2026,
+            7,
+            2,
+            1,
+            0,
+            tzinfo=ZoneInfo("Asia/Tashkent"),
         )
         Order.objects.filter(pk=order.pk).update(
-            created_at=before_cutover, paid_at=before_cutover,
+            created_at=before_cutover,
+            paid_at=before_cutover,
         )
 
         previous, _ = WaiterService.get_stats(
-            waiter.id, date_from='2026-07-01', date_to='2026-07-01',
+            waiter.id,
+            date_from="2026-07-01",
+            date_to="2026-07-01",
         )
         calendar, _ = WaiterService.get_stats(
-            waiter.id, date_from='2026-07-02', date_to='2026-07-02',
+            waiter.id,
+            date_from="2026-07-02",
+            date_to="2026-07-02",
         )
 
-        assert previous['data']['orders_count'] == 1
-        assert previous['data']['paid_count'] == 1
-        assert previous['data']['sales_total'] == '25.00'
-        assert calendar['data']['orders_count'] == 0
-        assert calendar['data']['sales_total'] == '0.00'
+        assert previous["data"]["orders_count"] == 1
+        assert previous["data"]["paid_count"] == 1
+        assert previous["data"]["sales_total"] == "25.00"
+        assert calendar["data"]["orders_count"] == 0
+        assert calendar["data"]["sales_total"] == "0.00"
 
 
 @pytest.mark.django_db
 class TestVenueConfig:
     def test_returns_methods_types_and_capabilities(self):
         from waiters.services.waiter_service import WaiterService
+
         res, st = WaiterService.get_venue_config()
         assert st == 200
-        d = res['data']
-        assert 'waiter_enabled' in d
+        d = res["data"]
+        assert "waiter_enabled" in d
         # Payment methods are seeded by migration 0021_seed_payment_methods.
-        codes = {m['code'] for m in d['payment_methods']}
-        assert 'CASH' in codes
-        types = {t['code'] for t in d['order_types']}
-        assert {'HALL', 'DELIVERY', 'PICKUP'} <= types
-        assert d['capabilities']['request_payment'] is True
+        codes = {m["code"] for m in d["payment_methods"]}
+        assert "CASH" in codes
+        types = {t["code"] for t in d["order_types"]}
+        assert {"HALL", "DELIVERY", "PICKUP"} <= types
+        assert d["capabilities"]["request_payment"] is True
 
 
 @pytest.mark.django_db
@@ -330,17 +420,20 @@ class TestCreateOrderAttribution:
         create_order sets it (the invariant request_payment / get_stats rely on)."""
         from base.models import Order
         from waiters.services.order_service import WaiterOrderService
+
         w = _waiter()
         res, st = WaiterOrderService.create_order(
-            user_id=w.id, items=[{'product_id': product.id, 'quantity': 2}],
+            user_id=w.id,
+            items=[{"product_id": product.id, "quantity": 2}],
         )
         assert st == 201
-        o = Order.objects.get(pk=res['data']['order_id'])
+        o = Order.objects.get(pk=res["data"]["order_id"])
         assert o.cashier_id == w.id
         assert o.user_id == w.id
 
 
 # ── Bug-hunt regression coverage ──────────────────────────────────────────────
+
 
 @pytest.mark.django_db
 class TestOwnershipGate:
@@ -349,8 +442,9 @@ class TestOwnershipGate:
 
     def test_blocks_another_waiter(self):
         from waiters.services.order_service import WaiterOrderService
-        w1 = _waiter('w1@test.local')
-        w2 = _waiter('w2@test.local')
+
+        w1 = _waiter("w1@test.local")
+        w2 = _waiter("w2@test.local")
         o = _order(w1)
         order, denied = WaiterOrderService.get_owned_order(o.id, w2.id)
         assert order is None
@@ -358,6 +452,7 @@ class TestOwnershipGate:
 
     def test_allows_owner(self):
         from waiters.services.order_service import WaiterOrderService
+
         w = _waiter()
         o = _order(w)
         order, denied = WaiterOrderService.get_owned_order(o.id, w.id)
@@ -365,6 +460,7 @@ class TestOwnershipGate:
 
     def test_missing_order_404(self):
         from waiters.services.order_service import WaiterOrderService
+
         w = _waiter()
         order, denied = WaiterOrderService.get_owned_order(999999, w.id)
         assert order is None and denied[1] == 404
@@ -376,44 +472,55 @@ class TestCreateOrderValidation:
 
     def test_items_not_a_list(self):
         from waiters.services.order_service import WaiterOrderService
+
         w = _waiter()
-        _, st = WaiterOrderService.create_order(user_id=w.id, items='nope')
+        _, st = WaiterOrderService.create_order(user_id=w.id, items="nope")
         assert st == 422
 
     def test_item_not_a_dict(self):
         from waiters.services.order_service import WaiterOrderService
+
         w = _waiter()
         _, st = WaiterOrderService.create_order(user_id=w.id, items=[1, 2, 3])
         assert st == 422
 
     def test_non_int_product_id(self):
         from waiters.services.order_service import WaiterOrderService
+
         w = _waiter()
         _, st = WaiterOrderService.create_order(
-            user_id=w.id, items=[{'product_id': 'abc', 'quantity': 1}])
+            user_id=w.id, items=[{"product_id": "abc", "quantity": 1}]
+        )
         assert st == 422
 
     def test_bad_quantity_rejected(self, product):
         from waiters.services.order_service import WaiterOrderService
+
         w = _waiter()
-        for q in (None, 2.5, 0, -1, 'abc'):
+        for q in (None, 2.5, 0, -1, "abc"):
             _, st = WaiterOrderService.create_order(
-                user_id=w.id, items=[{'product_id': product.id, 'quantity': q}])
-            assert st == 422, f'quantity={q!r} should 422'
+                user_id=w.id, items=[{"product_id": product.id, "quantity": q}]
+            )
+            assert st == 422, f"quantity={q!r} should 422"
 
     def test_int_like_values_accepted(self, product):
         from waiters.services.order_service import WaiterOrderService
+
         w = _waiter()
         _, st = WaiterOrderService.create_order(
-            user_id=w.id, items=[{'product_id': str(product.id), 'quantity': '3'}])
+            user_id=w.id, items=[{"product_id": str(product.id), "quantity": "3"}]
+        )
         assert st == 201
 
     def test_non_int_place_id(self, product):
         from waiters.services.order_service import WaiterOrderService
+
         w = _waiter()
         _, st = WaiterOrderService.create_order(
-            user_id=w.id, items=[{'product_id': product.id, 'quantity': 1}],
-            place_id='abc')
+            user_id=w.id,
+            items=[{"product_id": product.id, "quantity": 1}],
+            place_id="abc",
+        )
         assert st == 422
 
 
@@ -421,48 +528,50 @@ class TestCreateOrderValidation:
 class TestMarkReadyIdempotent:
     def test_second_call_returns_200(self):
         from waiters.services.order_service import WaiterOrderService
+
         w = _waiter()
-        o = _order(w, status='PREPARING')
+        o = _order(w, status="PREPARING")
         _, st1 = WaiterOrderService.mark_ready(o.id, w.id)
         assert st1 == 200
         res2, st2 = WaiterOrderService.mark_ready(o.id, w.id)
-        assert st2 == 200 and res2['success']
+        assert st2 == 200 and res2["success"]
 
 
 @pytest.mark.django_db
-@pytest.mark.usefixtures('operating_now')
+@pytest.mark.usefixtures("operating_now")
 class TestStatsExcludesCancelledPaid:
     def test_paid_then_cancelled_not_in_sales(self):
         """A paid order that is later cancelled keeps is_paid=True (the drawer is
         reversed separately) — it must NOT inflate sales_total / paid_count."""
         from base.models import OrderRefund, Shift
         from waiters.services.waiter_service import WaiterService
+
         w = _waiter()
-        cancelled = _order(w, status='CANCELED', is_paid=True, total='30.00')
+        cancelled = _order(w, status="CANCELED", is_paid=True, total="30.00")
         refund_shift = Shift.objects.create(
             user=w,
             status=Shift.Status.ENDED,
             start_time=timezone.now() - timedelta(hours=2),
             end_time=timezone.now() - timedelta(hours=1),
-            branch_id='main',
+            branch_id="main",
         )
         OrderRefund.objects.create(
             order=cancelled,
             shift=refund_shift,
             cashier=w,
-            amount='30.00',
-            cash_amount='30.00',
-            drawer_cash_amount='30.00',
+            amount="30.00",
+            cash_amount="30.00",
+            drawer_cash_amount="30.00",
             refunded_at=timezone.now(),
             source=OrderRefund.Source.ORDER_CANCEL,
-            source_id=f'order-cancel:{cancelled.uuid}',
-            branch_id='main',
+            source_id=f"order-cancel:{cancelled.uuid}",
+            branch_id="main",
         )
-        _order(w, status='COMPLETED', is_paid=True, total='20.00')
+        _order(w, status="COMPLETED", is_paid=True, total="20.00")
         res, st = WaiterService.get_stats(w.id)
         assert st == 200
-        d = res['data']
-        assert d['sales_total'] == '20.00'
-        assert d['paid_count'] == 1
-        assert d['cancelled_count'] == 1
-        assert d['orders_count'] == 2
+        d = res["data"]
+        assert d["sales_total"] == "20.00"
+        assert d["paid_count"] == 1
+        assert d["cancelled_count"] == 1
+        assert d["orders_count"] == 2
