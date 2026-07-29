@@ -65,8 +65,7 @@ ROOT_URLCONF = 'config.urls'
 WSGI_APPLICATION = 'config.wsgi.application'
 ASGI_APPLICATION = 'config.asgi.application'
 
-# Single process (the desktop .exe): in-memory channel layer — no Redis, no file.
-# (Activates once 'channels' is added in the websocket phase; inert until then.)
+# The single-process desktop can keep websocket groups in memory.
 CHANNEL_LAYERS = {
     'default': {
         'BACKEND': 'channels.layers.InMemoryChannelLayer',
