@@ -19,6 +19,7 @@ urlpatterns = [
     # Cashier-facing shift control (own shift; manual start/end + resume).
     path('shifts/start', shift_views.start_shift),
     path('shifts/end', shift_views.end_shift),
+    path('shifts/<int:shift_id>/end', shift_views.manager_end_shift),
     path('shifts/current', shift_views.current_shift),
 
     path('auth-login', auth_views.login),

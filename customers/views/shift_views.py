@@ -1,14 +1,11 @@
-"""Cashier-facing shift control for the till (staff-auth, own shift only).
+"""Shift control for the local till.
 
 Shifts are manual: login no longer auto-opens one. The cashier opens their own
 shift here, resumes it after logout, and closes it explicitly.
 
-POST /shifts/start    -> open MY shift (optional shift_template_id)
-POST /shifts/end      -> close MY active shift (optional notes)
-GET  /shifts/current  -> MY open shift, or null (so the till can resume)
-
-Manager/admin oversight (listing, ending anyone's shift, reconcile) stays on the
-existing /api/admins/shifts/* endpoints.
+Managers can close a selected cashier shift on the bound terminal through the
+targeted endpoint. It uses the same branch, unpaid-order, tender-integrity, and
+settlement guards as a cashier close.
 """
 import json
 
@@ -17,6 +14,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 
 from base.security.auth import login_required, role_required
+from base.security.permissions import manager_required
 from core.shifts.service import ShiftService
 
 STAFF_ROLES = ('ADMIN', 'CASHIER', 'MANAGER', 'WAITER')
@@ -56,6 +54,21 @@ def end_shift(request):
     # ShiftPaymentTotal reconciliation rows are created on close.
     body = _optional_body(request)
     result, status_code = ShiftService.end_active_for_user(
+        user_id=request.user.id,
+        notes=body.get('notes', ''),
+        counted=body.get('counted'),
+        actor=request.user,
+    )
+    return JsonResponse(result, status=status_code)
+
+
+@csrf_exempt
+@require_POST
+@manager_required
+def manager_end_shift(request, shift_id):
+    body = _optional_body(request)
+    result, status_code = ShiftService.end_shift(
+        shift_id=shift_id,
         user_id=request.user.id,
         notes=body.get('notes', ''),
         counted=body.get('counted'),

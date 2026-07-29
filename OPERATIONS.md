@@ -27,7 +27,7 @@ ssh -i "$RELEASE_KEY" "${RELEASE_USER}@${CONTROL_HOST}"
 
 Run on **this PC** (the build box — it has the signing keys in `update_keys/`):
 
-**Required cashier preflight:** Alpha POS Desktop 1.0.38 supports Smart POS
+**Required cashier preflight:** Alpha POS Desktop 1.0.39 supports Smart POS
 **0.0.11 or newer**. Smart POS 0.0.11 must send explicit tender lines, retain a
 stable payment idempotency key across uncertain retries, and preserve CASH
 given for customer change. The hardened backend rejects ambiguous payment
