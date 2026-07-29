@@ -92,7 +92,7 @@ Filename: "{cmd}"; Parameters: "/C netsh advfirewall firewall delete rule name="
 Filename: "{app}\{#AppExeName}"; Description: "Launch Alpha POS now"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
-Filename: "{cmd}"; Parameters: "/C netsh advfirewall firewall delete rule name=""Alpha POS (LAN)"" & exit /b 0"; Flags: runhidden
+Filename: "{cmd}"; Parameters: "/C netsh advfirewall firewall delete rule name=""Alpha POS (LAN)"" & exit /b 0"; Flags: runhidden; RunOnceId: "RemoveAlphaPOSFirewallRule"
 
 [Code]
 { On uninstall, offer to remove the per-user business data. Default keeps it
