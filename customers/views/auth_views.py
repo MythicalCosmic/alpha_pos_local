@@ -37,7 +37,7 @@ def _login_user_id(request):
 
 
 @csrf_exempt
-@rate_limit('login', 5, 60)
+@rate_limit('login', 30, 60)
 @rate_limit_by('login_user', 5, 60, _login_email)
 @rate_limit_by('login_uid', 5, 60, _login_user_id)
 @require_POST
