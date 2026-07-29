@@ -43,6 +43,13 @@ checkouts, and verify one local order/payment record per sale plus a clean sync
 queue before updating the remaining stations. General API connectivity alone
 does not pass this gate.
 
+For a stuck treasury-eligible shift, close it on the restaurant desktop—not
+from the cloud mirror. A manager may use `POST /shifts/{shift_id}/end` on the
+local API only after physically counting every tender. Submit `CASH`, `UZCARD`,
+`HUMO`, `CARD`, and `PAYME`, including explicit zeroes. The server returns
+`terminal_close_required` when a cloud caller tries to create settlement
+evidence for a restaurant-origin shift.
+
 The following release block uses **Git Bash syntax**, including `export`,
 forward slashes, heredocs, and line continuations. Do not paste it directly
 into PowerShell.

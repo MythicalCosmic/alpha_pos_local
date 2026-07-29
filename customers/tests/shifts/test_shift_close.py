@@ -43,6 +43,18 @@ def _active_shift(cashier):
     )
 
 
+def _all_tender_counts(**overrides):
+    counts = {
+        "CASH": "0",
+        "UZCARD": "0",
+        "HUMO": "0",
+        "CARD": "0",
+        "PAYME": "0",
+    }
+    counts.update(overrides)
+    return counts
+
+
 @override_settings(
     DEPLOYMENT_MODE="local",
     BRANCH_ID="branch1",
@@ -78,7 +90,10 @@ def test_manager_can_close_selected_same_branch_shift(client):
 
     response = client.post(
         f"/shifts/{shift.pk}/end",
-        data=json.dumps({"notes": "Manager-assisted close", "counted": {}}),
+        data=json.dumps({
+            "notes": "Manager-assisted close",
+            "counted": _all_tender_counts(),
+        }),
         content_type="application/json",
     )
 
@@ -135,6 +150,77 @@ def test_manager_close_requires_explicit_tender_counts(client):
     assert shift.end_time is None
 
 
+@pytest.mark.parametrize(
+    "counted",
+    [
+        _all_tender_counts(CASH="-1"),
+        {**_all_tender_counts(), "CAS": "1"},
+        {
+            "CASH": "NaN",
+            "UZCARD": "0",
+            "HUMO": "0",
+            "CARD": "0",
+            "PAYME": "0",
+        },
+    ],
+)
+@override_settings(
+    DEPLOYMENT_MODE="local",
+    BRANCH_ID="branch1",
+    ENFORCE_BRANCH_LOGIN=True,
+)
+def test_manager_close_rejects_invalid_tender_counts(client, counted):
+    manager = _staff(name="Manager", role=User.RoleChoices.MANAGER)
+    cashier = _staff(name="Cashier", role=User.RoleChoices.CASHIER)
+    shift = _active_shift(cashier)
+    _login(client, manager)
+
+    response = client.post(
+        f"/shifts/{shift.pk}/end",
+        data=json.dumps({"counted": counted}),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "counted_invalid"
+    shift.refresh_from_db()
+    assert shift.status == Shift.Status.ACTIVE
+    assert shift.end_time is None
+
+
+@override_settings(
+    DEPLOYMENT_MODE="local",
+    BRANCH_ID="branch1",
+    ENFORCE_BRANCH_LOGIN=True,
+)
+def test_manager_close_normalizes_tender_method_names(client):
+    from cashbox.models import ShiftPaymentTotal
+
+    manager = _staff(name="Manager", role=User.RoleChoices.MANAGER)
+    cashier = _staff(name="Cashier", role=User.RoleChoices.CASHIER)
+    shift = _active_shift(cashier)
+    _login(client, manager)
+
+    response = client.post(
+        f"/shifts/{shift.pk}/end",
+        data=json.dumps({
+            "counted": {
+                method.lower(): amount
+                for method, amount in _all_tender_counts(CASH="25").items()
+            },
+        }),
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200, response.json()
+    rows = {
+        row.method: row.counted_amount
+        for row in ShiftPaymentTotal.objects.filter(shift=shift)
+    }
+    assert str(rows["CASH"]) == "25.00"
+    assert set(rows) == set(_all_tender_counts())
+
+
 @override_settings(
     DEPLOYMENT_MODE="local",
     BRANCH_ID="branch1",
@@ -157,7 +243,7 @@ def test_manager_close_still_refuses_unpaid_order(client):
 
     response = client.post(
         f"/shifts/{shift.pk}/end",
-        data=json.dumps({"counted": {}}),
+        data=json.dumps({"counted": _all_tender_counts()}),
         content_type="application/json",
     )
 

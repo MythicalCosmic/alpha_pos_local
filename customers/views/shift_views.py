@@ -58,6 +58,7 @@ def end_shift(request):
         notes=body.get('notes', ''),
         counted=body.get('counted'),
         actor=request.user,
+        terminal_origin=True,
     )
     return JsonResponse(result, status=status_code)
 
@@ -67,25 +68,14 @@ def end_shift(request):
 @manager_required
 def manager_end_shift(request, shift_id):
     body = _optional_body(request)
-    counted = body.get('counted')
-    if not isinstance(counted, dict):
-        return JsonResponse(
-            {
-                'success': False,
-                'code': 'counted_required',
-                'message': (
-                    'Tender counts are required for a manager-assisted '
-                    'shift close.'
-                ),
-            },
-            status=400,
-        )
     result, status_code = ShiftService.end_shift(
         shift_id=shift_id,
         user_id=request.user.id,
         notes=body.get('notes', ''),
-        counted=counted,
+        counted=body.get('counted'),
         actor=request.user,
+        require_complete_counted=True,
+        terminal_origin=True,
     )
     return JsonResponse(result, status=status_code)
 

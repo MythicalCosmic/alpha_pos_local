@@ -10,11 +10,18 @@
   `branch1`, so every cashier can close their own local shift.
 - Managers can close a selected same-branch shift with
   `POST /shifts/{shift_id}/end`.
-- Manager-assisted closure requires explicit per-tender counts.
+- Manager-assisted closure requires a finite nonnegative count for every
+  supported tender; missing, misspelled, duplicate, negative, or nonnumeric
+  values are rejected before the shift changes.
 - Manager-assisted closure retains the normal unpaid-order, tender-integrity,
   and settlement-evidence safeguards.
 - Unpaid orders with a zero balance remain in order history but no longer
   prevent an otherwise valid shift from closing.
+- Cloud branch markers resolve case-insensitively, preventing `CLOUD` versus
+  `branch1` authorization failures.
+- The cloud API cannot manufacture a close manifest for a treasury-eligible
+  restaurant shift from a partial mirror. Those shifts must close on their
+  source terminal and sync their immutable settlement bundle.
 
 ## AI assistant
 
@@ -26,7 +33,7 @@ No database migration is required for 1.0.39.
 
 ## Verification
 
-- Shared core: 980 passed, 2 edition-specific skips.
-- Desktop/local edition: 509 passed, 11 platform/database-specific skips.
-- Cloud server edition: 488 passed.
+- Shared core: 985 passed, 2 edition-specific skips.
+- Desktop/local edition: 513 passed, 11 platform/database-specific skips.
+- Cloud server edition: 490 passed.
 - Django checks, migration consistency, Ruff, and diff validation passed.
