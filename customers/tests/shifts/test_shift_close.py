@@ -116,6 +116,30 @@ def test_cashier_cannot_close_another_cashiers_shift(client):
     BRANCH_ID="branch1",
     ENFORCE_BRANCH_LOGIN=True,
 )
+def test_manager_close_requires_explicit_tender_counts(client):
+    manager = _staff(name="Manager", role=User.RoleChoices.MANAGER)
+    cashier = _staff(name="Cashier", role=User.RoleChoices.CASHIER)
+    shift = _active_shift(cashier)
+    _login(client, manager)
+
+    response = client.post(
+        f"/shifts/{shift.pk}/end",
+        data="{}",
+        content_type="application/json",
+    )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "counted_required"
+    shift.refresh_from_db()
+    assert shift.status == Shift.Status.ACTIVE
+    assert shift.end_time is None
+
+
+@override_settings(
+    DEPLOYMENT_MODE="local",
+    BRANCH_ID="branch1",
+    ENFORCE_BRANCH_LOGIN=True,
+)
 def test_manager_close_still_refuses_unpaid_order(client):
     manager = _staff(name="Manager", role=User.RoleChoices.MANAGER)
     cashier = _staff(name="Cashier", role=User.RoleChoices.CASHIER)
@@ -133,7 +157,7 @@ def test_manager_close_still_refuses_unpaid_order(client):
 
     response = client.post(
         f"/shifts/{shift.pk}/end",
-        data="{}",
+        data=json.dumps({"counted": {}}),
         content_type="application/json",
     )
 
