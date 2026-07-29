@@ -39,6 +39,12 @@ def collect_runtime_data(package, **kwargs):
 # SPECPATH is injected by PyInstaller when it execs this spec.
 sys.path.insert(0, SPECPATH)
 
+from tools.msvc_runtime import resolve_msvc_runtime
+
+_msvc_runtime = resolve_msvc_runtime()
+release_binaries = [(str(_msvc_runtime), '.')]
+print(f'AlphaPOS.spec: verified MSVC runtime: {_msvc_runtime}')
+
 # Configure + load Django at BUILD time so collect_submodules can import each
 # app package (their __init__ chains touch settings/models). Without this,
 # PyInstaller silently skips most app submodules and the exe ModuleNotFounds at
@@ -86,7 +92,6 @@ hiddenimports += collect_runtime_submodules('google.genai')
 # build ships without the update engine. Guarded so a build made in a venv that
 # lacks tufup (e.g. the py3.14 dev venv) still succeeds — self-update just stays
 # disabled in that build. bsdiff4/pynacl are C extensions, so pull their DLLs.
-update_binaries = []
 for _ulib in ('tufup', 'tuf', 'securesystemslib', 'bsdiff4', 'nacl'):
     try:
         hiddenimports += collect_runtime_submodules(_ulib)
@@ -94,7 +99,7 @@ for _ulib in ('tufup', 'tuf', 'securesystemslib', 'bsdiff4', 'nacl'):
         print(f'AlphaPOS.spec: {_ulib} not available — self-update engine omitted from this build.')
 for _ulib in ('bsdiff4', 'nacl'):
     try:
-        update_binaries += collect_dynamic_libs(_ulib)
+        release_binaries += collect_dynamic_libs(_ulib)
     except Exception:
         pass
 # Native GUI: pywebview + pythonnet/CLR (WebView2). The hook-webview/hook-clr/
@@ -166,7 +171,7 @@ block_cipher = None
 a = Analysis(
     [os.path.join(SPECPATH, 'desktop', 'app.py')],
     pathex=[SPECPATH],
-    binaries=update_binaries,
+    binaries=release_binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

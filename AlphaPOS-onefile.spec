@@ -40,6 +40,12 @@ def collect_runtime_data(package, **kwargs):
 
 sys.path.insert(0, SPECPATH)
 
+from tools.msvc_runtime import resolve_msvc_runtime
+
+_msvc_runtime = resolve_msvc_runtime()
+release_binaries = [(str(_msvc_runtime), '.')]
+print(f'AlphaPOS-onefile.spec: verified MSVC runtime: {_msvc_runtime}')
+
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
 os.environ.setdefault('SECRET_KEY', 'build-time-secret')
 os.environ.setdefault('DEBUG', 'True')
@@ -65,7 +71,6 @@ for lib in ('uvicorn', 'channels', 'asgiref', 'websockets', 'h11', 'httptools',
     except Exception:
         print(f'onefile: {lib} not collectable — skipped')
 hiddenimports += collect_runtime_submodules('google.genai')
-update_binaries = []
 for _ulib in ('tufup', 'tuf', 'securesystemslib', 'bsdiff4', 'nacl'):
     try:
         hiddenimports += collect_runtime_submodules(_ulib)
@@ -73,7 +78,7 @@ for _ulib in ('tufup', 'tuf', 'securesystemslib', 'bsdiff4', 'nacl'):
         print(f'onefile: {_ulib} not available — self-update omitted')
 for _ulib in ('bsdiff4', 'nacl'):
     try:
-        update_binaries += collect_dynamic_libs(_ulib)
+        release_binaries += collect_dynamic_libs(_ulib)
     except Exception:
         pass
 hiddenimports += collect_runtime_submodules('webview') + collect_runtime_submodules('clr_loader')
@@ -118,7 +123,7 @@ block_cipher = None
 a = Analysis(
     [os.path.join(SPECPATH, 'desktop', 'app.py')],
     pathex=[SPECPATH],
-    binaries=update_binaries,
+    binaries=release_binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

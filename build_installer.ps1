@@ -13,6 +13,9 @@
 # setup use:
 #   pip install .\alpha_pos_core "uvicorn[standard]" channels daphne `
 #               pyinstaller pywebview pythonnet Pillow tufup
+# Native Windows builds resolve MSVCP140.dll from System32. Wine/cross-builds
+# must set ALPHA_POS_MSVC_RUNTIME to the verified native x64 Microsoft DLL;
+# Wine's built-in replacement is deliberately rejected.
 # Auto-update needs the signing root: run `python tools\release.py --init` once
 # (creates update_keys\ + update_repo\metadata\root.json, which the build bundles).
 [CmdletBinding()]
@@ -82,6 +85,20 @@ $env:ALPHA_POS_TUF_ROOT = (Resolve-Path $tufRoot).Path
 Write-Host "Embedded PostgreSQL: $env:ALPHA_POS_PGSQL_DIR" -ForegroundColor DarkCyan
 Write-Host "Trusted update root: $env:ALPHA_POS_TUF_ROOT" -ForegroundColor DarkCyan
 
+# Resolve and verify the runtime before either PyInstaller build. Pinning the
+# resolved path in the environment guarantees that onedir and onefile consume
+# the same exact PE32+ x64, hash-verified Microsoft DLL.
+$msvcRuntimeOutput = & $py -c (
+    "from tools.msvc_runtime import resolve_msvc_runtime; " +
+    "print(resolve_msvc_runtime())"
+)
+if ($LASTEXITCODE -ne 0) {
+    throw "MSVCP140.dll validation failed ($LASTEXITCODE)"
+}
+$env:ALPHA_POS_MSVC_RUNTIME = "$msvcRuntimeOutput".Trim()
+Write-Host "Verified MSVC runtime: $env:ALPHA_POS_MSVC_RUNTIME" `
+    -ForegroundColor DarkCyan
+
 # Keep the Python app, signed update bundle, and Windows installer on exactly
 # the same version. desktop/version.py is the release source of truth; the
 # numeric x.y.z check also guarantees that Inno Setup can use it for the
@@ -124,6 +141,16 @@ if ($LASTEXITCODE -ne 0) { throw "icon generation failed ($LASTEXITCODE)" }
 Write-Host '== 3/5  Building onedir (auto-updating app) ==' -ForegroundColor Cyan
 & $pyinstaller --noconfirm --clean 'AlphaPOS.spec'
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller (onedir) failed ($LASTEXITCODE)" }
+$bundledMsvcRuntime = Join-Path $root 'dist\AlphaPOS\_internal\MSVCP140.dll'
+& $py -c (
+    "from tools.msvc_runtime import validate_msvc_runtime; import sys; " +
+    "print(validate_msvc_runtime(sys.argv[1]))"
+) $bundledMsvcRuntime
+if ($LASTEXITCODE -ne 0) {
+    throw "Bundled MSVCP140.dll validation failed ($LASTEXITCODE)"
+}
+Write-Host "Verified bundled MSVC runtime: $bundledMsvcRuntime" `
+    -ForegroundColor DarkCyan
 
 Write-Host '== 4/5  Building portable one-file ==' -ForegroundColor Cyan
 & $pyinstaller --noconfirm 'AlphaPOS-onefile.spec'
