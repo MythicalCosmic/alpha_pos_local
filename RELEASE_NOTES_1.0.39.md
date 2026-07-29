@@ -13,6 +13,8 @@
 - Manager-assisted closure requires explicit per-tender counts.
 - Manager-assisted closure retains the normal unpaid-order, tender-integrity,
   and settlement-evidence safeguards.
+- Unpaid orders with a zero balance remain in order history but no longer
+  prevent an otherwise valid shift from closing.
 
 ## AI assistant
 
@@ -24,7 +26,7 @@ No database migration is required for 1.0.39.
 
 ## Verification
 
-- Shared core: 979 passed, 2 edition-specific skips.
+- Shared core: 980 passed, 2 edition-specific skips.
 - Desktop/local edition: 509 passed, 11 platform/database-specific skips.
 - Cloud server edition: 488 passed.
 - Django checks, migration consistency, Ruff, and diff validation passed.
