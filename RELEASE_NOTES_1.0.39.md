@@ -31,9 +31,18 @@
 
 No database migration is required for 1.0.39.
 
+## Windows release
+
+- Clean onedir and portable builds now fail closed unless the required x64
+  Microsoft C++ runtime matches the approved SHA-256 and PE architecture.
+- The public installer contains no restaurant configuration, support
+  credentials, private keys, or TUF signing keys.
+- A clean installer extraction and the installed frozen application completed
+  the database, migrations, HTTP, sync, fiscal mock, and GUI-import self-test.
+
 ## Verification
 
 - Shared core: 985 passed, 2 edition-specific skips.
-- Desktop/local edition: 513 passed, 11 platform/database-specific skips.
+- Desktop/local edition: 528 passed, 11 platform/database-specific skips.
 - Cloud server edition: 490 passed.
 - Django checks, migration consistency, Ruff, and diff validation passed.
