@@ -1,6 +1,6 @@
 /* AlphaPOS desktop UI — generated; do not edit directly.
  * Run: node tools/compile_desktop_ui.js
- * source-sha256: 51215f896c9d0ee305c9ad00ac9df6dab534f29f0eb745ffd0bcf9166aae77e7
+ * source-sha256: c6e0fd3f31430ebde77cd4a8e69154b94b4d63477978fa6b6fdbfafcb5cc365e
  */
 (function () {
 'use strict';
@@ -933,17 +933,39 @@ window.I18N = {
       "legacy.averagePaid": "Average paid order", "legacy.units": "Units",
       "legacy.drawerExpenses": "Drawer expenses",
       "legacy.tenders": "Tender breakdown", "legacy.notPhysicalCash": "Not the drawer balance",
-      "legacy.tenderHint": "Cash here means cash sales from every source, including money collected outside the POS drawer. Use the active-drawer proof above for physical notes at the counter.",
+      "legacy.tenderHint": "All tender amounts are net of refunds. Cash includes every source and is not the physical drawer balance. When attribution is incomplete, the Unknown tender is shown explicitly.",
       "legacy.cashAllSources": "Cash sales — all sources", "legacy.cash": "Cash",
       "legacy.card": "Cards", "legacy.payme": "Payme",
       "legacy.cashiers": "Cashier performance",
       "legacy.cashierHint": "Sales belong to the cashier who settled them; refunds belong to the cashier who performed the refund.",
-      "legacy.cashier": "Cashier", "legacy.topProducts": "Top products",
+      "legacy.cashier": "Cashier", "legacy.topProducts": "Top 10 products by net revenue",
       "legacy.categories": "Categories", "legacy.product": "Product", "legacy.category": "Category",
       "legacy.recentPayments": "Recent paid orders", "legacy.expenses": "Cash-drawer expenses",
       "legacy.order": "Order", "legacy.method": "Method", "legacy.amount": "Amount",
       "legacy.paidAt": "Paid at", "legacy.comment": "Comment", "legacy.time": "Time",
-      "legacy.noData": "No matching data.", "legacy.noExpenses": "No drawer expenses in this range."
+      "legacy.noData": "No matching data.", "legacy.noExpenses": "No drawer expenses in this range.",
+      "legacy.mvpTitle": "Smart Jowi Dashboard",
+      "legacy.week": "Last 7 operating days", "legacy.month": "Last 30 operating days", "legacy.year": "Last 365 operating days",
+      "legacy.fromTime": "Exact start time (included)", "legacy.toTime": "Exact end time (exclusive)",
+      "legacy.exactPair": "Choose both exact start and end times. The start is included and the end is excluded, or leave both blank for the 07:00 → 03:00 operating-day window.",
+      "legacy.exactWindowHint": "Exact times use one continuous [start, end) interval: the start is included and the end is excluded. Leave both blank for 07:00 → 03:00 operating days.",
+      "legacy.cashRegister": "Cash Register",
+      "legacy.statusOpened": "Opened", "legacy.statusOpenNow": "Open now", "legacy.statusOpenFromPeriod": "Still open from selected period", "legacy.statusRefunded": "Refunded",
+      "legacy.productDistribution": "Product Mix — Top 10 by Net Revenue",
+      "legacy.productTopTenHint": "Percentages and shown-unit totals use positive net units only among the API top 10 by net revenue; refund-heavy rows remain in the Top 10 list below.",
+      "legacy.shownUnits": "shown units", "legacy.shownPositiveUnits": "Shown positive net units",
+      "legacy.categoryDistribution": "Positive Net Revenue by Category",
+      "legacy.categoryPositiveHint": "Only categories with positive net revenue are charted; zero or negative refund-heavy categories are omitted.",
+      "legacy.tenderDistribution": "Net Tender Attribution",
+      "legacy.netCashAllSources": "Net cash — all sources", "legacy.netCash": "Net cash",
+      "legacy.netCards": "Net cards", "legacy.netPayme": "Net Payme",
+      "legacy.unknownNetTender": "Unknown net tender", "legacy.unknownTenderShort": "Unknown",
+      "legacy.incompleteAttribution": "Attribution incomplete", "legacy.netOfRefunds": "Net of refunds",
+      "legacy.dailyNet": "Net Sales Trend", "legacy.dailyFlow": "Gross Sales & Refunds",
+      "legacy.bestDay": "Highest net-sales day",
+      "legacy.noDailyExact": "Daily series is only available for operating-date ranges.",
+      "legacy.allCashiers": "All Cashiers", "legacy.topCashier": "Top Cashier",
+      "legacy.evidence": "Payment Evidence", "legacy.tenderQuality": "Tender attribution"
     },
     uz: {
       "nav.legacySales": "Ishonchli savdo",
@@ -970,17 +992,39 @@ window.I18N = {
       "legacy.averagePaid": "O‘rtacha to‘langan buyurtma", "legacy.units": "Dona",
       "legacy.drawerExpenses": "Kassa xarajatlari",
       "legacy.tenders": "To‘lov turlari", "legacy.notPhysicalCash": "Kassadagi qoldiq emas",
-      "legacy.tenderHint": "Bu yerdagi naqd savdo barcha manbalarni, jumladan POS kassasidan tashqarida olingan pulni ham qamrab oladi. Peshtaxtadagi naqd pul uchun yuqoridagi faol kassa isbotidan foydalaning.",
+      "legacy.tenderHint": "Barcha to‘lov summalari qaytarishlar ayrilgandan keyingi sof qiymatdir. Naqd barcha manbalarni qamrab oladi va kassadagi jismoniy qoldiq emas. Atributsiya to‘liq bo‘lmasa, aniqlanmagan to‘lov alohida ko‘rsatiladi.",
       "legacy.cashAllSources": "Naqd savdo — barcha manbalar", "legacy.cash": "Naqd",
       "legacy.card": "Kartalar", "legacy.payme": "Payme",
       "legacy.cashiers": "Kassirlar natijasi",
       "legacy.cashierHint": "Savdo uni to‘lagan kassirga, qaytarish esa qaytarishni bajargan kassirga tegishli.",
-      "legacy.cashier": "Kassir", "legacy.topProducts": "Eng ko‘p sotilganlar",
+      "legacy.cashier": "Kassir", "legacy.topProducts": "Sof tushum bo‘yicha top-10 mahsulot",
       "legacy.categories": "Toifalar", "legacy.product": "Mahsulot", "legacy.category": "Toifa",
       "legacy.recentPayments": "So‘nggi to‘langan buyurtmalar", "legacy.expenses": "Kassadan qilingan xarajatlar",
       "legacy.order": "Buyurtma", "legacy.method": "Usul", "legacy.amount": "Summa",
       "legacy.paidAt": "To‘langan vaqt", "legacy.comment": "Izoh", "legacy.time": "Vaqt",
-      "legacy.noData": "Mos ma’lumot yo‘q.", "legacy.noExpenses": "Bu oraliqda kassa xarajati yo‘q."
+      "legacy.noData": "Mos ma’lumot yo‘q.", "legacy.noExpenses": "Bu oraliqda kassa xarajati yo‘q.",
+      "legacy.mvpTitle": "Smart Jowi boshqaruv paneli",
+      "legacy.week": "Oxirgi 7 ish kuni", "legacy.month": "Oxirgi 30 ish kuni", "legacy.year": "Oxirgi 365 ish kuni",
+      "legacy.fromTime": "Aniq boshlanish (kiritiladi)", "legacy.toTime": "Aniq tugash (kiritilmaydi)",
+      "legacy.exactPair": "Aniq boshlanish va tugash vaqtlarini birga tanlang. Boshlanish kiradi, tugash esa kirmaydi; yoki 07:00 → 03:00 ish kuni uchun ikkalasini ham bo‘sh qoldiring.",
+      "legacy.exactWindowHint": "Aniq vaqtlar uzluksiz [boshlanish, tugash) oralig‘idir: boshlanish kiradi, tugash kirmaydi. 07:00 → 03:00 ish kunlari uchun ikkalasini bo‘sh qoldiring.",
+      "legacy.cashRegister": "Kassa",
+      "legacy.statusOpened": "Ochilgan", "legacy.statusOpenNow": "Hozir ochiq", "legacy.statusOpenFromPeriod": "Tanlangan davrdan hali ochiq", "legacy.statusRefunded": "Qaytarilgan",
+      "legacy.productDistribution": "Mahsulot ulushi — sof tushum bo‘yicha top-10",
+      "legacy.productTopTenHint": "Foizlar va ko‘rsatilgan jami faqat API qaytargan, sof tushum bo‘yicha top-10 mahsulotning musbat sof donalariga asoslanadi; qaytarishi ko‘p qatorlar quyidagi Top-10 ro‘yxatida qoladi.",
+      "legacy.shownUnits": "ko‘rsatilgan dona", "legacy.shownPositiveUnits": "Ko‘rsatilgan musbat sof dona",
+      "legacy.categoryDistribution": "Toifalar bo‘yicha musbat sof tushum",
+      "legacy.categoryPositiveHint": "Diagrammada faqat musbat sof tushumli toifalar ko‘rsatiladi; nol yoki manfiy, qaytarishi ko‘p toifalar kiritilmaydi.",
+      "legacy.tenderDistribution": "Sof to‘lov atributsiyasi",
+      "legacy.netCashAllSources": "Sof naqd — barcha manbalar", "legacy.netCash": "Sof naqd",
+      "legacy.netCards": "Sof kartalar", "legacy.netPayme": "Sof Payme",
+      "legacy.unknownNetTender": "Aniqlanmagan sof to‘lov", "legacy.unknownTenderShort": "Aniqlanmagan",
+      "legacy.incompleteAttribution": "Atributsiya to‘liq emas", "legacy.netOfRefunds": "Qaytarishlar ayrilgach",
+      "legacy.dailyNet": "Sof savdo dinamikasi", "legacy.dailyFlow": "Yalpi savdo va qaytarish",
+      "legacy.bestDay": "Eng yuqori sof savdo kuni",
+      "legacy.noDailyExact": "Kunlik qator faqat ish sanalari oralig‘i uchun mavjud.",
+      "legacy.allCashiers": "Barcha kassirlar", "legacy.topCashier": "Eng yaxshi kassir",
+      "legacy.evidence": "To‘lov dalillari", "legacy.tenderQuality": "To‘lov turi aniqligi"
     },
     ru: {
       "nav.legacySales": "Проверенные продажи",
@@ -1007,17 +1051,39 @@ window.I18N = {
       "legacy.averagePaid": "Средний оплаченный заказ", "legacy.units": "Единицы",
       "legacy.drawerExpenses": "Расходы из кассы",
       "legacy.tenders": "Способы оплаты", "legacy.notPhysicalCash": "Не остаток в кассе",
-      "legacy.tenderHint": "Наличные здесь включают продажи из всех источников, в том числе деньги, полученные вне кассы POS. Для физических купюр используйте проверку активной кассы выше.",
+      "legacy.tenderHint": "Все суммы по способам оплаты указаны за вычетом возвратов. Наличные включают все источники и не являются физическим остатком в кассе. При неполной атрибуции неизвестный способ показан отдельно.",
       "legacy.cashAllSources": "Наличные продажи — все источники", "legacy.cash": "Наличные",
       "legacy.card": "Карты", "legacy.payme": "Payme",
       "legacy.cashiers": "Результаты кассиров",
       "legacy.cashierHint": "Продажа относится к кассиру, который её оплатил; возврат — к кассиру, который выполнил возврат.",
-      "legacy.cashier": "Кассир", "legacy.topProducts": "Лучшие товары",
+      "legacy.cashier": "Кассир", "legacy.topProducts": "Топ-10 товаров по чистой выручке",
       "legacy.categories": "Категории", "legacy.product": "Товар", "legacy.category": "Категория",
       "legacy.recentPayments": "Последние оплаченные заказы", "legacy.expenses": "Расходы из денежного ящика",
       "legacy.order": "Заказ", "legacy.method": "Способ", "legacy.amount": "Сумма",
       "legacy.paidAt": "Время оплаты", "legacy.comment": "Комментарий", "legacy.time": "Время",
-      "legacy.noData": "Нет подходящих данных.", "legacy.noExpenses": "За период нет расходов из кассы."
+      "legacy.noData": "Нет подходящих данных.", "legacy.noExpenses": "За период нет расходов из кассы.",
+      "legacy.mvpTitle": "Панель Smart Jowi",
+      "legacy.week": "Последние 7 рабочих дней", "legacy.month": "Последние 30 рабочих дней", "legacy.year": "Последние 365 рабочих дней",
+      "legacy.fromTime": "Точное начало (включительно)", "legacy.toTime": "Точное окончание (не включается)",
+      "legacy.exactPair": "Укажите точное время начала и окончания вместе. Начало включается, окончание не включается; либо оставьте оба пустыми для рабочего окна 07:00 → 03:00.",
+      "legacy.exactWindowHint": "Точное время задаёт непрерывный интервал [начало, окончание): начало включается, окончание не включается. Оставьте оба поля пустыми для рабочих дней 07:00 → 03:00.",
+      "legacy.cashRegister": "Касса",
+      "legacy.statusOpened": "Открыто", "legacy.statusOpenNow": "Сейчас открыты", "legacy.statusOpenFromPeriod": "Всё ещё открыты с выбранного периода", "legacy.statusRefunded": "Возвращено",
+      "legacy.productDistribution": "Состав товаров — топ-10 по чистой выручке",
+      "legacy.productTopTenHint": "Проценты и показанный итог используют только положительные чистые единицы среди топ-10 API по чистой выручке; строки с большим числом возвратов остаются в списке Top-10 ниже.",
+      "legacy.shownUnits": "показ. ед.", "legacy.shownPositiveUnits": "Показанные положительные чистые единицы",
+      "legacy.categoryDistribution": "Положительная чистая выручка по категориям",
+      "legacy.categoryPositiveHint": "На диаграмме показаны только категории с положительной чистой выручкой; нулевые и отрицательные категории с преобладанием возвратов исключены.",
+      "legacy.tenderDistribution": "Чистая атрибуция способов оплаты",
+      "legacy.netCashAllSources": "Чистые наличные — все источники", "legacy.netCash": "Чистые наличные",
+      "legacy.netCards": "Чистые карты", "legacy.netPayme": "Чистый Payme",
+      "legacy.unknownNetTender": "Неизвестный чистый способ", "legacy.unknownTenderShort": "Неизвестно",
+      "legacy.incompleteAttribution": "Атрибуция неполная", "legacy.netOfRefunds": "За вычетом возвратов",
+      "legacy.dailyNet": "Динамика чистых продаж", "legacy.dailyFlow": "Валовые продажи и возвраты",
+      "legacy.bestDay": "День с максимальными чистыми продажами",
+      "legacy.noDailyExact": "Дневной ряд доступен только для диапазона рабочих дат.",
+      "legacy.allCashiers": "Все кассиры", "legacy.topCashier": "Лучший кассир",
+      "legacy.evidence": "Платёжные данные", "legacy.tenderQuality": "Атрибуция оплаты"
     }
   };
   for (var l in extra) { window.I18N[l] = Object.assign(window.I18N[l] || {}, extra[l]); }
@@ -2588,61 +2654,225 @@ function legacyDateTime(value, lang) {
     minute: "2-digit"
   }).format(d);
 }
-function LegacyMetric({
+function mvpNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : 0;
+}
+function mvpCompactNumber(value) {
+  const n = mvpNumber(value);
+  if (Math.abs(n) >= 1000000) return (n / 1000000).toFixed(1) + "M";
+  if (Math.abs(n) >= 1000) return Math.round(n / 1000) + "K";
+  return String(Math.round(n));
+}
+function mvpExactAt(date, time) {
+  return date && time ? date + "T" + time + ":00+05:00" : null;
+}
+const MVP_CHART_COLORS = ["#6366f1", "#f59e0b", "#10b981", "#ef4444", "#8b5cf6", "#ec4899", "#14b8a6", "#f97316", "#06b6d4", "#84cc16"];
+const MVP_TENDER_COLORS = {
+  cash: ["rgba(16,185,129,.60)", "#10b981"],
+  card: ["rgba(59,130,246,.60)", "#3b82f6"],
+  payme: ["rgba(139,92,246,.60)", "#8b5cf6"],
+  unknown: ["rgba(244,63,94,.56)", "#f43f5e"]
+};
+function MvpSymbol({
+  children
+}) {
+  return React.createElement("span", {
+    className: "mvp-symbol",
+    "aria-hidden": "true"
+  }, children);
+}
+function MvpChart({
+  kind,
+  labels,
+  datasets,
+  emptyLabel
+}) {
+  const canvas = React.useRef(null);
+  const [unavailable, setUnavailable] = React.useState(false);
+  const signature = JSON.stringify([kind, labels, datasets]);
+  const allZero = !datasets.some(set => (set.data || []).some(value => mvpNumber(value) !== 0));
+  const empty = !labels.length || kind === "doughnut" && allZero;
+  React.useEffect(() => {
+    if (empty || !canvas.current) return undefined;
+    if (typeof window.Chart !== "function") {
+      setUnavailable(true);
+      return undefined;
+    }
+    setUnavailable(false);
+    const isDoughnut = kind === "doughnut";
+    const isLine = kind === "line";
+    const chart = new window.Chart(canvas.current, {
+      type: kind,
+      data: {
+        labels,
+        datasets
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        cutout: isDoughnut ? "65%" : undefined,
+        interaction: isDoughnut ? undefined : {
+          intersect: false,
+          mode: "index"
+        },
+        plugins: {
+          legend: {
+            display: false
+          },
+          tooltip: {
+            backgroundColor: "rgba(15, 23, 42, 0.97)",
+            padding: 13,
+            cornerRadius: 10,
+            titleColor: "#fff",
+            bodyColor: "#cbd5e1"
+          }
+        },
+        scales: isDoughnut ? undefined : {
+          y: {
+            beginAtZero: true,
+            grid: {
+              color: "rgba(255, 255, 255, 0.04)"
+            },
+            border: {
+              display: false
+            },
+            ticks: {
+              color: "#7d8ba3",
+              callback: value => mvpCompactNumber(value)
+            }
+          },
+          x: {
+            grid: {
+              display: false
+            },
+            border: {
+              display: false
+            },
+            ticks: {
+              color: "#7d8ba3",
+              maxRotation: isLine ? 38 : 0,
+              autoSkip: true,
+              maxTicksLimit: 9
+            }
+          }
+        },
+        animation: {
+          duration: 700
+        }
+      }
+    });
+    return () => chart.destroy();
+  }, [signature, empty]);
+  if (empty || unavailable) {
+    return React.createElement("div", {
+      className: "mvp-chart-empty"
+    }, React.createElement(MvpSymbol, null, "monitoring"), React.createElement("span", null, emptyLabel));
+  }
+  return React.createElement("canvas", {
+    ref: canvas,
+    role: "img",
+    "aria-label": emptyLabel
+  });
+}
+function MvpKpi({
   tone,
-  label,
+  title,
+  icon,
   value,
   unit,
-  detail
+  footer,
+  badge
 }) {
   return React.createElement("div", {
-    className: "legacy-kpi " + (tone || "")
+    className: "mvp-kpi-card " + tone
   }, React.createElement("div", {
-    className: "legacy-kpi-label"
-  }, label), React.createElement("div", {
-    className: "legacy-kpi-value"
+    className: "mvp-kpi-head"
+  }, React.createElement("span", {
+    className: "mvp-kpi-title"
+  }, title), React.createElement("span", {
+    className: "mvp-kpi-icon"
+  }, React.createElement(MvpSymbol, null, icon))), React.createElement("div", {
+    className: "mvp-kpi-value"
   }, value, React.createElement("span", null, unit || "")), React.createElement("div", {
-    className: "legacy-kpi-detail"
-  }, detail || "\u00a0"));
+    className: "mvp-kpi-foot"
+  }, React.createElement("span", null, footer), badge ? React.createElement("span", {
+    className: "mvp-kpi-badge " + (badge.tone || "")
+  }, badge.text) : null));
 }
-function LegacyTable({
-  columns,
-  rows,
-  empty
+function MvpStatus({
+  tone,
+  icon,
+  value,
+  label
 }) {
   return React.createElement("div", {
-    className: "legacy-table-wrap"
-  }, React.createElement("table", {
-    className: "legacy-table"
-  }, React.createElement("thead", null, React.createElement("tr", null, columns.map(col => React.createElement("th", {
-    key: col.key
-  }, col.label)))), React.createElement("tbody", null, rows.length ? rows.map((row, index) => React.createElement("tr", {
+    className: "mvp-status-card " + tone
+  }, React.createElement("span", {
+    className: "mvp-status-icon"
+  }, React.createElement(MvpSymbol, null, icon)), React.createElement("strong", null, value), React.createElement("span", null, label));
+}
+function MvpRows({
+  rows,
+  empty,
+  render
+}) {
+  return React.createElement("div", {
+    className: "mvp-data-rows"
+  }, rows.length ? rows.map((row, index) => React.createElement("div", {
+    className: "mvp-data-row",
     key: row.id != null ? row.id : index
-  }, columns.map(col => React.createElement("td", {
-    key: col.key,
-    className: col.align === "right" ? "num" : ""
-  }, col.render ? col.render(row) : row[col.key] == null || row[col.key] === "" ? "—" : row[col.key])))) : React.createElement("tr", null, React.createElement("td", {
-    className: "legacy-empty",
-    colSpan: columns.length
-  }, empty)))));
+  }, render(row, index))) : React.createElement("div", {
+    className: "mvp-empty"
+  }, empty));
+}
+function MvpLegend({
+  rows,
+  total,
+  money,
+  valueKey
+}) {
+  return React.createElement("div", {
+    className: "mvp-pie-legend"
+  }, rows.slice(0, 6).map((row, index) => {
+    const value = Math.max(0, mvpNumber(row[valueKey]));
+    const percentage = total > 0 ? Math.round(value / total * 1000) / 10 : 0;
+    return React.createElement("div", {
+      className: "mvp-legend-item",
+      key: row.id == null ? row.name : row.id
+    }, React.createElement("i", {
+      style: {
+        background: MVP_CHART_COLORS[index % MVP_CHART_COLORS.length]
+      }
+    }), React.createElement("span", {
+      title: row.name
+    }, row.name), React.createElement("b", null, valueKey === "revenue" ? money(value) : percentage + "%"));
+  }));
 }
 function LegacySalesScreen() {
-  const app = useApp();
   const {
     t,
     lang
-  } = app;
+  } = useApp();
   const [fromDate, setFromDate] = React.useState(legacyBusinessDate());
   const [toDate, setToDate] = React.useState(legacyBusinessDate());
+  const [fromTime, setFromTime] = React.useState("");
+  const [toTime, setToTime] = React.useState("");
+  const [preset, setPreset] = React.useState("today");
+  const [cashierFilter, setCashierFilter] = React.useState("");
   const [report, setReport] = React.useState(null);
   const [enabled, setEnabled] = React.useState(true);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState("");
+  const requestSequence = React.useRef(0);
   const money = React.useCallback(value => legacyMoney(value, lang), [lang]);
-  const load = React.useCallback((start, end) => {
+  const load = React.useCallback((start, end, exactStart, exactEnd) => {
+    const sequence = ++requestSequence.current;
     setLoading(true);
     setError("");
-    return api.legacy_sales_report(start, end, null, null).then(result => {
+    setReport(null);
+    return api.legacy_sales_report(start, end, exactStart || null, exactEnd || null).then(result => {
+      if (sequence !== requestSequence.current) return;
       if (!result || result.ok === false) {
         setError(result && result.error || t("legacy.loadFailed"));
         setReport(null);
@@ -2654,323 +2884,485 @@ function LegacySalesScreen() {
         setReport(result.report || null);
       }
       setLoading(false);
+    }, () => {
+      if (sequence !== requestSequence.current) return;
+      setError(t("legacy.loadFailed"));
+      setReport(null);
+      setLoading(false);
     });
   }, [t]);
   React.useEffect(() => {
-    load(fromDate, toDate);
+    load(fromDate, toDate, null, null);
   }, []);
-  const chooseRange = days => {
-    const end = legacyBusinessDate();
-    const start = legacyBusinessDate(-(days - 1));
+  const chooseRange = (kind, days) => {
+    let start;
+    let end;
+    if (kind === "yesterday") {
+      start = legacyBusinessDate(-1);
+      end = start;
+    } else {
+      end = legacyBusinessDate();
+      start = legacyBusinessDate(-(days - 1));
+    }
+    setPreset(kind);
     setFromDate(start);
     setToDate(end);
-    load(start, end);
+    setFromTime("");
+    setToTime("");
+    load(start, end, null, null);
   };
-  const applyRange = () => load(fromDate, toDate);
+  const applyRange = () => {
+    if (!!fromTime !== !!toTime) {
+      setError(t("legacy.exactPair"));
+      return;
+    }
+    setPreset("custom");
+    load(fromDate, toDate, mvpExactAt(fromDate, fromTime), mvpExactAt(toDate, toTime));
+  };
   if (!enabled) {
     return React.createElement("div", {
-      className: "page"
-    }, React.createElement("header", {
-      className: "page-head"
-    }, React.createElement("h1", {
-      className: "page-h"
-    }, t("legacy.title")), React.createElement("p", {
-      className: "page-sub"
-    }, t("legacy.disabled"))));
+      className: "page mvp-dashboard mvp-disabled"
+    }, React.createElement("h1", null, t("legacy.mvpTitle")), React.createElement("p", null, t("legacy.disabled")));
   }
   const summary = report && report.summary || {};
   const payments = report && report.payment_breakdown || {};
   const drawers = report && report.active_drawers || {};
   const quality = report && report.data_quality || {};
   const range = report && report.range || {};
-  const tenderIncomplete = quality.tender_attribution_complete !== true;
   const cashiers = report && report.cashiers || [];
   const products = report && report.top_products || [];
   const categories = report && report.categories || [];
   const expenses = report && report.expenses || [];
   const recent = report && report.recent_paid_orders || [];
-  const cashierColumns = [{
-    key: "cashier_name",
-    label: t("legacy.cashier")
+  const daily = report && report.daily || [];
+  const tenderIncomplete = report && quality.tender_attribution_complete !== true;
+  const drawerComplete = drawers.complete === true;
+  const periodText = range.from && range.to ? range.from + " → " + range.to : t("legacy.selectedRange");
+  const visibleCashiers = cashierFilter ? cashiers.filter(row => String(row.cashier_id) === cashierFilter) : cashiers;
+  const bestCashier = cashierFilter ? null : cashiers[0] || null;
+  const productValues = products.map(row => Math.max(0, mvpNumber(row.quantity)));
+  const positiveCategories = categories.filter(row => mvpNumber(row.revenue) > 0);
+  const categoryValues = positiveCategories.map(row => mvpNumber(row.revenue));
+  const productTotal = productValues.reduce((total, value) => total + value, 0);
+  const categoryTotal = categoryValues.reduce((total, value) => total + value, 0);
+  const unknownTenderValue = payments.unknown == null ? quality.unknown_tender_amount : payments.unknown;
+  const tenderRows = [{
+    tone: "cash",
+    icon: "payments",
+    title: t("legacy.netCashAllSources"),
+    chartLabel: t("legacy.netCash"),
+    value: payments.cash,
+    detail: ""
   }, {
-    key: "paid_orders",
-    label: t("legacy.paid"),
-    align: "right"
+    tone: "card",
+    icon: "credit_card",
+    title: t("legacy.netCards"),
+    chartLabel: t("legacy.netCards"),
+    value: payments.card,
+    detail: "UZCARD " + money((payments.card_detail || {}).UZCARD) + " · HUMO " + money((payments.card_detail || {}).HUMO) + " · CARD " + money((payments.card_detail || {}).CARD)
   }, {
-    key: "net_revenue",
-    label: t("legacy.netSales"),
-    align: "right",
-    render: row => money(row.net_revenue)
-  }, {
-    key: "cash",
-    label: t("legacy.cash"),
-    align: "right",
-    render: row => money((row.payment_breakdown || {}).cash)
-  }, {
-    key: "card",
-    label: t("legacy.card"),
-    align: "right",
-    render: row => money((row.payment_breakdown || {}).card)
-  }, {
-    key: "payme",
-    label: t("legacy.payme"),
-    align: "right",
-    render: row => money((row.payment_breakdown || {}).payme)
-  }, {
-    key: "refund_amount",
-    label: t("legacy.refunds"),
-    align: "right",
-    render: row => money(row.refund_amount)
+    tone: "payme",
+    icon: "phone_iphone",
+    title: t("legacy.netPayme"),
+    chartLabel: t("legacy.netPayme"),
+    value: payments.payme,
+    detail: ""
   }];
-  const productColumns = [{
-    key: "name",
-    label: t("legacy.product")
-  }, {
-    key: "quantity",
-    label: t("legacy.units"),
-    align: "right"
-  }, {
-    key: "revenue",
-    label: t("legacy.netSales"),
-    align: "right",
-    render: row => money(row.revenue)
-  }, {
-    key: "refund_amount",
-    label: t("legacy.refunds"),
-    align: "right",
-    render: row => money(row.refund_amount)
-  }];
-  const categoryColumns = [{
-    key: "name",
-    label: t("legacy.category")
-  }, {
-    key: "quantity",
-    label: t("legacy.units"),
-    align: "right"
-  }, {
-    key: "revenue",
-    label: t("legacy.netSales"),
-    align: "right",
-    render: row => money(row.revenue)
-  }];
-  const recentColumns = [{
-    key: "order_number",
-    label: t("legacy.order")
-  }, {
-    key: "cashier_name",
-    label: t("legacy.cashier")
-  }, {
-    key: "payment_method",
-    label: t("legacy.method")
-  }, {
-    key: "amount",
-    label: t("legacy.amount"),
-    align: "right",
-    render: row => money(row.amount)
-  }, {
-    key: "paid_at",
-    label: t("legacy.paidAt"),
-    render: row => legacyDateTime(row.paid_at, lang)
-  }];
-  const expenseColumns = [{
-    key: "category",
-    label: t("legacy.category")
-  }, {
-    key: "cashier_name",
-    label: t("legacy.cashier")
-  }, {
-    key: "comment",
-    label: t("legacy.comment")
-  }, {
-    key: "amount",
-    label: t("legacy.amount"),
-    align: "right",
-    render: row => money(row.amount)
-  }, {
-    key: "created_at",
-    label: t("legacy.time"),
-    render: row => legacyDateTime(row.created_at, lang)
-  }];
+  if (tenderIncomplete || mvpNumber(unknownTenderValue) !== 0) {
+    tenderRows.push({
+      tone: "unknown",
+      icon: "help",
+      title: t("legacy.unknownNetTender"),
+      chartLabel: t("legacy.unknownTenderShort"),
+      value: unknownTenderValue,
+      detail: t("legacy.unknownSales") + " " + money(quality.unknown_sale_amount) + " · " + t("legacy.unknownRefunds") + " " + money(quality.unknown_refund_amount)
+    });
+  }
+  const tenderValues = tenderRows.map(row => mvpNumber(row.value));
+  const dailyLabels = daily.map(row => String(row.date || "").slice(5));
+  const bestDay = daily.reduce((best, row) => !best || mvpNumber(row.net_revenue) > mvpNumber(best.net_revenue) ? row : best, null);
   return React.createElement("div", {
-    className: "page legacy-page",
-    "data-screen-label": "Trusted sales"
+    className: "page mvp-dashboard",
+    "data-screen-label": "Smart Jowi trusted sales"
   }, React.createElement("header", {
-    className: "legacy-hero"
-  }, React.createElement("div", null, React.createElement("div", {
-    className: "legacy-eyebrow"
-  }, t("legacy.temporary")), React.createElement("h1", null, t("legacy.title")), React.createElement("p", null, t("legacy.sub"))), React.createElement(Badge, {
-    tone: "ok"
-  }, t("legacy.readOnly"))), React.createElement("div", {
-    className: "legacy-filter"
+    className: "mvp-header"
+  }, React.createElement("div", null, React.createElement("h1", null, t("legacy.mvpTitle")), React.createElement("div", {
+    className: "mvp-header-sub"
+  }, React.createElement(MvpSymbol, null, "schedule"), React.createElement("span", null, legacyDateTime(report && report.generated_at || new Date(), lang)), React.createElement("span", {
+    className: "mvp-timezone"
+  }, "Asia/Tashkent (UTC+5)"))), React.createElement("span", {
+    className: "mvp-readonly"
+  }, React.createElement(MvpSymbol, null, "verified"), t("legacy.readOnly"))), React.createElement("div", {
+    className: "mvp-filter-bar"
   }, React.createElement("div", {
-    className: "legacy-presets"
-  }, React.createElement(Btn, {
-    variant: "ghost",
-    size: "sm",
-    onClick: () => chooseRange(1)
-  }, t("legacy.today")), React.createElement(Btn, {
-    variant: "ghost",
-    size: "sm",
-    onClick: () => {
-      const day = legacyBusinessDate(-1);
-      setFromDate(day);
-      setToDate(day);
-      load(day, day);
-    }
-  }, t("legacy.yesterday")), React.createElement(Btn, {
-    variant: "ghost",
-    size: "sm",
-    onClick: () => chooseRange(7)
-  }, t("legacy.sevenDays"))), React.createElement(Field, {
-    l: t("legacy.from")
-  }, React.createElement("input", {
-    className: "inp",
+    className: "mvp-filter-group"
+  }, [["today", "today", 1, "today"], ["yesterday", "event", 1, "yesterday"], ["week", "date_range", 7, "week"], ["month", "calendar_month", 30, "month"], ["year", "calendar_today", 365, "year"]].map(([key, icon, days, label]) => React.createElement("button", {
+    key: key,
+    className: "mvp-filter-btn " + (preset === key ? "active" : ""),
+    onClick: () => chooseRange(key, days),
+    disabled: loading
+  }, React.createElement(MvpSymbol, null, icon), t("legacy." + label)))), React.createElement("div", {
+    className: "mvp-filter-divider"
+  }), React.createElement("div", {
+    className: "mvp-date-inputs"
+  }, React.createElement("label", null, React.createElement("span", null, t("legacy.from")), React.createElement("input", {
     type: "date",
     value: fromDate,
-    onChange: event => setFromDate(event.target.value)
-  })), React.createElement(Field, {
-    l: t("legacy.to")
-  }, React.createElement("input", {
-    className: "inp",
+    onChange: event => {
+      setFromDate(event.target.value);
+      setPreset("custom");
+      setReport(null);
+    },
+    disabled: loading
+  })), React.createElement("input", {
+    "aria-label": t("legacy.fromTime"),
+    title: t("legacy.fromTime"),
+    type: "time",
+    value: fromTime,
+    onChange: event => {
+      setFromTime(event.target.value);
+      setPreset("custom");
+      setReport(null);
+    },
+    disabled: loading
+  }), React.createElement("i", null, "\u2014"), React.createElement("label", null, React.createElement("span", null, t("legacy.to")), React.createElement("input", {
     type: "date",
     value: toDate,
-    onChange: event => setToDate(event.target.value)
-  })), React.createElement(Btn, {
-    variant: "primary",
-    icon: "refresh",
+    onChange: event => {
+      setToDate(event.target.value);
+      setPreset("custom");
+      setReport(null);
+    },
+    disabled: loading
+  })), React.createElement("input", {
+    "aria-label": t("legacy.toTime"),
+    title: t("legacy.toTime"),
+    type: "time",
+    value: toTime,
+    onChange: event => {
+      setToTime(event.target.value);
+      setPreset("custom");
+      setReport(null);
+    },
+    disabled: loading
+  }), React.createElement("button", {
+    className: "mvp-apply",
     onClick: applyRange,
     disabled: loading
-  }, loading ? t("common.running") : t("legacy.apply"))), error ? React.createElement("div", {
-    className: "legacy-alert danger"
-  }, React.createElement(Icon, {
-    name: "warn"
-  }), React.createElement("span", null, error)) : null, tenderIncomplete ? React.createElement("div", {
-    className: "legacy-alert danger"
-  }, React.createElement(Icon, {
-    name: "warn"
-  }), React.createElement("span", null, t("legacy.unknownTender"), ": ", t("legacy.unknownSales"), " ", money(quality.unknown_sale_amount), " UZS \xB7 ", t("legacy.unknownRefunds"), " ", money(quality.unknown_refund_amount), " UZS")) : null, loading && !report ? React.createElement(Card, null, React.createElement("div", {
-    className: "legacy-empty"
+  }, React.createElement(MvpSymbol, null, loading ? "hourglass_top" : "refresh"), t("legacy.apply")))), React.createElement("p", {
+    className: "mvp-filter-help"
+  }, React.createElement(MvpSymbol, null, "info"), React.createElement("span", null, t("legacy.exactWindowHint"))), error ? React.createElement("div", {
+    className: "mvp-alert danger"
+  }, React.createElement(MvpSymbol, null, "warning"), React.createElement("span", null, error)) : null, tenderIncomplete ? React.createElement("div", {
+    className: "mvp-alert warning"
+  }, React.createElement(MvpSymbol, null, "warning"), React.createElement("span", null, t("legacy.unknownTender"), ": ", t("legacy.unknownSales"), " ", money(quality.unknown_sale_amount), " UZS \xB7 ", t("legacy.unknownRefunds"), " ", money(quality.unknown_refund_amount), " UZS")) : null, React.createElement("div", {
+    className: "mvp-period"
+  }, React.createElement(MvpSymbol, null, "date_range"), React.createElement("div", null, React.createElement("strong", null, periodText), range.start_at ? React.createElement("span", null, legacyDateTime(range.start_at, lang), " \u2014 ", legacyDateTime(range.end_at, lang)) : null), React.createElement("span", {
+    className: "mvp-period-mode"
+  }, range.mode === "business" ? "07:00 → 03:00" : t("legacy.exact"))), loading && !report ? React.createElement("div", {
+    className: "mvp-loading"
   }, React.createElement("span", {
     className: "spinner"
-  }), " ", t("common.running"))) : report ? React.createElement("div", {
-    className: "stack"
+  }), t("common.running")) : null, report ? React.createElement("div", {
+    className: "mvp-report"
+  }, React.createElement("section", {
+    className: "mvp-drawer-proof " + (drawerComplete ? "complete" : "incomplete")
   }, React.createElement("div", {
-    className: "legacy-period"
-  }, React.createElement(Icon, {
-    name: "receipt",
-    size: 18
-  }), React.createElement("div", null, React.createElement("strong", null, range.from, " \u2192 ", range.to), React.createElement("span", null, legacyDateTime(range.start_at, lang), " \u2014 ", legacyDateTime(range.end_at, lang))), React.createElement(Badge, {
-    tone: "muted"
-  }, range.mode === "business" ? "07:00 → 03:00" : t("legacy.exact"))), React.createElement("section", {
-    className: "legacy-drawer-proof " + (drawers.complete ? "complete" : "incomplete")
-  }, React.createElement("div", {
-    className: "legacy-proof-head"
-  }, React.createElement("div", null, React.createElement("div", {
-    className: "legacy-eyebrow"
+    className: "mvp-drawer-head"
+  }, React.createElement("div", null, React.createElement("span", {
+    className: "mvp-proof-label"
   }, t("legacy.physicalProof")), React.createElement("h2", null, t("legacy.drawerNow")), React.createElement("p", null, t("legacy.drawerHint"))), React.createElement("div", {
-    className: "legacy-proof-total"
-  }, React.createElement("span", null, (drawers.shifts || []).length ? drawers.complete ? t("legacy.expected") : t("legacy.incomplete") : t("legacy.noActiveShifts")), React.createElement("strong", null, drawers.complete ? money(drawers.expected_cash_total) : "—", drawers.complete ? React.createElement("small", null, " UZS") : null))), React.createElement("div", {
-    className: "legacy-drawer-grid"
+    className: "mvp-drawer-total"
+  }, React.createElement("span", null, (drawers.shifts || []).length ? drawerComplete ? t("legacy.expected") : t("legacy.incomplete") : t("legacy.noActiveShifts")), React.createElement("strong", null, drawerComplete ? money(drawers.expected_cash_total) : "—", drawerComplete ? React.createElement("small", null, " UZS") : null))), React.createElement("div", {
+    className: "mvp-drawer-grid"
   }, (drawers.shifts || []).length ? drawers.shifts.map(shift => React.createElement("div", {
-    className: "legacy-drawer-card",
+    className: "mvp-drawer-card",
     key: shift.shift_id
   }, React.createElement("div", {
-    className: "legacy-drawer-name"
-  }, React.createElement("strong", null, shift.cashier || "—"), React.createElement(Badge, {
-    tone: shift.cash_evidence_complete ? "ok" : "danger"
+    className: "mvp-drawer-name"
+  }, React.createElement("strong", null, shift.cashier || "—"), React.createElement("span", {
+    className: "mvp-evidence-badge " + (shift.cash_evidence_complete ? "ok" : "bad")
   }, shift.cash_evidence_complete ? t("legacy.complete") : t("legacy.incomplete"))), React.createElement("div", {
-    className: "legacy-drawer-money"
+    className: "mvp-drawer-money"
   }, shift.expected_cash == null ? "—" : money(shift.expected_cash), React.createElement("span", null, "UZS")), React.createElement("div", {
-    className: "legacy-drawer-meta"
+    className: "mvp-drawer-meta"
   }, t("legacy.started"), ": ", legacyDateTime(shift.started_at, lang)), React.createElement("div", {
-    className: "legacy-drawer-meta"
+    className: "mvp-drawer-meta"
   }, t("legacy.source"), ": ", shift.expected_cash_source || "—"))) : React.createElement("div", {
-    className: "legacy-empty"
+    className: "mvp-empty"
   }, drawers.available === false ? drawers.error || t("legacy.drawerUnavailable") : t("legacy.noActiveShifts")))), React.createElement("div", {
-    className: "legacy-kpi-grid"
-  }, React.createElement(LegacyMetric, {
+    className: "mvp-kpi-grid"
+  }, React.createElement(MvpKpi, {
     tone: "emerald",
-    label: t("legacy.netSales"),
+    title: t("legacy.netSales"),
+    icon: "payments",
     value: money(summary.net_revenue),
     unit: "UZS",
-    detail: t("legacy.gross") + ": " + money(summary.gross_revenue) + " · " + t("legacy.refunds") + ": " + money(summary.refund_amount)
-  }), React.createElement(LegacyMetric, {
+    footer: periodText,
+    badge: {
+      tone: "ok",
+      text: t("legacy.refunds") + " " + money(summary.refund_amount)
+    }
+  }), React.createElement(MvpKpi, {
     tone: "blue",
-    label: t("legacy.ordersOpened"),
+    title: t("legacy.ordersOpened"),
+    icon: "shopping_cart",
     value: summary.orders || 0,
-    detail: t("legacy.paid") + ": " + (summary.paid_orders || 0) + " · " + t("legacy.cancelled") + ": " + (summary.cancelled_orders || 0)
-  }), React.createElement(LegacyMetric, {
+    footer: t("legacy.paid") + ": " + (summary.paid_orders || 0)
+  }), React.createElement(MvpKpi, {
     tone: "violet",
-    label: t("legacy.averagePaid"),
+    title: t("legacy.averagePaid"),
+    icon: "trending_up",
     value: money(summary.average_paid_order),
     unit: "UZS",
-    detail: t("legacy.units") + ": " + (summary.units_sold || 0)
-  }), React.createElement(LegacyMetric, {
+    footer: t("legacy.units") + ": " + (summary.units_sold || 0)
+  }), React.createElement(MvpKpi, {
     tone: "amber",
-    label: t("legacy.drawerExpenses"),
-    value: money(summary.cashbox_expenses),
-    unit: "UZS",
-    detail: t("legacy.selectedRange")
-  })), React.createElement(Card, {
-    title: t("legacy.tenders"),
-    action: React.createElement(Badge, {
-      tone: "warn"
-    }, t("legacy.notPhysicalCash"))
-  }, React.createElement("p", {
-    className: "legacy-card-note"
-  }, t("legacy.tenderHint")), React.createElement("div", {
-    className: "legacy-tender-grid"
-  }, React.createElement(LegacyMetric, {
-    tone: "emerald",
-    label: t("legacy.cashAllSources"),
-    value: money(payments.cash),
-    unit: "UZS"
-  }), React.createElement(LegacyMetric, {
-    tone: "blue",
-    label: t("legacy.card"),
-    value: money(payments.card),
-    unit: "UZS",
-    detail: "UZCARD " + money((payments.card_detail || {}).UZCARD) + " · HUMO " + money((payments.card_detail || {}).HUMO) + " · CARD " + money((payments.card_detail || {}).CARD)
-  }), React.createElement(LegacyMetric, {
-    tone: "violet",
-    label: t("legacy.payme"),
-    value: money(payments.payme),
-    unit: "UZS"
-  }))), React.createElement(Card, {
-    title: t("legacy.cashiers")
-  }, React.createElement("p", {
-    className: "legacy-card-note"
-  }, t("legacy.cashierHint")), React.createElement(LegacyTable, {
-    columns: cashierColumns,
-    rows: cashiers,
-    empty: t("legacy.noData")
+    title: t("legacy.cashRegister"),
+    icon: "account_balance_wallet",
+    value: drawerComplete ? money(drawers.expected_cash_total) : "—",
+    unit: drawerComplete ? "UZS" : "",
+    footer: drawerComplete ? t("legacy.expected") : t("legacy.incomplete"),
+    badge: {
+      tone: drawerComplete ? "ok" : "bad",
+      text: t("legacy.physicalProof")
+    }
   })), React.createElement("div", {
-    className: "g2 legacy-two"
-  }, React.createElement(Card, {
-    title: t("legacy.topProducts")
-  }, React.createElement(LegacyTable, {
-    columns: productColumns,
+    className: "mvp-status-row"
+  }, React.createElement(MvpStatus, {
+    tone: "blue",
+    icon: "receipt_long",
+    value: summary.orders || 0,
+    label: t("legacy.statusOpened")
+  }), React.createElement(MvpStatus, {
+    tone: "orange",
+    icon: "pending",
+    value: summary.open_orders || 0,
+    label: t("legacy.statusOpenFromPeriod")
+  }), React.createElement(MvpStatus, {
+    tone: "green",
+    icon: "check_circle",
+    value: summary.paid_orders || 0,
+    label: t("legacy.paid")
+  }), React.createElement(MvpStatus, {
+    tone: "amber",
+    icon: "undo",
+    value: summary.refunded_orders || 0,
+    label: t("legacy.statusRefunded")
+  }), React.createElement(MvpStatus, {
+    tone: "red",
+    icon: "cancel",
+    value: summary.cancelled_orders || 0,
+    label: t("legacy.cancelled")
+  })), React.createElement("div", {
+    className: "mvp-chart-grid"
+  }, React.createElement("section", {
+    className: "mvp-chart-card"
+  }, React.createElement("div", {
+    className: "mvp-chart-head"
+  }, React.createElement("h3", null, React.createElement(MvpSymbol, null, "pie_chart"), t("legacy.productDistribution")), React.createElement("span", {
+    className: "mvp-chart-badge violet"
+  }, productTotal, " ", t("legacy.shownUnits"))), React.createElement("p", {
+    className: "mvp-card-note"
+  }, t("legacy.productTopTenHint")), React.createElement("div", {
+    className: "mvp-chart-container pie"
+  }, React.createElement(MvpChart, {
+    kind: "doughnut",
+    labels: products.map(row => row.name),
+    datasets: [{
+      data: productValues,
+      backgroundColor: products.map((_, index) => MVP_CHART_COLORS[index % MVP_CHART_COLORS.length]),
+      borderColor: "rgba(0,0,0,.30)",
+      borderWidth: 2,
+      hoverOffset: 10
+    }],
+    emptyLabel: t("legacy.noData")
+  })), React.createElement(MvpLegend, {
     rows: products,
-    empty: t("legacy.noData")
-  })), React.createElement(Card, {
-    title: t("legacy.categories")
-  }, React.createElement(LegacyTable, {
-    columns: categoryColumns,
-    rows: categories,
-    empty: t("legacy.noData")
-  }))), React.createElement(Card, {
-    title: t("legacy.recentPayments")
-  }, React.createElement(LegacyTable, {
-    columns: recentColumns,
+    total: productTotal,
+    money: money,
+    valueKey: "quantity"
+  })), React.createElement("section", {
+    className: "mvp-chart-card"
+  }, React.createElement("div", {
+    className: "mvp-chart-head"
+  }, React.createElement("h3", null, React.createElement(MvpSymbol, null, "donut_small"), t("legacy.categoryDistribution")), React.createElement("span", {
+    className: "mvp-chart-badge emerald"
+  }, "UZS")), React.createElement("p", {
+    className: "mvp-card-note"
+  }, t("legacy.categoryPositiveHint")), React.createElement("div", {
+    className: "mvp-chart-container pie"
+  }, React.createElement(MvpChart, {
+    kind: "doughnut",
+    labels: positiveCategories.map(row => row.name),
+    datasets: [{
+      data: categoryValues,
+      backgroundColor: positiveCategories.map((_, index) => MVP_CHART_COLORS[index % MVP_CHART_COLORS.length]),
+      borderColor: "rgba(0,0,0,.30)",
+      borderWidth: 2,
+      hoverOffset: 10
+    }],
+    emptyLabel: t("legacy.noData")
+  })), React.createElement(MvpLegend, {
+    rows: positiveCategories,
+    total: categoryTotal,
+    money: money,
+    valueKey: "revenue"
+  }))), React.createElement("section", {
+    className: "mvp-chart-card mvp-full"
+  }, React.createElement("div", {
+    className: "mvp-chart-head"
+  }, React.createElement("h3", null, React.createElement(MvpSymbol, null, "account_balance_wallet"), t("legacy.tenderDistribution")), React.createElement("span", {
+    className: "mvp-chart-badge " + (tenderIncomplete ? "rose" : "amber")
+  }, tenderIncomplete ? t("legacy.incompleteAttribution") : t("legacy.netOfRefunds"))), React.createElement("p", {
+    className: "mvp-card-note"
+  }, t("legacy.tenderHint")), React.createElement("div", {
+    className: "mvp-tender-grid"
+  }, tenderRows.map(row => React.createElement("div", {
+    className: "mvp-tender-card " + row.tone,
+    key: row.tone
+  }, React.createElement("span", {
+    className: "mvp-tender-icon"
+  }, React.createElement(MvpSymbol, null, row.icon)), React.createElement("strong", null, money(row.value), React.createElement("small", null, " UZS")), React.createElement("span", null, row.title), row.detail ? React.createElement("em", null, row.detail) : null))), React.createElement("div", {
+    className: "mvp-chart-container compact"
+  }, React.createElement(MvpChart, {
+    kind: "bar",
+    labels: tenderRows.map(row => row.chartLabel),
+    datasets: [{
+      data: tenderValues,
+      backgroundColor: tenderRows.map(row => MVP_TENDER_COLORS[row.tone][0]),
+      borderColor: tenderRows.map(row => MVP_TENDER_COLORS[row.tone][1]),
+      borderWidth: 2,
+      borderRadius: 8
+    }],
+    emptyLabel: t("legacy.noData")
+  }))), React.createElement("div", {
+    className: "mvp-chart-grid"
+  }, React.createElement("section", {
+    className: "mvp-chart-card"
+  }, React.createElement("div", {
+    className: "mvp-chart-head"
+  }, React.createElement("h3", null, React.createElement(MvpSymbol, null, "show_chart"), t("legacy.dailyNet")), React.createElement("span", {
+    className: "mvp-chart-badge emerald"
+  }, "UZS")), React.createElement("div", {
+    className: "mvp-chart-container"
+  }, React.createElement(MvpChart, {
+    kind: "line",
+    labels: dailyLabels,
+    datasets: [{
+      label: t("legacy.netSales"),
+      data: daily.map(row => mvpNumber(row.net_revenue)),
+      borderColor: "#10b981",
+      backgroundColor: "rgba(16,185,129,.12)",
+      borderWidth: 2,
+      fill: true,
+      tension: .38,
+      pointRadius: 4,
+      pointBackgroundColor: "#10b981",
+      pointBorderColor: "#fff",
+      pointBorderWidth: 2
+    }],
+    emptyLabel: range.mode === "business" ? t("legacy.noData") : t("legacy.noDailyExact")
+  }))), React.createElement("section", {
+    className: "mvp-chart-card"
+  }, React.createElement("div", {
+    className: "mvp-chart-head"
+  }, React.createElement("h3", null, React.createElement(MvpSymbol, null, "analytics"), t("legacy.dailyFlow")), React.createElement("span", {
+    className: "mvp-chart-badge blue"
+  }, "UZS")), bestDay ? React.createElement("div", {
+    className: "mvp-peak"
+  }, React.createElement("span", null, React.createElement(MvpSymbol, null, "local_fire_department")), React.createElement("div", null, React.createElement("small", null, t("legacy.bestDay")), React.createElement("strong", null, bestDay.date), React.createElement("em", null, money(bestDay.net_revenue), " UZS"))) : null, React.createElement("div", {
+    className: "mvp-chart-container compact"
+  }, React.createElement(MvpChart, {
+    kind: "bar",
+    labels: dailyLabels,
+    datasets: [{
+      label: t("legacy.gross"),
+      data: daily.map(row => mvpNumber(row.gross_revenue)),
+      backgroundColor: "rgba(99,102,241,.55)",
+      borderColor: "#818cf8",
+      borderWidth: 2,
+      borderRadius: 6
+    }, {
+      label: t("legacy.refunds"),
+      data: daily.map(row => mvpNumber(row.refund_amount)),
+      backgroundColor: "rgba(245,158,11,.50)",
+      borderColor: "#f59e0b",
+      borderWidth: 2,
+      borderRadius: 6
+    }],
+    emptyLabel: range.mode === "business" ? t("legacy.noData") : t("legacy.noDailyExact")
+  })))), React.createElement("div", {
+    className: "mvp-three-grid"
+  }, React.createElement("section", {
+    className: "mvp-chart-card"
+  }, React.createElement("div", {
+    className: "mvp-cashier-head"
+  }, React.createElement("h3", null, React.createElement(MvpSymbol, null, "badge"), t("legacy.cashiers")), React.createElement("select", {
+    value: cashierFilter,
+    onChange: event => setCashierFilter(event.target.value)
+  }, React.createElement("option", {
+    value: ""
+  }, t("legacy.allCashiers")), cashiers.map(row => React.createElement("option", {
+    value: String(row.cashier_id),
+    key: row.cashier_id
+  }, row.cashier_name)))), React.createElement("p", {
+    className: "mvp-card-note"
+  }, t("legacy.cashierHint")), bestCashier ? React.createElement("div", {
+    className: "mvp-best-cashier"
+  }, React.createElement("span", {
+    className: "mvp-best-badge"
+  }, React.createElement(MvpSymbol, null, "emoji_events"), t("legacy.topCashier")), React.createElement("span", {
+    className: "mvp-avatar"
+  }, String(bestCashier.cashier_name || "?").slice(0, 1)), React.createElement("div", null, React.createElement("strong", null, bestCashier.cashier_name), React.createElement("small", null, bestCashier.paid_orders || 0, " ", t("legacy.paid").toLowerCase())), React.createElement("b", null, money(bestCashier.net_revenue), React.createElement("small", null, " UZS"))) : null, React.createElement(MvpRows, {
+    rows: visibleCashiers.slice(0, 10),
+    empty: t("legacy.noData"),
+    render: row => React.createElement(React.Fragment, null, React.createElement("div", null, React.createElement("strong", null, row.cashier_name), React.createElement("span", null, row.paid_orders || 0, " ", t("legacy.paid").toLowerCase(), " \xB7 ", row.refunded_orders || 0, " ", t("legacy.statusRefunded").toLowerCase())), React.createElement("b", null, money(row.net_revenue)))
+  })), React.createElement("section", {
+    className: "mvp-chart-card"
+  }, React.createElement("div", {
+    className: "mvp-chart-head"
+  }, React.createElement("h3", null, React.createElement(MvpSymbol, null, "inventory_2"), t("legacy.topProducts"))), React.createElement("div", {
+    className: "mvp-product-total"
+  }, React.createElement("span", null, React.createElement(MvpSymbol, null, "shopping_basket")), React.createElement("div", null, React.createElement("strong", null, productTotal), React.createElement("small", null, t("legacy.shownPositiveUnits")))), React.createElement(MvpRows, {
+    rows: products,
+    empty: t("legacy.noData"),
+    render: row => React.createElement(React.Fragment, null, React.createElement("div", null, React.createElement("strong", null, row.name), React.createElement("span", null, row.quantity, " ", t("legacy.units").toLowerCase(), " \xB7 ", t("legacy.refunds"), " ", money(row.refund_amount))), React.createElement("b", null, money(row.revenue)))
+  })), React.createElement("section", {
+    className: "mvp-chart-card"
+  }, React.createElement("div", {
+    className: "mvp-chart-head"
+  }, React.createElement("h3", null, React.createElement(MvpSymbol, null, "fact_check"), t("legacy.evidence"))), React.createElement("div", {
+    className: "mvp-quality " + (quality.tender_attribution_complete === true ? "ok" : "bad")
+  }, React.createElement("span", null, t("legacy.tenderQuality")), React.createElement("strong", null, quality.tender_attribution_complete === true ? t("legacy.complete") : t("legacy.incomplete"))), React.createElement("div", {
+    className: "mvp-evidence-list"
+  }, React.createElement("div", null, React.createElement("span", null, t("legacy.gross")), React.createElement("b", null, money(summary.gross_revenue), " UZS")), React.createElement("div", null, React.createElement("span", null, t("legacy.refunds")), React.createElement("b", null, money(summary.refund_amount), " UZS")), React.createElement("div", null, React.createElement("span", null, t("legacy.drawerExpenses")), React.createElement("b", null, money(summary.cashbox_expenses), " UZS")), React.createElement("div", null, React.createElement("span", null, t("legacy.unknownSales")), React.createElement("b", null, money(quality.unknown_sale_amount), " UZS"))), React.createElement("h4", null, React.createElement(MvpSymbol, null, "receipt_long"), t("legacy.expenses")), React.createElement(MvpRows, {
+    rows: expenses.slice(0, 4),
+    empty: t("legacy.noExpenses"),
+    render: row => React.createElement(React.Fragment, null, React.createElement("div", null, React.createElement("strong", null, row.category || t("legacy.expenses")), React.createElement("span", null, row.cashier_name || "—", " \xB7 ", legacyDateTime(row.created_at, lang))), React.createElement("b", {
+      className: "amber"
+    }, money(row.amount)))
+  }))), React.createElement("div", {
+    className: "mvp-chart-grid"
+  }, React.createElement("section", {
+    className: "mvp-chart-card"
+  }, React.createElement("div", {
+    className: "mvp-chart-head"
+  }, React.createElement("h3", null, React.createElement(MvpSymbol, null, "payments"), t("legacy.recentPayments"))), React.createElement(MvpRows, {
     rows: recent,
-    empty: t("legacy.noData")
-  })), React.createElement(Card, {
-    title: t("legacy.expenses")
-  }, React.createElement(LegacyTable, {
-    columns: expenseColumns,
+    empty: t("legacy.noData"),
+    render: row => React.createElement(React.Fragment, null, React.createElement("div", null, React.createElement("strong", null, "#", row.order_number || row.id), React.createElement("span", null, row.cashier_name || "—", " \xB7 ", row.payment_method || "—", " \xB7 ", legacyDateTime(row.paid_at, lang))), React.createElement("b", null, money(row.amount)))
+  })), React.createElement("section", {
+    className: "mvp-chart-card"
+  }, React.createElement("div", {
+    className: "mvp-chart-head"
+  }, React.createElement("h3", null, React.createElement(MvpSymbol, null, "receipt_long"), t("legacy.expenses"))), React.createElement(MvpRows, {
     rows: expenses,
-    empty: t("legacy.noExpenses")
-  }))) : null);
+    empty: t("legacy.noExpenses"),
+    render: row => React.createElement(React.Fragment, null, React.createElement("div", null, React.createElement("strong", null, row.category || t("legacy.expenses")), React.createElement("span", null, row.comment || "—", " \xB7 ", row.cashier_name || "—", " \xB7 ", legacyDateTime(row.created_at, lang))), React.createElement("b", {
+      className: "amber"
+    }, money(row.amount)))
+  })))) : null);
 }
 
 /* source: app/screens-admin.jsx */

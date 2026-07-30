@@ -1,0 +1,12 @@
+Smart Jowi dashboard compatibility assets
+
+Chart.js 4.4.0 and Material Symbols Outlined were copied from the installed
+django-unfold package used by the trusted Smart Jowi dashboard. Their upstream
+licenses are included beside the files.
+
+Plus Jakarta Sans was downloaded from the official Google Fonts distribution
+referenced by the original dashboard template. It is licensed under the SIL
+Open Font License; the license is included as PlusJakartaSans.OFL.txt.
+
+These files are served only from the loopback desktop control server. The
+compatibility dashboard performs no runtime font, script, or CDN requests.
