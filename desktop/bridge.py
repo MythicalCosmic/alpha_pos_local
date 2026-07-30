@@ -613,6 +613,35 @@ class Api:
 
     # -- dashboards ----------------------------------------------------------
     @_safe
+    def legacy_sales_report(
+        self,
+        date_from=None,
+        date_to=None,
+        from_at=None,
+        to_at=None,
+    ):
+        """Temporary, read-only familiar sales view over the local database."""
+        import os
+
+        enabled = os.environ.get(
+            'LEGACY_COMPAT_DASHBOARD_ENABLED',
+            'True',
+        ).strip().lower() in ('1', 'true', 'yes', 'on')
+        if not enabled:
+            return {'ok': True, 'enabled': False, 'report': None}
+
+        self.server.ensure_django()
+        from desktop.local_sales_report import build_local_sales_report
+
+        report = build_local_sales_report(
+            date_from=date_from,
+            date_to=date_to,
+            from_at=from_at,
+            to_at=to_at,
+        )
+        return {'ok': True, 'enabled': True, 'report': report}
+
+    @_safe
     def license_status(self):
         self.server.ensure_django()
         from django.conf import settings as _dj

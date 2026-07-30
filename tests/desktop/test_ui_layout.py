@@ -67,3 +67,35 @@ def test_force_pull_saved_replay_is_reported_as_queued_not_failed():
     queued = source.index('? t("tests.forcePullQueued")')
     raw_error = source.index(': (r && r.error) || t("tests.forcePullQueued")')
     assert queued < raw_error
+
+
+def test_trusted_sales_screen_uses_shift_evidence_for_physical_cash():
+    main = (
+        ROOT / 'desktop' / 'ui' / 'app' / 'main.jsx'
+    ).read_text(encoding='utf-8')
+    source = (
+        ROOT / 'desktop' / 'ui' / 'app' / 'screens-sales.jsx'
+    ).read_text(encoding='utf-8')
+    compiler = (
+        ROOT / 'tools' / 'compile_desktop_ui.js'
+    ).read_text(encoding='utf-8')
+
+    assert 'id: "legacySales"' in main
+    assert "'app/screens-sales.jsx'" in compiler
+    assert 'shift.expected_cash == null' in source
+    assert 'shift.cash_evidence_complete' in source
+    assert 'drawers.expected_cash_total' in source
+    assert 'payments.cash' in source
+    assert 'legacy.notPhysicalCash' in source
+    assert 'quality.tender_attribution_complete !== true' in source
+    assert 'quality.unknown_sale_amount' in source
+    assert 'quality.unknown_refund_amount' in source
+    assert 'https://' not in source
+
+
+def test_trusted_sales_layout_remains_safe_at_narrow_widths():
+    css = (ROOT / 'desktop' / 'ui' / 'themes.css').read_text(encoding='utf-8')
+
+    assert '.legacy-table-wrap { max-width: 100%; overflow: auto;' in css
+    assert '.legacy-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }' in css
+    assert '.legacy-tender-grid, .legacy-kpi-grid { grid-template-columns: minmax(0, 1fr); }' in css

@@ -1,6 +1,6 @@
 /* AlphaPOS desktop UI — generated; do not edit directly.
  * Run: node tools/compile_desktop_ui.js
- * source-sha256: 5382173d1a2056a684751ed379958fc3149211083eff4002347c5542e24a5cbe
+ * source-sha256: 51215f896c9d0ee305c9ad00ac9df6dab534f29f0eb745ffd0bcf9166aae77e7
  */
 (function () {
 'use strict';
@@ -901,6 +901,124 @@ window.I18N = {
       "ntf.empty": "Пока нет получателей — добавьте Telegram chat ID ниже.",
       "cfg.restart": "перезапустите сервер, чтобы применить", "tests.failed": "СБОЙ",
     },
+  };
+  for (var l in extra) { window.I18N[l] = Object.assign(window.I18N[l] || {}, extra[l]); }
+})();
+
+// --- Temporary trusted sales compatibility view ---
+(function () {
+  var extra = {
+    en: {
+      "nav.legacySales": "Trusted Sales",
+      "legacy.title": "Trusted Sales Dashboard",
+      "legacy.sub": "The familiar sales view, rebuilt over the current local accounting evidence.",
+      "legacy.temporary": "Temporary compatibility view",
+      "legacy.readOnly": "Read only",
+      "legacy.disabled": "This temporary compatibility view is disabled on this install.",
+      "legacy.loadFailed": "The sales report could not be loaded.",
+      "legacy.today": "Today", "legacy.yesterday": "Yesterday", "legacy.sevenDays": "7 days",
+      "legacy.from": "From", "legacy.to": "To", "legacy.apply": "Apply",
+      "legacy.exact": "Exact interval", "legacy.selectedRange": "Selected range",
+      "legacy.unknownTender": "Tender evidence is incomplete",
+      "legacy.unknownSales": "unattributed sales", "legacy.unknownRefunds": "unattributed refunds",
+      "legacy.physicalProof": "Physical cash proof",
+      "legacy.drawerNow": "Expected cash physically in active drawers now",
+      "legacy.drawerHint": "This is the cashier-counter comparison. It already accounts for change, drawer refunds, and cashbox expenses. Unrecorded physical removals cannot be known by the app.",
+      "legacy.expected": "Expected now", "legacy.complete": "Complete", "legacy.incomplete": "Evidence incomplete",
+      "legacy.started": "Started", "legacy.source": "Evidence source",
+      "legacy.drawerUnavailable": "Active-drawer evidence is unavailable.",
+      "legacy.noActiveShifts": "No active cashier shifts.",
+      "legacy.netSales": "Net sales", "legacy.gross": "Gross", "legacy.refunds": "Refunds",
+      "legacy.ordersOpened": "Orders opened", "legacy.paid": "Paid", "legacy.cancelled": "Cancelled",
+      "legacy.averagePaid": "Average paid order", "legacy.units": "Units",
+      "legacy.drawerExpenses": "Drawer expenses",
+      "legacy.tenders": "Tender breakdown", "legacy.notPhysicalCash": "Not the drawer balance",
+      "legacy.tenderHint": "Cash here means cash sales from every source, including money collected outside the POS drawer. Use the active-drawer proof above for physical notes at the counter.",
+      "legacy.cashAllSources": "Cash sales — all sources", "legacy.cash": "Cash",
+      "legacy.card": "Cards", "legacy.payme": "Payme",
+      "legacy.cashiers": "Cashier performance",
+      "legacy.cashierHint": "Sales belong to the cashier who settled them; refunds belong to the cashier who performed the refund.",
+      "legacy.cashier": "Cashier", "legacy.topProducts": "Top products",
+      "legacy.categories": "Categories", "legacy.product": "Product", "legacy.category": "Category",
+      "legacy.recentPayments": "Recent paid orders", "legacy.expenses": "Cash-drawer expenses",
+      "legacy.order": "Order", "legacy.method": "Method", "legacy.amount": "Amount",
+      "legacy.paidAt": "Paid at", "legacy.comment": "Comment", "legacy.time": "Time",
+      "legacy.noData": "No matching data.", "legacy.noExpenses": "No drawer expenses in this range."
+    },
+    uz: {
+      "nav.legacySales": "Ishonchli savdo",
+      "legacy.title": "Ishonchli savdo paneli",
+      "legacy.sub": "Tanish savdo ko‘rinishi, hozirgi lokal hisob-kitob dalillari asosida qayta qurilgan.",
+      "legacy.temporary": "Vaqtinchalik moslik oynasi",
+      "legacy.readOnly": "Faqat ko‘rish",
+      "legacy.disabled": "Bu vaqtinchalik moslik oynasi ushbu qurilmada o‘chirilgan.",
+      "legacy.loadFailed": "Savdo hisobotini yuklab bo‘lmadi.",
+      "legacy.today": "Bugun", "legacy.yesterday": "Kecha", "legacy.sevenDays": "7 kun",
+      "legacy.from": "Dan", "legacy.to": "Gacha", "legacy.apply": "Qo‘llash",
+      "legacy.exact": "Aniq oraliq", "legacy.selectedRange": "Tanlangan oraliq",
+      "legacy.unknownTender": "To‘lov turi dalili to‘liq emas",
+      "legacy.unknownSales": "aniqlanmagan savdo", "legacy.unknownRefunds": "aniqlanmagan qaytarish",
+      "legacy.physicalProof": "Naqd pul isboti",
+      "legacy.drawerNow": "Faol kassalarda hozir bo‘lishi kerak bo‘lgan naqd pul",
+      "legacy.drawerHint": "Kassadagi pul bilan aynan shu raqam solishtiriladi. Qaytim, naqd qaytarish va kassa xarajatlari hisobga olingan. Qayd etilmagan olib chiqilgan pulni ilova bila olmaydi.",
+      "legacy.expected": "Hozir kutiladi", "legacy.complete": "To‘liq", "legacy.incomplete": "Dalil to‘liq emas",
+      "legacy.started": "Boshlangan", "legacy.source": "Dalil manbasi",
+      "legacy.drawerUnavailable": "Faol kassa dalillari mavjud emas.",
+      "legacy.noActiveShifts": "Faol kassir smenasi yo‘q.",
+      "legacy.netSales": "Sof savdo", "legacy.gross": "Yalpi", "legacy.refunds": "Qaytarish",
+      "legacy.ordersOpened": "Ochilgan buyurtmalar", "legacy.paid": "To‘langan", "legacy.cancelled": "Bekor qilingan",
+      "legacy.averagePaid": "O‘rtacha to‘langan buyurtma", "legacy.units": "Dona",
+      "legacy.drawerExpenses": "Kassa xarajatlari",
+      "legacy.tenders": "To‘lov turlari", "legacy.notPhysicalCash": "Kassadagi qoldiq emas",
+      "legacy.tenderHint": "Bu yerdagi naqd savdo barcha manbalarni, jumladan POS kassasidan tashqarida olingan pulni ham qamrab oladi. Peshtaxtadagi naqd pul uchun yuqoridagi faol kassa isbotidan foydalaning.",
+      "legacy.cashAllSources": "Naqd savdo — barcha manbalar", "legacy.cash": "Naqd",
+      "legacy.card": "Kartalar", "legacy.payme": "Payme",
+      "legacy.cashiers": "Kassirlar natijasi",
+      "legacy.cashierHint": "Savdo uni to‘lagan kassirga, qaytarish esa qaytarishni bajargan kassirga tegishli.",
+      "legacy.cashier": "Kassir", "legacy.topProducts": "Eng ko‘p sotilganlar",
+      "legacy.categories": "Toifalar", "legacy.product": "Mahsulot", "legacy.category": "Toifa",
+      "legacy.recentPayments": "So‘nggi to‘langan buyurtmalar", "legacy.expenses": "Kassadan qilingan xarajatlar",
+      "legacy.order": "Buyurtma", "legacy.method": "Usul", "legacy.amount": "Summa",
+      "legacy.paidAt": "To‘langan vaqt", "legacy.comment": "Izoh", "legacy.time": "Vaqt",
+      "legacy.noData": "Mos ma’lumot yo‘q.", "legacy.noExpenses": "Bu oraliqda kassa xarajati yo‘q."
+    },
+    ru: {
+      "nav.legacySales": "Проверенные продажи",
+      "legacy.title": "Проверенная панель продаж",
+      "legacy.sub": "Знакомый вид продаж, заново собранный на текущих локальных расчётных данных.",
+      "legacy.temporary": "Временный совместимый вид",
+      "legacy.readOnly": "Только просмотр",
+      "legacy.disabled": "Этот временный совместимый вид отключён на данной установке.",
+      "legacy.loadFailed": "Не удалось загрузить отчёт по продажам.",
+      "legacy.today": "Сегодня", "legacy.yesterday": "Вчера", "legacy.sevenDays": "7 дней",
+      "legacy.from": "С", "legacy.to": "По", "legacy.apply": "Применить",
+      "legacy.exact": "Точный интервал", "legacy.selectedRange": "Выбранный период",
+      "legacy.unknownTender": "Данные по способам оплаты неполные",
+      "legacy.unknownSales": "неопределённые продажи", "legacy.unknownRefunds": "неопределённые возвраты",
+      "legacy.physicalProof": "Проверка наличных",
+      "legacy.drawerNow": "Ожидаемые наличные в активных кассах сейчас",
+      "legacy.drawerHint": "Именно это число сравнивается с деньгами на кассе. Уже учтены сдача, возвраты наличными и расходы из кассы. Приложение не может знать о физически изъятых без записи деньгах.",
+      "legacy.expected": "Ожидается сейчас", "legacy.complete": "Полные данные", "legacy.incomplete": "Данные неполные",
+      "legacy.started": "Начало", "legacy.source": "Источник данных",
+      "legacy.drawerUnavailable": "Данные активных касс недоступны.",
+      "legacy.noActiveShifts": "Нет активных смен кассиров.",
+      "legacy.netSales": "Чистые продажи", "legacy.gross": "Валовые", "legacy.refunds": "Возвраты",
+      "legacy.ordersOpened": "Открыто заказов", "legacy.paid": "Оплачено", "legacy.cancelled": "Отменено",
+      "legacy.averagePaid": "Средний оплаченный заказ", "legacy.units": "Единицы",
+      "legacy.drawerExpenses": "Расходы из кассы",
+      "legacy.tenders": "Способы оплаты", "legacy.notPhysicalCash": "Не остаток в кассе",
+      "legacy.tenderHint": "Наличные здесь включают продажи из всех источников, в том числе деньги, полученные вне кассы POS. Для физических купюр используйте проверку активной кассы выше.",
+      "legacy.cashAllSources": "Наличные продажи — все источники", "legacy.cash": "Наличные",
+      "legacy.card": "Карты", "legacy.payme": "Payme",
+      "legacy.cashiers": "Результаты кассиров",
+      "legacy.cashierHint": "Продажа относится к кассиру, который её оплатил; возврат — к кассиру, который выполнил возврат.",
+      "legacy.cashier": "Кассир", "legacy.topProducts": "Лучшие товары",
+      "legacy.categories": "Категории", "legacy.product": "Товар", "legacy.category": "Категория",
+      "legacy.recentPayments": "Последние оплаченные заказы", "legacy.expenses": "Расходы из денежного ящика",
+      "legacy.order": "Заказ", "legacy.method": "Способ", "legacy.amount": "Сумма",
+      "legacy.paidAt": "Время оплаты", "legacy.comment": "Комментарий", "legacy.time": "Время",
+      "legacy.noData": "Нет подходящих данных.", "legacy.noExpenses": "За период нет расходов из кассы."
+    }
   };
   for (var l in extra) { window.I18N[l] = Object.assign(window.I18N[l] || {}, extra[l]); }
 })();
@@ -2435,6 +2553,425 @@ Object.assign(window, {
   DashboardScreen,
   LicenseScreen
 });
+
+/* source: app/screens-sales.jsx */
+function legacyLocalDate(value) {
+  const d = value ? new Date(value) : new Date();
+  const z = n => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate());
+}
+function legacyBusinessDate(offsetDays = 0) {
+  const d = new Date();
+  if (d.getHours() < 3) d.setDate(d.getDate() - 1);
+  d.setDate(d.getDate() + offsetDays);
+  return legacyLocalDate(d);
+}
+function legacyMoney(value, lang) {
+  if (value == null || value === "") return "—";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value);
+  const locale = lang === "ru" ? "ru-RU" : lang === "uz" ? "uz-UZ" : "en-US";
+  return new Intl.NumberFormat(locale, {
+    maximumFractionDigits: 0
+  }).format(n);
+}
+function legacyDateTime(value, lang) {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  const locale = lang === "ru" ? "ru-RU" : lang === "uz" ? "uz-UZ" : "en-GB";
+  return new Intl.DateTimeFormat(locale, {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(d);
+}
+function LegacyMetric({
+  tone,
+  label,
+  value,
+  unit,
+  detail
+}) {
+  return React.createElement("div", {
+    className: "legacy-kpi " + (tone || "")
+  }, React.createElement("div", {
+    className: "legacy-kpi-label"
+  }, label), React.createElement("div", {
+    className: "legacy-kpi-value"
+  }, value, React.createElement("span", null, unit || "")), React.createElement("div", {
+    className: "legacy-kpi-detail"
+  }, detail || "\u00a0"));
+}
+function LegacyTable({
+  columns,
+  rows,
+  empty
+}) {
+  return React.createElement("div", {
+    className: "legacy-table-wrap"
+  }, React.createElement("table", {
+    className: "legacy-table"
+  }, React.createElement("thead", null, React.createElement("tr", null, columns.map(col => React.createElement("th", {
+    key: col.key
+  }, col.label)))), React.createElement("tbody", null, rows.length ? rows.map((row, index) => React.createElement("tr", {
+    key: row.id != null ? row.id : index
+  }, columns.map(col => React.createElement("td", {
+    key: col.key,
+    className: col.align === "right" ? "num" : ""
+  }, col.render ? col.render(row) : row[col.key] == null || row[col.key] === "" ? "—" : row[col.key])))) : React.createElement("tr", null, React.createElement("td", {
+    className: "legacy-empty",
+    colSpan: columns.length
+  }, empty)))));
+}
+function LegacySalesScreen() {
+  const app = useApp();
+  const {
+    t,
+    lang
+  } = app;
+  const [fromDate, setFromDate] = React.useState(legacyBusinessDate());
+  const [toDate, setToDate] = React.useState(legacyBusinessDate());
+  const [report, setReport] = React.useState(null);
+  const [enabled, setEnabled] = React.useState(true);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState("");
+  const money = React.useCallback(value => legacyMoney(value, lang), [lang]);
+  const load = React.useCallback((start, end) => {
+    setLoading(true);
+    setError("");
+    return api.legacy_sales_report(start, end, null, null).then(result => {
+      if (!result || result.ok === false) {
+        setError(result && result.error || t("legacy.loadFailed"));
+        setReport(null);
+      } else if (result.enabled === false) {
+        setEnabled(false);
+        setReport(null);
+      } else {
+        setEnabled(true);
+        setReport(result.report || null);
+      }
+      setLoading(false);
+    });
+  }, [t]);
+  React.useEffect(() => {
+    load(fromDate, toDate);
+  }, []);
+  const chooseRange = days => {
+    const end = legacyBusinessDate();
+    const start = legacyBusinessDate(-(days - 1));
+    setFromDate(start);
+    setToDate(end);
+    load(start, end);
+  };
+  const applyRange = () => load(fromDate, toDate);
+  if (!enabled) {
+    return React.createElement("div", {
+      className: "page"
+    }, React.createElement("header", {
+      className: "page-head"
+    }, React.createElement("h1", {
+      className: "page-h"
+    }, t("legacy.title")), React.createElement("p", {
+      className: "page-sub"
+    }, t("legacy.disabled"))));
+  }
+  const summary = report && report.summary || {};
+  const payments = report && report.payment_breakdown || {};
+  const drawers = report && report.active_drawers || {};
+  const quality = report && report.data_quality || {};
+  const range = report && report.range || {};
+  const tenderIncomplete = quality.tender_attribution_complete !== true;
+  const cashiers = report && report.cashiers || [];
+  const products = report && report.top_products || [];
+  const categories = report && report.categories || [];
+  const expenses = report && report.expenses || [];
+  const recent = report && report.recent_paid_orders || [];
+  const cashierColumns = [{
+    key: "cashier_name",
+    label: t("legacy.cashier")
+  }, {
+    key: "paid_orders",
+    label: t("legacy.paid"),
+    align: "right"
+  }, {
+    key: "net_revenue",
+    label: t("legacy.netSales"),
+    align: "right",
+    render: row => money(row.net_revenue)
+  }, {
+    key: "cash",
+    label: t("legacy.cash"),
+    align: "right",
+    render: row => money((row.payment_breakdown || {}).cash)
+  }, {
+    key: "card",
+    label: t("legacy.card"),
+    align: "right",
+    render: row => money((row.payment_breakdown || {}).card)
+  }, {
+    key: "payme",
+    label: t("legacy.payme"),
+    align: "right",
+    render: row => money((row.payment_breakdown || {}).payme)
+  }, {
+    key: "refund_amount",
+    label: t("legacy.refunds"),
+    align: "right",
+    render: row => money(row.refund_amount)
+  }];
+  const productColumns = [{
+    key: "name",
+    label: t("legacy.product")
+  }, {
+    key: "quantity",
+    label: t("legacy.units"),
+    align: "right"
+  }, {
+    key: "revenue",
+    label: t("legacy.netSales"),
+    align: "right",
+    render: row => money(row.revenue)
+  }, {
+    key: "refund_amount",
+    label: t("legacy.refunds"),
+    align: "right",
+    render: row => money(row.refund_amount)
+  }];
+  const categoryColumns = [{
+    key: "name",
+    label: t("legacy.category")
+  }, {
+    key: "quantity",
+    label: t("legacy.units"),
+    align: "right"
+  }, {
+    key: "revenue",
+    label: t("legacy.netSales"),
+    align: "right",
+    render: row => money(row.revenue)
+  }];
+  const recentColumns = [{
+    key: "order_number",
+    label: t("legacy.order")
+  }, {
+    key: "cashier_name",
+    label: t("legacy.cashier")
+  }, {
+    key: "payment_method",
+    label: t("legacy.method")
+  }, {
+    key: "amount",
+    label: t("legacy.amount"),
+    align: "right",
+    render: row => money(row.amount)
+  }, {
+    key: "paid_at",
+    label: t("legacy.paidAt"),
+    render: row => legacyDateTime(row.paid_at, lang)
+  }];
+  const expenseColumns = [{
+    key: "category",
+    label: t("legacy.category")
+  }, {
+    key: "cashier_name",
+    label: t("legacy.cashier")
+  }, {
+    key: "comment",
+    label: t("legacy.comment")
+  }, {
+    key: "amount",
+    label: t("legacy.amount"),
+    align: "right",
+    render: row => money(row.amount)
+  }, {
+    key: "created_at",
+    label: t("legacy.time"),
+    render: row => legacyDateTime(row.created_at, lang)
+  }];
+  return React.createElement("div", {
+    className: "page legacy-page",
+    "data-screen-label": "Trusted sales"
+  }, React.createElement("header", {
+    className: "legacy-hero"
+  }, React.createElement("div", null, React.createElement("div", {
+    className: "legacy-eyebrow"
+  }, t("legacy.temporary")), React.createElement("h1", null, t("legacy.title")), React.createElement("p", null, t("legacy.sub"))), React.createElement(Badge, {
+    tone: "ok"
+  }, t("legacy.readOnly"))), React.createElement("div", {
+    className: "legacy-filter"
+  }, React.createElement("div", {
+    className: "legacy-presets"
+  }, React.createElement(Btn, {
+    variant: "ghost",
+    size: "sm",
+    onClick: () => chooseRange(1)
+  }, t("legacy.today")), React.createElement(Btn, {
+    variant: "ghost",
+    size: "sm",
+    onClick: () => {
+      const day = legacyBusinessDate(-1);
+      setFromDate(day);
+      setToDate(day);
+      load(day, day);
+    }
+  }, t("legacy.yesterday")), React.createElement(Btn, {
+    variant: "ghost",
+    size: "sm",
+    onClick: () => chooseRange(7)
+  }, t("legacy.sevenDays"))), React.createElement(Field, {
+    l: t("legacy.from")
+  }, React.createElement("input", {
+    className: "inp",
+    type: "date",
+    value: fromDate,
+    onChange: event => setFromDate(event.target.value)
+  })), React.createElement(Field, {
+    l: t("legacy.to")
+  }, React.createElement("input", {
+    className: "inp",
+    type: "date",
+    value: toDate,
+    onChange: event => setToDate(event.target.value)
+  })), React.createElement(Btn, {
+    variant: "primary",
+    icon: "refresh",
+    onClick: applyRange,
+    disabled: loading
+  }, loading ? t("common.running") : t("legacy.apply"))), error ? React.createElement("div", {
+    className: "legacy-alert danger"
+  }, React.createElement(Icon, {
+    name: "warn"
+  }), React.createElement("span", null, error)) : null, tenderIncomplete ? React.createElement("div", {
+    className: "legacy-alert danger"
+  }, React.createElement(Icon, {
+    name: "warn"
+  }), React.createElement("span", null, t("legacy.unknownTender"), ": ", t("legacy.unknownSales"), " ", money(quality.unknown_sale_amount), " UZS \xB7 ", t("legacy.unknownRefunds"), " ", money(quality.unknown_refund_amount), " UZS")) : null, loading && !report ? React.createElement(Card, null, React.createElement("div", {
+    className: "legacy-empty"
+  }, React.createElement("span", {
+    className: "spinner"
+  }), " ", t("common.running"))) : report ? React.createElement("div", {
+    className: "stack"
+  }, React.createElement("div", {
+    className: "legacy-period"
+  }, React.createElement(Icon, {
+    name: "receipt",
+    size: 18
+  }), React.createElement("div", null, React.createElement("strong", null, range.from, " \u2192 ", range.to), React.createElement("span", null, legacyDateTime(range.start_at, lang), " \u2014 ", legacyDateTime(range.end_at, lang))), React.createElement(Badge, {
+    tone: "muted"
+  }, range.mode === "business" ? "07:00 → 03:00" : t("legacy.exact"))), React.createElement("section", {
+    className: "legacy-drawer-proof " + (drawers.complete ? "complete" : "incomplete")
+  }, React.createElement("div", {
+    className: "legacy-proof-head"
+  }, React.createElement("div", null, React.createElement("div", {
+    className: "legacy-eyebrow"
+  }, t("legacy.physicalProof")), React.createElement("h2", null, t("legacy.drawerNow")), React.createElement("p", null, t("legacy.drawerHint"))), React.createElement("div", {
+    className: "legacy-proof-total"
+  }, React.createElement("span", null, (drawers.shifts || []).length ? drawers.complete ? t("legacy.expected") : t("legacy.incomplete") : t("legacy.noActiveShifts")), React.createElement("strong", null, drawers.complete ? money(drawers.expected_cash_total) : "—", drawers.complete ? React.createElement("small", null, " UZS") : null))), React.createElement("div", {
+    className: "legacy-drawer-grid"
+  }, (drawers.shifts || []).length ? drawers.shifts.map(shift => React.createElement("div", {
+    className: "legacy-drawer-card",
+    key: shift.shift_id
+  }, React.createElement("div", {
+    className: "legacy-drawer-name"
+  }, React.createElement("strong", null, shift.cashier || "—"), React.createElement(Badge, {
+    tone: shift.cash_evidence_complete ? "ok" : "danger"
+  }, shift.cash_evidence_complete ? t("legacy.complete") : t("legacy.incomplete"))), React.createElement("div", {
+    className: "legacy-drawer-money"
+  }, shift.expected_cash == null ? "—" : money(shift.expected_cash), React.createElement("span", null, "UZS")), React.createElement("div", {
+    className: "legacy-drawer-meta"
+  }, t("legacy.started"), ": ", legacyDateTime(shift.started_at, lang)), React.createElement("div", {
+    className: "legacy-drawer-meta"
+  }, t("legacy.source"), ": ", shift.expected_cash_source || "—"))) : React.createElement("div", {
+    className: "legacy-empty"
+  }, drawers.available === false ? drawers.error || t("legacy.drawerUnavailable") : t("legacy.noActiveShifts")))), React.createElement("div", {
+    className: "legacy-kpi-grid"
+  }, React.createElement(LegacyMetric, {
+    tone: "emerald",
+    label: t("legacy.netSales"),
+    value: money(summary.net_revenue),
+    unit: "UZS",
+    detail: t("legacy.gross") + ": " + money(summary.gross_revenue) + " · " + t("legacy.refunds") + ": " + money(summary.refund_amount)
+  }), React.createElement(LegacyMetric, {
+    tone: "blue",
+    label: t("legacy.ordersOpened"),
+    value: summary.orders || 0,
+    detail: t("legacy.paid") + ": " + (summary.paid_orders || 0) + " · " + t("legacy.cancelled") + ": " + (summary.cancelled_orders || 0)
+  }), React.createElement(LegacyMetric, {
+    tone: "violet",
+    label: t("legacy.averagePaid"),
+    value: money(summary.average_paid_order),
+    unit: "UZS",
+    detail: t("legacy.units") + ": " + (summary.units_sold || 0)
+  }), React.createElement(LegacyMetric, {
+    tone: "amber",
+    label: t("legacy.drawerExpenses"),
+    value: money(summary.cashbox_expenses),
+    unit: "UZS",
+    detail: t("legacy.selectedRange")
+  })), React.createElement(Card, {
+    title: t("legacy.tenders"),
+    action: React.createElement(Badge, {
+      tone: "warn"
+    }, t("legacy.notPhysicalCash"))
+  }, React.createElement("p", {
+    className: "legacy-card-note"
+  }, t("legacy.tenderHint")), React.createElement("div", {
+    className: "legacy-tender-grid"
+  }, React.createElement(LegacyMetric, {
+    tone: "emerald",
+    label: t("legacy.cashAllSources"),
+    value: money(payments.cash),
+    unit: "UZS"
+  }), React.createElement(LegacyMetric, {
+    tone: "blue",
+    label: t("legacy.card"),
+    value: money(payments.card),
+    unit: "UZS",
+    detail: "UZCARD " + money((payments.card_detail || {}).UZCARD) + " · HUMO " + money((payments.card_detail || {}).HUMO) + " · CARD " + money((payments.card_detail || {}).CARD)
+  }), React.createElement(LegacyMetric, {
+    tone: "violet",
+    label: t("legacy.payme"),
+    value: money(payments.payme),
+    unit: "UZS"
+  }))), React.createElement(Card, {
+    title: t("legacy.cashiers")
+  }, React.createElement("p", {
+    className: "legacy-card-note"
+  }, t("legacy.cashierHint")), React.createElement(LegacyTable, {
+    columns: cashierColumns,
+    rows: cashiers,
+    empty: t("legacy.noData")
+  })), React.createElement("div", {
+    className: "g2 legacy-two"
+  }, React.createElement(Card, {
+    title: t("legacy.topProducts")
+  }, React.createElement(LegacyTable, {
+    columns: productColumns,
+    rows: products,
+    empty: t("legacy.noData")
+  })), React.createElement(Card, {
+    title: t("legacy.categories")
+  }, React.createElement(LegacyTable, {
+    columns: categoryColumns,
+    rows: categories,
+    empty: t("legacy.noData")
+  }))), React.createElement(Card, {
+    title: t("legacy.recentPayments")
+  }, React.createElement(LegacyTable, {
+    columns: recentColumns,
+    rows: recent,
+    empty: t("legacy.noData")
+  })), React.createElement(Card, {
+    title: t("legacy.expenses")
+  }, React.createElement(LegacyTable, {
+    columns: expenseColumns,
+    rows: expenses,
+    empty: t("legacy.noExpenses")
+  }))) : null);
+}
 
 /* source: app/screens-admin.jsx */
 function EventRow({
@@ -4344,6 +4881,11 @@ const NAV = [{
   icon: "dashboard",
   l: "nav.dashboard",
   screen: () => React.createElement(DashboardScreen, null)
+}, {
+  id: "legacySales",
+  icon: "receipt",
+  l: "nav.legacySales",
+  screen: () => React.createElement(LegacySalesScreen, null)
 }, {
   id: "license",
   icon: "license",

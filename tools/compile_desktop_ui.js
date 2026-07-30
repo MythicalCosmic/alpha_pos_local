@@ -25,6 +25,7 @@ const inputs = [
   'app/i18n.js',
   'app/ui.jsx',
   'app/screens-main.jsx',
+  'app/screens-sales.jsx',
   'app/screens-admin.jsx',
   'app/screens-ops.jsx',
   'app/screens-updates.jsx',
@@ -93,4 +94,3 @@ if (process.argv.includes('--check')) {
   fs.writeFileSync(outputPath, expected, 'utf8');
   process.stdout.write(`wrote ${path.relative(root, outputPath)} (${expected.length} bytes)\n`);
 }
-

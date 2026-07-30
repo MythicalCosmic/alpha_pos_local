@@ -14,6 +14,7 @@ const SYNC_L = {
 
 const NAV = [
   { id: "dashboard", icon: "dashboard", l: "nav.dashboard", screen: () => <DashboardScreen /> },
+  { id: "legacySales", icon: "receipt", l: "nav.legacySales", screen: () => <LegacySalesScreen /> },
   { id: "license", icon: "license", l: "nav.license", screen: () => <LicenseScreen /> },
   { id: "localAudit", icon: "send", l: "nav.localAudit", screen: () => <LocalTelegramAuditScreen /> },
   // Telegram notifications are now configured + edited on the SERVER (admin
