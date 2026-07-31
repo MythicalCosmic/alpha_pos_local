@@ -37,3 +37,13 @@ def test_cashier_switch_replaces_stale_cookie_and_authenticates_new_user(
 
     assert me.status_code == 200
     assert me.json()["data"]["id"] == other_cashier_user.pk
+
+    from base.models import Shift
+
+    shifts = Shift.objects.filter(
+        user_id__in=[cashier_user.pk, other_cashier_user.pk],
+        status=Shift.Status.ACTIVE,
+        end_time__isnull=True,
+    )
+    assert shifts.count() == 2
+    assert {shift.device_id for shift in shifts} == {"pytest-terminal"}

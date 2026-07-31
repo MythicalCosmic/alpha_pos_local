@@ -6,8 +6,7 @@ from customers.views import (auth_views, category_views, product_views,
 urlpatterns = [
     # Pre-login cashier picker for the monoblock. Public (no session): the
     # frontend lists cashiers here, then submits email + password to
-    # /auth-login, which verifies the password. Shifts are opened separately
-    # via POST /shifts/start — login no longer starts one.
+    # /auth-login, which verifies the password and creates/resumes the shift.
     path('cashiers', staff_views.list_cashiers),
 
     # Payment-method catalog for the cashier payment screen (staff-auth).
@@ -16,7 +15,7 @@ urlpatterns = [
     # Active couriers (DeliveryPerson) for the order courier picker.
     path('couriers', order_views.list_couriers),
 
-    # Cashier-facing shift control (own shift; manual start/end + resume).
+    # Cashier-facing shift control (explicit start/current/end compatibility).
     path('shifts/start', shift_views.start_shift),
     path('shifts/end', shift_views.end_shift),
     path('shifts/<int:shift_id>/end', shift_views.manager_end_shift),

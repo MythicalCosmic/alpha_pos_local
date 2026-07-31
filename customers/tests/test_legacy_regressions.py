@@ -504,8 +504,7 @@ class TestSplitPayment:
 
 
 class TestCashierShiftSelfService:
-    """Shifts are manual now: the cashier opens/closes their own shift via the
-    shift API, login doesn't auto-open one, and logout leaves an open shift open."""
+    """Login creates/resumes a shift; only the close API ends it."""
 
     def test_start_current_end_lifecycle(self, cashier_user):
         from core.shifts.service import ShiftService
@@ -542,12 +541,9 @@ class TestCashierShiftSelfService:
         _, st = ShiftService.end_active_for_user(cashier_user.id)
         assert st == 404
 
-    def test_login_does_not_autostart_shift(self, cashier_user):
-        """Shifts are manual: login must NOT open a shift. The cashier opens one
-        explicitly via POST /shifts/start (ShiftService.start_shift)."""
+    def test_login_creates_active_shift(self, cashier_user):
         from customers.services.auth_service import AuthService
         from base.repositories.shift import ShiftRepository
-        from core.shifts.service import ShiftService
         from base.models import Shift
 
         version_before_login = cashier_user.sync_version
@@ -558,25 +554,20 @@ class TestCashierShiftSelfService:
         assert cashier_user.sync_version == version_before_login
         assert cashier_user.last_login_at is not None
         assert cashier_user.last_login_api == '127.0.0.1'
-        # Login opened no shift as a side effect.
-        assert ShiftRepository.get_active_for_user(cashier_user.id) is None
-        assert Shift.objects.filter(user=cashier_user, status='ACTIVE').count() == 0
-
-        # Only the explicit manual start opens one.
-        _, st = ShiftService.start_shift(cashier_user.id)
-        assert st == 201
         active = ShiftRepository.get_active_for_user(cashier_user.id)
         assert active is not None and active.status == 'ACTIVE'
+        assert active.device_id == 'pytest-terminal'
+        assert res['data']['active_shift']['id'] == active.id
+        assert res['data']['active_shift']['resumed'] is False
+        assert Shift.objects.filter(user=cashier_user, status='ACTIVE').count() == 1
 
     def test_logout_leaves_shift_open(self, cashier_user):
         from customers.services.auth_service import AuthService
-        from core.shifts.service import ShiftService
         from base.repositories.shift import ShiftRepository
 
         res, st = AuthService.login(
             'cashier1@test.local', 'cashierpass', '127.0.0.1', 'pytest')
         token = res['data']['token']
-        ShiftService.start_shift(cashier_user.id)
 
         AuthService.logout(token)
 

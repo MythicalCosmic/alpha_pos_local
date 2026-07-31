@@ -2,6 +2,7 @@ import logging
 import secrets
 from datetime import timedelta
 from django.conf import settings
+from django.db import transaction
 from django.utils import timezone
 from base.repositories import UserRepository, SessionRepository
 from base.security.hashing import verify_password, verify_password_dummy
@@ -47,6 +48,7 @@ class AuthService:
         return session, user
 
     @staticmethod
+    @transaction.atomic
     def login(
         email=None, password=None, ip_address=None, user_agent=None, user_id=None
     ):
@@ -59,6 +61,15 @@ class AuthService:
         else:
             user = UserRepository.get_by_email(email)
         if not user:
+            verify_password_dummy(password)
+            return ServiceResponse.unauthorized("Invalid credentials")
+
+        try:
+            user = User.objects.select_for_update().get(
+                pk=user.pk,
+                is_deleted=False,
+            )
+        except User.DoesNotExist:
             verify_password_dummy(password)
             return ServiceResponse.unauthorized("Invalid credentials")
 
@@ -78,6 +89,21 @@ class AuthService:
             and resolve_actor_branch(user) != branch_id
         ):
             return ServiceResponse.forbidden("You are not authorized for this branch")
+
+        active_shift = None
+        if user.role in (
+            User.RoleChoices.CASHIER,
+            User.RoleChoices.MANAGER,
+        ):
+            from core.shifts.service import ShiftService
+
+            shift_result, shift_status = ShiftService.ensure_active_shift(
+                user_id=user.id,
+                actor=user,
+            )
+            if shift_status not in (200, 201):
+                return shift_result, shift_status
+            active_shift = shift_result["data"]
 
         session_key = secrets.token_hex(32)
 
@@ -105,8 +131,6 @@ class AuthService:
         if user.role == User.RoleChoices.CASHIER:
             user_name = f"{user.first_name} {user.last_name}".strip()
             ShiftNotification.on_cashier_login(user.id, user_name)
-            # Shifts are manual: login no longer opens one. The cashier opens it
-            # explicitly via POST /shifts/start (or a manager via the admin API).
 
         try:
             from hr.services import AttendanceService
@@ -119,6 +143,7 @@ class AuthService:
             data={
                 "token": session_key,
                 "user": AuthService._user_data(user),
+                "active_shift": active_shift,
             },
             message="Login successful",
         )
@@ -133,9 +158,8 @@ class AuthService:
         if user and user.role == User.RoleChoices.CASHIER:
             ShiftNotification.on_cashier_logout(user.id)
 
-        # Shifts are manual now: logout no longer auto-ends an open shift. The
-        # cashier ends it explicitly via POST /shifts/end, so a shift left open
-        # at logout stays ACTIVE and can be resumed on the next login.
+        # Logout only ends authentication. The shift stays ACTIVE until the
+        # explicit close request and is resumed by the next successful login.
 
         if user:
             try:

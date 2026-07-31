@@ -1,7 +1,7 @@
 """Shift control for the local till.
 
-Shifts are manual: login no longer auto-opens one. The cashier opens their own
-shift here, resumes it after logout, and closes it explicitly.
+Login creates or resumes the caller's shift. These endpoints remain available
+for an explicit start/current check and the explicit close workflow.
 
 Managers can close a selected cashier shift on the bound terminal through the
 targeted endpoint. It uses the same branch, unpaid-order, tender-integrity, and
