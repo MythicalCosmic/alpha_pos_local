@@ -33,6 +33,12 @@ from desktop.version import APP_NAME, __version__  # noqa: E402
 REPO_DIR = Path("update_repo")          # generated metadata + targets (publish this)
 KEYS_DIR = Path("update_keys")          # PRIVATE signing keys — NEVER commit/upload
 KEY_NAMES = ("root", "targets", "snapshot", "timestamp")
+EXPIRATION_DAYS = {
+    "root": 365,
+    "targets": 30,
+    "snapshot": 30,
+    "timestamp": 30,
+}
 
 
 def _repo():
@@ -46,6 +52,7 @@ def _repo():
         # thresholds + add offline root keys if you later want stronger custody.
         key_map={role: [role] for role in KEY_NAMES},
         encrypted_keys=[],  # set roles here to passphrase-encrypt their keys
+        expiration_days=EXPIRATION_DAYS,
         thresholds={role: 1 for role in KEY_NAMES},
     )
 

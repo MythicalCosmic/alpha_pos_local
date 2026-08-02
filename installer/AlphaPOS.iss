@@ -13,7 +13,7 @@
 #define AppName "Alpha POS"
 ; Override at build time with ISCC /DAppVersion=x.y.z; keep in step with desktop/version.py.
 #ifndef AppVersion
-  #define AppVersion "1.0.40"
+  #define AppVersion "1.0.41"
 #endif
 #define AppPublisher "Alpha POS"
 #define AppExeName "AlphaPOS.exe"
@@ -41,7 +41,11 @@ OutputDir=Output
 #ifdef PrivateSupportPayload
 OutputBaseFilename=AlphaPOS-{#AppVersion}-Private-Setup
 #else
+#ifdef TrustRecovery
+OutputBaseFilename=AlphaPOS-{#AppVersion}-Trust-Recovery-Setup
+#else
 OutputBaseFilename=AlphaPOS-{#AppVersion}-Setup
+#endif
 #endif
 SetupIconFile=..\desktop\AlphaPOS.ico
 UninstallDisplayIcon={app}\{#AppExeName}
@@ -60,6 +64,7 @@ PrivilegesRequiredOverridesAllowed=commandline dialog
 PrivilegesRequired=lowest
 CloseApplications=yes
 RestartApplications=no
+AppMutex=Global\AlphaPOS_SingleInstance_v1
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -95,6 +100,30 @@ Filename: "{app}\{#AppExeName}"; Description: "Launch Alpha POS now"; Flags: now
 Filename: "{cmd}"; Parameters: "/C netsh advfirewall firewall delete rule name=""Alpha POS (LAN)"" & exit /b 0"; Flags: runhidden; RunOnceId: "RemoveAlphaPOSFirewallRule"
 
 [Code]
+#ifdef TrustRecovery
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  UpdateDir: String;
+  BackupDir: String;
+  PendingMarker: String;
+begin
+  Result := '';
+  UpdateDir := ExpandConstant('{localappdata}\AlphaPOS\update');
+  PendingMarker := AddBackslash(UpdateDir) + 'update_pending.flag';
+  if FileExists(PendingMarker) then
+  begin
+    Result := 'An Alpha POS automatic update is still pending. Restart Windows, '
+      + 'close Alpha POS, and run this recovery installer again.';
+    Exit;
+  end;
+  BackupDir := ExpandConstant('{localappdata}\AlphaPOS\update-pre-root-rotation-')
+    + GetDateTimeString('yyyymmddhhnnss', '', '');
+  if DirExists(UpdateDir) and (not RenameFile(UpdateDir, BackupDir)) then
+    Result := 'The old Alpha POS update trust cache could not be backed up. '
+      + 'No application files or restaurant data were changed.';
+end;
+#endif
+
 { On uninstall, offer to remove the per-user business data. Default keeps it
   (a reinstall then picks up the same database) — deleting is opt-in. }
 procedure CurUninstallStepChanged(CurStep: TUninstallStep);

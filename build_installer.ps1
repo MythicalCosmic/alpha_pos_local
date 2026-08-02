@@ -20,12 +20,17 @@
 # (creates update_keys\ + update_repo\metadata\root.json, which the build bundles).
 [CmdletBinding()]
 param(
-    [string]$PrivateSupportConfig = ''
+    [string]$PrivateSupportConfig = '',
+    [switch]$TrustRecovery
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $root
+
+if ($TrustRecovery -and $PrivateSupportConfig) {
+    throw 'TrustRecovery and PrivateSupportConfig cannot be combined.'
+}
 
 # Prefer .venv-build, then a local .venv, then workspace venvs one or two
 # levels up (the second form is used by isolated git worktrees).
@@ -161,6 +166,9 @@ if ($iscc) {
     $privateStage = $null
     try {
         $isccArguments = @("/DAppVersion=$version")
+        if ($TrustRecovery) {
+            $isccArguments += '/DTrustRecovery=1'
+        }
         if ($privateConfigPath) {
             $privateStageDir = Join-Path $root 'build\private-release'
             $privateStage = Join-Path $privateStageDir 'private-support.json'
@@ -213,7 +221,9 @@ if ($iscc) {
 $deliv = Join-Path $root 'DELIVERABLES'
 New-Item -ItemType Directory -Force -Path $deliv | Out-Null
 if ($iscc) {
-    $installerName = if ($privateConfigPath) {
+    $installerName = if ($TrustRecovery) {
+        "AlphaPOS-$version-Trust-Recovery-Setup.exe"
+    } elseif ($privateConfigPath) {
         "AlphaPOS-$version-Private-Setup.exe"
     } else {
         "AlphaPOS-$version-Setup.exe"
@@ -222,7 +232,10 @@ if ($iscc) {
     if (-not (Test-Path $installer)) {
         throw "Inno Setup succeeded but expected installer is missing: $installer"
     }
-    if ($privateConfigPath) {
+    if ($TrustRecovery) {
+        Copy-Item $installer "$deliv\AlphaPOS-Trust-Recovery-Setup.exe" -Force
+        Copy-Item $installer "$deliv\AlphaPOS-$version-Trust-Recovery-Setup.exe" -Force
+    } elseif ($privateConfigPath) {
         Copy-Item $installer "$deliv\AlphaPOS-Private-Setup.exe" -Force
         Copy-Item $installer "$deliv\AlphaPOS-$version-Private-Setup.exe" -Force
     } else {
