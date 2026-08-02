@@ -11,7 +11,7 @@ def test_trust_recovery_installer_is_explicit_and_narrowly_scoped():
     assert "AlphaPOS-{#AppVersion}-Trust-Recovery-Setup" in installer
     assert "AppMutex=Global\\AlphaPOS_SingleInstance_v1" in installer
     assert "{localappdata}\\AlphaPOS\\update" in installer
-    assert "update-pre-root-rotation-" in installer
+    assert "update-pre-root-rotation-{#AppVersion}" in installer
     assert "update_pending.flag" in installer
     assert "RenameFile(UpdateDir, BackupDir)" in installer
     recovery = installer.split("#ifdef TrustRecovery", 2)[-1].split(

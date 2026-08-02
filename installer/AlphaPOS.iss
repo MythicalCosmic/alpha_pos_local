@@ -116,8 +116,14 @@ begin
       + 'close Alpha POS, and run this recovery installer again.';
     Exit;
   end;
-  BackupDir := ExpandConstant('{localappdata}\AlphaPOS\update-pre-root-rotation-')
-    + GetDateTimeString('yyyymmddhhnnss', '', '');
+  BackupDir := ExpandConstant(
+    '{localappdata}\AlphaPOS\update-pre-root-rotation-{#AppVersion}');
+  if DirExists(BackupDir) then
+  begin
+    Result := 'A previous Alpha POS update trust backup already exists. '
+      + 'Contact support before running this recovery installer again.';
+    Exit;
+  end;
   if DirExists(UpdateDir) and (not RenameFile(UpdateDir, BackupDir)) then
     Result := 'The old Alpha POS update trust cache could not be backed up. '
       + 'No application files or restaurant data were changed.';
