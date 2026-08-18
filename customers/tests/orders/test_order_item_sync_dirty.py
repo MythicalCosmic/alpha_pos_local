@@ -262,6 +262,87 @@ def test_stock_rejection_rolls_back_waiter_order_item_edit(
     assert order.total_amount == original_total
 
 
+def test_cashier_remove_preserves_line_for_stock_audit(
+    monkeypatch, order_factory, cashier_user,
+):
+    from base.helpers.response import ServiceResponse
+    from base.models import Order, OrderItem
+    from customers.services.order_service import CustomerOrderService
+    from stock.services import OrderStockService, StockSettingsService
+
+    order = order_factory(user=cashier_user, cashier=cashier_user)
+    item = order.items.get()
+    item_id = item.id
+    seen = []
+
+    monkeypatch.setattr(
+        StockSettingsService,
+        'get_default_location_id',
+        classmethod(lambda cls: 1),
+    )
+
+    def adjust(cls, *args, **kwargs):
+        seen.append(kwargs['order_item_id'])
+        assert OrderItem.objects.filter(
+            pk=kwargs['order_item_id'], is_deleted=False,
+        ).exists()
+        return ServiceResponse.success()
+
+    monkeypatch.setattr(
+        OrderStockService, 'adjust_for_item_change', classmethod(adjust),
+    )
+
+    result, status = CustomerOrderService.remove_item_from_order(
+        order.id, item_id, cashier_id=cashier_user.id,
+        user_id=cashier_user.id, user_role='CASHIER',
+    )
+
+    assert status == 200, result
+    assert seen == [item_id]
+    assert OrderItem.objects.get(pk=item_id).is_deleted is True
+    assert Order.objects.get(pk=order.id).is_deleted is True
+
+
+def test_waiter_remove_preserves_line_for_stock_audit(
+    monkeypatch, order_factory, regular_user,
+):
+    from base.helpers.response import ServiceResponse
+    from base.models import Order, OrderItem
+    from stock.services import OrderStockService, StockSettingsService
+    from waiters.services.order_service import WaiterOrderService
+
+    order = order_factory(user=regular_user, cashier=regular_user)
+    item = order.items.get()
+    item_id = item.id
+    seen = []
+
+    monkeypatch.setattr(
+        StockSettingsService,
+        'get_default_location_id',
+        classmethod(lambda cls: 1),
+    )
+
+    def adjust(cls, *args, **kwargs):
+        seen.append(kwargs['order_item_id'])
+        assert OrderItem.objects.filter(
+            pk=kwargs['order_item_id'], is_deleted=False,
+        ).exists()
+        return ServiceResponse.success()
+
+    monkeypatch.setattr(
+        OrderStockService, 'adjust_for_item_change', classmethod(adjust),
+    )
+
+    result, status = WaiterOrderService.remove_item(
+        order.id, item_id, regular_user.id,
+    )
+
+    assert status == 200, result
+    assert seen == [item_id]
+    assert OrderItem.objects.get(pk=item_id).is_deleted is True
+    assert Order.objects.get(pk=order.id).is_deleted is True
+
+
 def test_stock_failure_rolls_back_new_cashier_order(
     monkeypatch, cashier_user, product,
 ):

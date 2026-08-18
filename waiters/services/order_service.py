@@ -36,7 +36,9 @@ def _schedule_order_notification(event, order_id):
     transaction.on_commit(notify, robust=True)
 
 
-def _adjust_order_stock(order_id, product_id, quantity_delta, performed_by_id):
+def _adjust_order_stock(
+    order_id, product_id, quantity_delta, performed_by_id, order_item_id=None,
+):
     """Apply an edit to already-deducted stock, or fail the order transaction."""
     if quantity_delta == 0:
         return None
@@ -50,6 +52,7 @@ def _adjust_order_stock(order_id, product_id, quantity_delta, performed_by_id):
             quantity_delta,
             location_id,
             performed_by_id,
+            order_item_id=order_item_id,
         )
         if status >= 400:
             logger.error(
@@ -530,8 +533,12 @@ class WaiterOrderService:
             TableRepository.update_status(table.id, Table.Status.OCCUPIED)
 
         stock_items = [
-            {"product_id": d["product"].id, "quantity": d["quantity"]}
-            for d in order_items_data
+            {
+                "product_id": row["product"].id,
+                "quantity": row["quantity"],
+                "order_item_id": item.id,
+            }
+            for row, item in zip(order_items_data, new_items)
         ]
         stock_error = _apply_order_stock_transition(
             order.id,
@@ -607,9 +614,10 @@ class WaiterOrderService:
             # dirty; a bulk update silently left the cloud quantity stale.
             existing.quantity += quantity
             existing.save(update_fields=["quantity"])
+            target_item = existing
         else:
             # Instant items are born ready and never need the kitchen.
-            OrderItemRepository.create(
+            target_item = OrderItemRepository.create(
                 order=order,
                 product=product,
                 quantity=quantity,
@@ -630,6 +638,7 @@ class WaiterOrderService:
             product_id,
             quantity,
             waiter_user_id,
+            order_item_id=target_item.id,
         )
         if stock_error:
             transaction.set_rollback(True)
@@ -681,6 +690,7 @@ class WaiterOrderService:
             product_id,
             quantity - old_quantity,
             waiter_user_id,
+            order_item_id=item.id,
         )
         if stock_error:
             transaction.set_rollback(True)
@@ -718,22 +728,26 @@ class WaiterOrderService:
 
         product_id = item.product_id
         removed_quantity = item.quantity
-        item.delete(hard_delete=True)
+        order_item_id = item.id
 
         stock_error = _adjust_order_stock(
             order_id,
             product_id,
             -removed_quantity,
             waiter_user_id,
+            order_item_id=order_item_id,
         )
         if stock_error:
             transaction.set_rollback(True)
             return stock_error
+        # Preserve the exact sold-line relation used by stock returns and COGS.
+        # The soft-deleted row remains auditable and syncs as a tombstone.
+        item.delete()
 
         if not order.items.filter(is_deleted=False).exists():
             if order.table:
                 TableRepository.update_status(order.table_id, Table.Status.AVAILABLE)
-            order.delete(hard_delete=True)
+            order.delete()
             return ServiceResponse.success(message="Order deleted (no items remaining)")
 
         _recalculate_total(order)
@@ -858,7 +872,11 @@ class WaiterOrderService:
             TableRepository.update_status(order.table_id, Table.Status.AVAILABLE)
 
         stock_items = [
-            {"product_id": i.product_id, "quantity": i.quantity}
+            {
+                "product_id": i.product_id,
+                "quantity": i.quantity,
+                "order_item_id": i.id,
+            }
             for i in order.items.filter(is_deleted=False)
         ]
         stock_error = _apply_order_stock_transition(

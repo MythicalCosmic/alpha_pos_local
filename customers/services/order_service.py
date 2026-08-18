@@ -664,7 +664,9 @@ def _fiscalize_after_pay(order_id):
         logger.exception('non-critical fiscalization error in pay flow (order=%s)', order_id)
 
 
-def _adjust_order_stock(order_id, product_id, quantity_delta, performed_by_id):
+def _adjust_order_stock(
+    order_id, product_id, quantity_delta, performed_by_id, order_item_id=None,
+):
     # Keep ingredient stock in sync when an already-deducted order's lines
     # change. adjust_for_item_change self-gates: it's a no-op unless the order
     # had prior deductions, so this is safe to call regardless of config.
@@ -675,6 +677,7 @@ def _adjust_order_stock(order_id, product_id, quantity_delta, performed_by_id):
         location_id = StockSettingsService.get_default_location_id()
         result, status = OrderStockService.adjust_for_item_change(
             order_id, product_id, quantity_delta, location_id, performed_by_id,
+            order_item_id=order_item_id,
         )
         if status >= 400:
             logger.error(
@@ -955,8 +958,12 @@ class CustomerOrderService:
             order.save(update_fields=['status', 'ready_at'])
 
         stock_items = [
-            {'product_id': d['product'].id, 'quantity': d['quantity']}
-            for d in order_items_data
+            {
+                'product_id': row['product'].id,
+                'quantity': row['quantity'],
+                'order_item_id': item.id,
+            }
+            for row, item in zip(order_items_data, new_items)
         ]
         stock_error = _apply_order_stock_transition(
             order.id, None, 'PREPARING', stock_items, user_id,
@@ -1016,9 +1023,10 @@ class CustomerOrderService:
             # new payload, leaving cloud product analytics behind the bill total.
             existing.quantity += quantity
             existing.save(update_fields=['quantity'])
+            target_item = existing
         else:
             # Instant items are born ready and never need the kitchen.
-            OrderItemRepository.create(
+            target_item = OrderItemRepository.create(
                 order=order, product=product, quantity=quantity,
                 price=product.price,
                 ready_at=timezone.now() if is_instant else None,
@@ -1034,6 +1042,7 @@ class CustomerOrderService:
         _recalculate_total(order)
         stock_error = _adjust_order_stock(
             order_id, product_id, quantity, cashier_id or user_id,
+            order_item_id=target_item.id,
         )
         if stock_error:
             transaction.set_rollback(True)
@@ -1077,6 +1086,7 @@ class CustomerOrderService:
         _recalculate_total(order)
         stock_error = _adjust_order_stock(
             order_id, product_id, quantity - old_quantity, cashier_id or user_id,
+            order_item_id=item.id,
         )
         if stock_error:
             transaction.set_rollback(True)
@@ -1110,20 +1120,22 @@ class CustomerOrderService:
 
         product_id = item.product_id
         removed_quantity = item.quantity
-        item.delete(hard_delete=True)
+        order_item_id = item.id
 
-        # Return ingredient stock for the removed line *before* any order
-        # deletion: Order FK on StockTransaction is SET_NULL, so hard-deleting
-        # the order first would strand the deductions with no way to reverse.
+        # Link the return while the exact line still exists, then retain that
+        # line as a syncable tombstone. Hard deletion would make the
+        # StockTransaction SET_NULL relation lose its COGS/audit attribution.
         stock_error = _adjust_order_stock(
             order_id, product_id, -removed_quantity, cashier_id or user_id,
+            order_item_id=order_item_id,
         )
         if stock_error:
             transaction.set_rollback(True)
             return stock_error
+        item.delete()
 
         if not order.items.filter(is_deleted=False).exists():
-            order.delete(hard_delete=True)
+            order.delete()
             return ServiceResponse.success(message='Order deleted (no items remaining)')
 
         _check_and_update_ready(order)
@@ -1201,7 +1213,11 @@ class CustomerOrderService:
         order.save(update_fields=update_fields)
 
         stock_items = [
-            {'product_id': i.product_id, 'quantity': i.quantity}
+            {
+                'product_id': i.product_id,
+                'quantity': i.quantity,
+                'order_item_id': i.id,
+            }
             for i in order.items.filter(is_deleted=False)
         ]
         stock_error = _apply_order_stock_transition(
@@ -1597,7 +1613,11 @@ class CustomerOrderService:
             InkassaService.add_to_register(cash_to_drawer, order.branch_id)
 
         stock_items = [
-            {'product_id': i.product_id, 'quantity': i.quantity}
+            {
+                'product_id': i.product_id,
+                'quantity': i.quantity,
+                'order_item_id': i.id,
+            }
             for i in order.items.filter(is_deleted=False)
         ]
         stock_error = _apply_order_stock_transition(
