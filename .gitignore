@@ -33,7 +33,8 @@ db.sqlite3
 /media/
 /order_audit/
 /local_telegram_audit/
-/DELIVERABLES/*Support-Config.json
+# Release outputs and any opt-in support payloads stay on the build box.
+/DELIVERABLES/
 
 # Secrets
 .env
