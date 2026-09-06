@@ -1483,8 +1483,14 @@ class CustomerOrderService:
                     ),
                 },
             )
-        effective_total = (base_total * (Decimal('1') - pct / Decimal('100'))).quantize(
-            Decimal('1'), rounding=ROUND_HALF_UP)
+        # A zero checkout discount preserves the existing two-decimal bill.
+        # Otherwise the drawer/payment lines used a rounded amount while the
+        # paid header retained the original price or previously applied discount.
+        effective_total = base_total
+        if pct > 0:
+            effective_total = (
+                base_total * (Decimal('1') - pct / Decimal('100'))
+            ).quantize(Decimal('1'), rounding=ROUND_HALF_UP)
 
         if contract['kind'] == 'structured':
             lines = contract['lines']
