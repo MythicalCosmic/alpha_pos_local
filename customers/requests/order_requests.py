@@ -12,6 +12,20 @@ def create_order_request(request):
     if not isinstance(data, dict):
         return None, ({"success": False, "message": "Expected JSON object"}, 400)
 
+    for field in ('customer_id', 'delivery_person_id'):
+        if field not in data:
+            continue
+        if data[field] is None or data[field] == '':
+            data[field] = None
+            continue
+        value = coerce_positive_id(data[field])
+        if value is None:
+            return None, ({
+                'success': False, 'message': f'Invalid {field}',
+                'errors': {field: 'Must be a positive integer ID'},
+            }, 422)
+        data[field] = value
+
     items = data.get('items')
     if not items or not isinstance(items, list) or len(items) == 0:
         return None, ({

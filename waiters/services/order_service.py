@@ -13,7 +13,10 @@ from base.repositories import (
     TableRepository,
 )
 from base.helpers.response import ServiceResponse
-from base.helpers.request import coerce_quantity
+from base.services.order_limits import (
+    validate_item_change, validate_order_subtotal, validate_quantity,
+)
+from base.helpers.request import coerce_positive_id, coerce_quantity
 from notifications.handlers.order import OrderNotification
 from base.models import Table
 
@@ -388,11 +391,10 @@ class WaiterOrderService:
                     errors={"items": "Each item must be an object"},
                     message="Invalid item",
                 )
-            try:
-                cleaned_product_id = int(raw.get("product_id"))
-            except (TypeError, ValueError):
+            cleaned_product_id = coerce_positive_id(raw.get("product_id"))
+            if cleaned_product_id is None:
                 return ServiceResponse.validation_error(
-                    errors={"product_id": "must be an integer"},
+                    errors={"product_id": "must be a positive integer ID"},
                     message="Invalid product_id",
                 )
             cleaned_quantity = coerce_quantity(raw.get("quantity", 1))
@@ -415,11 +417,10 @@ class WaiterOrderService:
         # Coerce optional place_id/table_id so a non-numeric body value returns a
         # clean 422 rather than a 500 from the ORM PK lookup.
         if place_id is not None and place_id != "":
-            try:
-                place_id = int(place_id)
-            except (TypeError, ValueError):
+            place_id = coerce_positive_id(place_id)
+            if place_id is None:
                 return ServiceResponse.validation_error(
-                    errors={"place_id": "must be an integer"},
+                    errors={"place_id": "must be a positive integer ID"},
                     message="Invalid place_id",
                 )
             place = PlaceRepository.get_by_id(place_id)
@@ -427,11 +428,10 @@ class WaiterOrderService:
                 return ServiceResponse.not_found("Place not found")
 
         if table_id is not None and table_id != "":
-            try:
-                table_id = int(table_id)
-            except (TypeError, ValueError):
+            table_id = coerce_positive_id(table_id)
+            if table_id is None:
                 return ServiceResponse.validation_error(
-                    errors={"table_id": "must be an integer"},
+                    errors={"table_id": "must be a positive integer ID"},
                     message="Invalid table_id",
                 )
             table = TableRepository.get_by_id(table_id)
@@ -443,10 +443,6 @@ class WaiterOrderService:
                 )
             if not place:
                 place = table.place
-
-        display_id = OrderRepository.next_display_id()
-        chef_queue_number = OrderRepository.next_chef_queue_number()
-        order_number = OrderRepository.next_order_number()
 
         product_ids = [it["product_id"] for it in cleaned_items]
         products = {p.id: p for p in ProductRepository.filter(id__in=product_ids)}
@@ -470,6 +466,14 @@ class WaiterOrderService:
                 }
             )
             total_amount += product.price * item_data["quantity"]
+
+        limit_error = validate_order_subtotal(total_amount)
+        if limit_error:
+            return limit_error
+
+        display_id = OrderRepository.next_display_id()
+        chef_queue_number = OrderRepository.next_chef_queue_number()
+        order_number = OrderRepository.next_order_number()
 
         order = OrderRepository.create(
             user_id=user_id,
@@ -600,14 +604,19 @@ class WaiterOrderService:
         if not product:
             return ServiceResponse.not_found("Product not found")
 
-        if quantity <= 0:
-            return ServiceResponse.validation_error(
-                errors={"quantity": "Must be greater than 0"},
-                message="Quantity must be greater than 0",
-            )
+        quantity_error = validate_quantity(quantity)
+        if quantity_error:
+            return quantity_error
 
         is_instant = product.is_instant
         existing = OrderItemRepository.get_existing_unready(order_id, product_id)
+        replacing = existing if existing and not is_instant else None
+        limit_error = validate_item_change(
+            order, quantity=(existing.quantity + quantity) if replacing else quantity,
+            price=existing.price if replacing else product.price, replacing=replacing,
+        )
+        if limit_error:
+            return limit_error
         if existing and not is_instant:
             # The parent Order row is locked above, so concurrent additions for
             # this ticket are serialized. Use save() so SyncMixin marks the line
@@ -669,15 +678,19 @@ class WaiterOrderService:
                 "Cannot modify order that is not in PREPARING status"
             )
 
-        if quantity <= 0:
-            return ServiceResponse.validation_error(
-                errors={"quantity": "Must be greater than 0"},
-                message="Quantity must be greater than 0",
-            )
+        quantity_error = validate_quantity(quantity)
+        if quantity_error:
+            return quantity_error
 
         item = OrderItemRepository.first(id=item_id, order_id=order_id)
         if not item:
             return ServiceResponse.not_found("Order item not found")
+
+        limit_error = validate_item_change(
+            order, quantity=quantity, price=item.price, replacing=item,
+        )
+        if limit_error:
+            return limit_error
 
         old_quantity = item.quantity
         product_id = item.product_id

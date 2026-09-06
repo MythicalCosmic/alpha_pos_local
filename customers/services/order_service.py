@@ -11,6 +11,9 @@ from base.repositories import OrderRepository, OrderItemRepository, ProductRepos
 from base.services.inkassa_service import InkassaService
 from base.services.phone import normalize_uz_phone
 from base.helpers.response import ServiceResponse
+from base.services.order_limits import (
+    validate_item_change, validate_order_subtotal, validate_quantity,
+)
 from notifications.handlers.order import OrderNotification
 
 logger = logging.getLogger(__name__)
@@ -857,11 +860,9 @@ class CustomerOrderService:
             product_id = item_data.get('product_id')
             quantity = item_data.get('quantity', 1)
 
-            if quantity <= 0:
-                return ServiceResponse.validation_error(
-                    errors={'quantity': 'Must be greater than 0'},
-                    message='Quantity must be greater than 0',
-                )
+            quantity_error = validate_quantity(quantity)
+            if quantity_error:
+                return quantity_error
 
             product = products.get(product_id)
             if not product:
@@ -874,6 +875,10 @@ class CustomerOrderService:
                 'price': product.price,
             })
             total_amount += product.price * quantity
+
+        limit_error = validate_order_subtotal(total_amount)
+        if limit_error:
+            return limit_error
 
         # A staff-owned ticket must be born inside an ACTIVE shift.  Take the
         # same Shift row lock used by payment/close before inserting the Order:
@@ -1008,14 +1013,19 @@ class CustomerOrderService:
         # A zero/negative quantity flows straight into F('quantity') + quantity
         # and the subtotal recalculate, producing a negative line and a negative
         # order total that then removes cash from the register on payment.
-        if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity <= 0:
-            return ServiceResponse.validation_error(
-                errors={'quantity': 'Must be a positive integer'},
-                message='Quantity must be greater than 0',
-            )
+        quantity_error = validate_quantity(quantity)
+        if quantity_error:
+            return quantity_error
 
         is_instant = product.is_instant
         existing = OrderItemRepository.get_existing_unready(order_id, product_id)
+        replacing = existing if existing and not is_instant else None
+        limit_error = validate_item_change(
+            order, quantity=(existing.quantity + quantity) if replacing else quantity,
+            price=existing.price if replacing else product.price, replacing=replacing,
+        )
+        if limit_error:
+            return limit_error
         if existing and not is_instant:
             # Every add locks the parent Order above, so calls for this order are
             # already serialized. Save through SyncMixin: QuerySet.update()
@@ -1069,15 +1079,19 @@ class CustomerOrderService:
         if order.status != 'PREPARING':
             return ServiceResponse.error('Cannot modify order that is not in PREPARING status')
 
-        if quantity <= 0:
-            return ServiceResponse.validation_error(
-                errors={'quantity': 'Must be greater than 0'},
-                message='Quantity must be greater than 0',
-            )
+        quantity_error = validate_quantity(quantity)
+        if quantity_error:
+            return quantity_error
 
         item = OrderItemRepository.first(id=item_id, order_id=order_id)
         if not item:
             return ServiceResponse.not_found('Order item not found')
+
+        limit_error = validate_item_change(
+            order, quantity=quantity, price=item.price, replacing=item,
+        )
+        if limit_error:
+            return limit_error
 
         old_quantity = item.quantity
         product_id = item.product_id

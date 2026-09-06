@@ -1,4 +1,5 @@
 from django.http import JsonResponse
+from django.db import transaction
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST, require_http_methods
 from base.helpers.request import parse_json_body, validate_pagination, coerce_quantity, coerce_positive_id
@@ -170,47 +171,52 @@ def create_order(request):
     user = request.user
     cashier_id = user.id if user.role in ('CASHIER', 'MANAGER') else None
 
-    # Attach a client to the order. An explicit customer_id wins; otherwise build
-    # the unified client from a {name, phone} object OR the order's own
-    # phone_number field. Customer.resolve converges by phone (so a returning
-    # client is the same row across desktop + Telegram) and creates one even when
-    # only a phone — no name — is given. Walk-ins with neither stay client-less.
-    from base.models import Customer
+    # Customer resolution and the order belong to one business operation.
+    # Keep the outer idempotency claim outside this rollback boundary.
+    with transaction.atomic():
+        # Attach a client to the order. An explicit customer_id wins; otherwise build
+        # the unified client from a {name, phone} object OR the order's own
+        # phone_number field. Customer.resolve converges by phone (so a returning
+        # client is the same row across desktop + Telegram) and creates one even when
+        # only a phone — no name — is given. Walk-ins with neither stay client-less.
+        from base.models import Customer
 
-    customer_id = data.get('customer_id')
-    cdict = data.get('customer') if isinstance(data.get('customer'), dict) else {}
-    supplied_phone = (
-        data.get('phone_number') or cdict.get('phone') or
-        cdict.get('phone_number') or ''
-    )
-    order_phone = Customer.normalize_phone(supplied_phone) or None
-    if not customer_id:
-        name = (cdict.get('name') or '').strip()
-        if order_phone or name:
-            client, _ = Customer.resolve(
-                phone=order_phone, name=name or None,
-            )
-            customer_id = client.id
+        customer_id = data.get('customer_id')
+        cdict = data.get('customer') if isinstance(data.get('customer'), dict) else {}
+        supplied_phone = (
+            data.get('phone_number') or cdict.get('phone') or
+            cdict.get('phone_number') or ''
+        )
+        order_phone = Customer.normalize_phone(supplied_phone) or None
+        if not customer_id:
+            name = (cdict.get('name') or '').strip()
+            if order_phone or name:
+                client, _ = Customer.resolve(
+                    phone=order_phone, name=name or None,
+                )
+                customer_id = client.id
 
-    # New clients send a clean note separately while old clients only send
-    # description (historically address + note). Presence, not truthiness,
-    # decides precedence so an explicit empty order_note can clear stale text.
-    description = (
-        data.get('order_note') if 'order_note' in data
-        else data.get('description')
-    )
+        # New clients send a clean note separately while old clients only send
+        # description (historically address + note). Presence, not truthiness,
+        # decides precedence so an explicit empty order_note can clear stale text.
+        description = (
+            data.get('order_note') if 'order_note' in data
+            else data.get('description')
+        )
 
-    result, status_code = CustomerOrderService.create_order(
-        user_id=user.id,
-        items=data['items'],
-        order_type=data.get('order_type', 'HALL'),
-        phone_number=order_phone,
-        delivery_address=data.get('delivery_address'),
-        description=description,
-        cashier_id=cashier_id,
-        delivery_person_id=data.get('delivery_person_id'),
-        customer_id=customer_id,
-    )
+        result, status_code = CustomerOrderService.create_order(
+            user_id=user.id,
+            items=data['items'],
+            order_type=data.get('order_type', 'HALL'),
+            phone_number=order_phone,
+            delivery_address=data.get('delivery_address'),
+            description=description,
+            cashier_id=cashier_id,
+            delivery_person_id=data.get('delivery_person_id'),
+            customer_id=customer_id,
+        )
+        if not result.get('success'):
+            transaction.set_rollback(True)
     return JsonResponse(result, status=status_code)
 
 
