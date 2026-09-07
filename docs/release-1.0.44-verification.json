@@ -1,0 +1,248 @@
+{
+  "version": "1.0.44",
+  "verified_at_utc": "2026-09-07T00:13:25+00:00",
+  "source_commits": {
+    "desktop": "3c592c6ea04fffe0389c0a3bec5daedbb80b63aa",
+    "desktop_core": "fbbc9ec05bb8f5cb394a64f79c8948c531cf08b6",
+    "server": "229f53622dc29ca5c271f74124927c17a8b39a36",
+    "server_core": "21d54a747057826bd95da40e885957122620d6a3"
+  },
+  "release_manifest": {
+    "version": "1.0.44",
+    "archive": {
+      "name": "AlphaPOS-1.0.44.tar.gz",
+      "bytes": 111816976,
+      "sha256": "54955e544978149aa96cf7c3224544780cd978579f8bafc8d10ed659ee463092"
+    },
+    "installer": {
+      "name": "AlphaPOS-1.0.44-Setup.exe",
+      "bytes": 79936874,
+      "sha256": "0d87c6f01c2aa6da02c40d3d74cbaaed85f3d42b7ffe354746050e1be4f48654"
+    },
+    "root_unchanged": true,
+    "roles": {
+      "targets": {
+        "version": 5,
+        "expires": "2026-10-06T23:52:43Z",
+        "sha256": "b2a4f06dc37c4b962ad05be6c23bda96b16cf1b99710c231c9fc8e3efa8140c6"
+      },
+      "snapshot": {
+        "version": 5,
+        "expires": "2026-10-06T23:52:43Z",
+        "sha256": "02e43c5f560420400812dd6e99e4960a6978cf60fe34406d655276e1994a6920"
+      },
+      "timestamp": {
+        "version": 5,
+        "expires": "2026-10-06T23:52:43Z",
+        "sha256": "a7dfd7e2d709907697f0aa2b6d788489232e9bdaf12fedd34ce593a477522a77"
+      }
+    }
+  },
+  "server_deployment": {
+    "deployed": true,
+    "server_commit": "229f53622dc29ca5c271f74124927c17a8b39a36",
+    "core_commit": "21d54a747057826bd95da40e885957122620d6a3",
+    "image": "sha256:8179703623e70a304aa229247c932f79de7540af744c8a29dc1ed796a0e3c63a",
+    "services_updated": [
+      "web",
+      "smartfood_dispatch",
+      "smartfood_messages",
+      "staff_notifications",
+      "bot"
+    ],
+    "public_health": {
+      "status": 200,
+      "body": "ok 229f53622dc29ca5c271f74124927c17a8b39a36"
+    },
+    "environment_preserved": true,
+    "database_and_redis_containers_preserved": true,
+    "no_pending_schema_migrations": true,
+    "database_backup_retained": true,
+    "rollback_images_retained": true,
+    "startup_tracebacks": {
+      "web": 0,
+      "smartfood_dispatch": 0,
+      "smartfood_messages": 0,
+      "staff_notifications": 0,
+      "bot": 0
+    }
+  },
+  "server_image_verification": {
+    "git_sha": "229f53622dc29ca5c271f74124927c17a8b39a36",
+    "runtime_files_verified": 505,
+    "dependencies": {
+      "Django": "6.0.3",
+      "psycopg": "3.3.5",
+      "channels": "4.3.2",
+      "redis": "7.3.0",
+      "uvicorn": "0.49.0"
+    },
+    "image": "sha256:8179703623e70a304aa229247c932f79de7540af744c8a29dc1ed796a0e3c63a",
+    "base_image": "sha256:361ac18fcea9c9ef8a3be4ac596aa316252750d2edcff61da7b405a7dc6d0718"
+  },
+  "server_canary": {
+    "canary_checkout": "passed",
+    "card_checkout": true,
+    "cloud_cash_settlement_guard": true,
+    "fractional_amount_preserved": true,
+    "timestamp_advanced": true,
+    "retry_single_payment": true,
+    "base_unit_availability": true,
+    "reservation_release": true,
+    "recipe_versioning": true,
+    "invalid_factor_rejected": true,
+    "health": {
+      "status": 200,
+      "body": "ok 229f53622dc29ca5c271f74124927c17a8b39a36"
+    }
+  },
+  "server_after_deployment": {
+    "verified_at_utc": "2026-09-07T00:04:35.119469+00:00",
+    "server_commit": "229f53622dc29ca5c271f74124927c17a8b39a36",
+    "image": "sha256:8179703623e70a304aa229247c932f79de7540af744c8a29dc1ed796a0e3c63a",
+    "services": {
+      "web": {
+        "running": true,
+        "restart_count": 0,
+        "startup_tracebacks": 0
+      },
+      "smartfood_dispatch": {
+        "running": true,
+        "restart_count": 0,
+        "startup_tracebacks": 0
+      },
+      "smartfood_messages": {
+        "running": true,
+        "restart_count": 0,
+        "startup_tracebacks": 0
+      },
+      "staff_notifications": {
+        "running": true,
+        "restart_count": 0,
+        "startup_tracebacks": 0
+      },
+      "bot": {
+        "running": true,
+        "restart_count": 0,
+        "startup_tracebacks": 0
+      }
+    },
+    "database_and_redis_preserved": true,
+    "environment_preserved": true
+  },
+  "public_health": {
+    "status": 200,
+    "body": "ok 229f53622dc29ca5c271f74124927c17a8b39a36"
+  },
+  "desktop_bundle": {
+    "version": "1.0.44",
+    "core_runtime_source_files_verified": 445,
+    "recipe_modules_verified": [
+      "__init__.py",
+      "byproducts.py",
+      "catalog.py",
+      "costing.py",
+      "ingredients.py",
+      "loading.py",
+      "steps.py"
+    ],
+    "root_sha256": "c1b0e6548dcb48562ad630d889968e00812724e87cda8ac0765f078eb76cc1f1",
+    "private_config_files": [],
+    "installer": {
+      "name": "AlphaPOS-1.0.44-Setup.exe",
+      "bytes": 79936874,
+      "sha256": "0d87c6f01c2aa6da02c40d3d74cbaaed85f3d42b7ffe354746050e1be4f48654"
+    }
+  },
+  "desktop_archive_content": {
+    "version": "1.0.44",
+    "archive_members": 9430,
+    "core_runtime_source_files_verified": 445,
+    "recipe_modules": [
+      "__init__.py",
+      "byproducts.py",
+      "catalog.py",
+      "costing.py",
+      "ingredients.py",
+      "loading.py",
+      "steps.py"
+    ],
+    "private_config_files": []
+  },
+  "desktop_frozen_selftest": {
+    "version": "1.0.44",
+    "result": "SELFTEST OK",
+    "exit_code": 0,
+    "environment": "Windows executable under Wine 11.16",
+    "disposable_test_data": true,
+    "external_services_disabled": true,
+    "test_cluster_locale": "C",
+    "native_windows_gui_verified": false,
+    "fresh_native_windows_install_verified": false,
+    "log_sha256": "23749014146e0667581e8209e9d6635d2b8a070b8db4cfd7671f334f7f6bf4bd"
+  },
+  "public_installer": {
+    "version": "1.0.44",
+    "full_https_download_verified": true,
+    "url": "https://control.78.111.91.113.nip.io/updates/installers/AlphaPOS-1.0.44-Setup.exe",
+    "bytes": 79936874,
+    "sha256": "0d87c6f01c2aa6da02c40d3d74cbaaed85f3d42b7ffe354746050e1be4f48654",
+    "public_metadata": {
+      "root": {
+        "version": 1,
+        "sha256": "c1b0e6548dcb48562ad630d889968e00812724e87cda8ac0765f078eb76cc1f1"
+      },
+      "targets": {
+        "version": 5,
+        "sha256": "b2a4f06dc37c4b962ad05be6c23bda96b16cf1b99710c231c9fc8e3efa8140c6"
+      },
+      "snapshot": {
+        "version": 5,
+        "sha256": "02e43c5f560420400812dd6e99e4960a6978cf60fe34406d655276e1994a6920"
+      },
+      "timestamp": {
+        "version": 5,
+        "sha256": "a7dfd7e2d709907697f0aa2b6d788489232e9bdaf12fedd34ce593a477522a77"
+      }
+    },
+    "root_unchanged": true,
+    "published_manifest_and_checksum_verified": true
+  },
+  "public_tuf_update": {
+    "version": "1.0.44",
+    "windows_tuf_client_under_wine": "passed",
+    "trust_anchor": "installer-bundled root.json",
+    "root_unchanged": true,
+    "signed_metadata_versions": {
+      "targets": 5,
+      "snapshot": 5,
+      "timestamp": 5
+    },
+    "existing_metadata_v4_to_v5": "passed",
+    "signature_and_full_download_verified": true,
+    "target": "AlphaPOS-1.0.44.tar.gz",
+    "url": "https://control.78.111.91.113.nip.io/updates/targets/AlphaPOS-1.0.44.tar.gz",
+    "bytes": 111816976,
+    "sha256": "54955e544978149aa96cf7c3224544780cd978579f8bafc8d10ed659ee463092"
+  },
+  "tests": {
+    "previous_full_source_suites": {
+      "passed": 3683,
+      "skipped": 29,
+      "failed": 0
+    },
+    "previous_postgresql_stock_runs": {
+      "passed": 365,
+      "failed": 0
+    },
+    "release_desktop_operations_suite": {
+      "passed": 282,
+      "skipped": 8,
+      "failed": 0
+    },
+    "note": "These are separate runs with overlapping tests, not a count of unique test cases."
+  },
+  "canonical_update_repository_synced": true,
+  "restaurant_windows_installation": "pending operator installation",
+  "native_windows_gui_verified": false
+}

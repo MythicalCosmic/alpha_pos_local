@@ -1,0 +1,59 @@
+# Alpha POS 1.0.44 deployment and release — 7 September 2026
+
+**The server update is deployed and healthy. Desktop 1.0.44 is published on the control server, and its complete public installer and signed update archive passed verification.** The restaurant computer still needs the operator's Windows installation. Verification completed at `2026-09-07T00:13:25+00:00`.
+
+## Install the desktop release
+
+[Download AlphaPOS 1.0.44 Setup](https://control.78.111.91.113.nip.io/updates/installers/AlphaPOS-1.0.44-Setup.exe). The existing signed update feed also advertises 1.0.44. Use the existing Windows account and installation after checkout activity stops, preferably after shift close. Preserve the existing data directory, record a backup and sync-queue status, then confirm version 1.0.44, backend health, normal cash/card checkout, and queue drain. Existing Smart POS 0.0.11-or-newer compatibility requirements still apply; the previously inspected station reported 0.0.15.
+
+The server is already updated. A server update alone cannot replace the restaurant's desktop code; installing 1.0.44 is required for the desktop fixes in this release. No remote installation was performed on the restaurant computer during this release.
+
+| Published artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `AlphaPOS-1.0.44-Setup.exe` | 79,936,874 | `0d87c6f01c2aa6da02c40d3d74cbaaed85f3d42b7ffe354746050e1be4f48654` |
+| `AlphaPOS-1.0.44.tar.gz` | 111,816,976 | `54955e544978149aa96cf7c3224544780cd978579f8bafc8d10ed659ee463092` |
+
+The [public manifest](https://control.78.111.91.113.nip.io/updates/installers/AlphaPOS-1.0.44-release.json) and [installer checksum](https://control.78.111.91.113.nip.io/updates/installers/AlphaPOS-1.0.44-Setup.exe.sha256) match these files. Targets, snapshot, and timestamp metadata are version **5**, expiring **2026-10-06 23:52:43 UTC**. Refresh this metadata before expiry if no newer release has replaced it. Root version **1** remains byte-for-byte unchanged, with SHA-256 `c1b0e6548dcb48562ad630d889968e00812724e87cda8ac0765f078eb76cc1f1` and expiry 2027-08-02 20:44:15 UTC.
+
+## Changes included
+
+This release packages the completed audits after 1.0.43, including validated payment/order input and retry handling, base-unit stock availability and reservations, combined ingredient demand, transactional reservation and recipe creation, location-aware inventory filters, safe recipe versioning, and bounded database reads. The cleanup removed 13 unwired helpers per core edition and split recipe responsibilities into a documented package. The preceding audit reports contain the reproductions, fixes, and query measurements.
+
+| Component | Exact built/deployed commit | Source |
+| --- | --- | --- |
+| Desktop | `3c592c6ea04fffe0389c0a3bec5daedbb80b63aa` | [GitHub](https://github.com/MythicalCosmic/alpha_pos_local/commit/3c592c6ea04fffe0389c0a3bec5daedbb80b63aa) |
+| Desktop core | `fbbc9ec05bb8f5cb394a64f79c8948c531cf08b6` | [GitHub](https://github.com/MythicalCosmic/alpha_pos_core/commit/fbbc9ec05bb8f5cb394a64f79c8948c531cf08b6) |
+| Server | `229f53622dc29ca5c271f74124927c17a8b39a36` | [GitHub](https://github.com/MythicalCosmic/alpha_pos_server/commit/229f53622dc29ca5c271f74124927c17a8b39a36) |
+| Server core | `21d54a747057826bd95da40e885957122620d6a3` | [GitHub](https://github.com/MythicalCosmic/alpha_pos_core/commit/21d54a747057826bd95da40e885957122620d6a3) |
+
+Desktop source is on `release/desktop-1.0.44`, with tag `v1.0.44` identifying the exact built commit; server source is on `release/server-2026-09-07`, under MythicalCosmic. A later documentation-only commit adds this report; it does not change the built application. Original audit branches and recovery archives remain available.
+
+## Live server result
+
+All five application services now run image `sha256:8179703623e70a304aa229247c932f79de7540af744c8a29dc1ed796a0e3c63a`, tagged `alpha_pos_server:release-20260907-229f53622dc2`: web, Smartfood dispatch, Smartfood messages, staff notifications, and bot. The [public health endpoint](https://pos.78.111.90.65.nip.io/healthz) returned HTTP 200 with `ok 229f53622dc29ca5c271f74124927c17a8b39a36`. Subsequent checks found all five services running with zero restarts and zero startup tracebacks.
+
+The database and Redis containers were preserved. Production environment bytes were unchanged. The schema check found no pending migrations. The image contains the complete tracked application and the exact audited cloud-core wheel; hashes matched 505 runtime source files. Runtime dependencies were retained from the existing production image. The default local image tag was also advanced to the verified image.
+
+Before activation, a PostgreSQL backup, protected environment backup, and per-service rollback image tags were retained on the POS server in `/root/alphapos-release-20260907-1.0.44`. The live release's Compose image override is `release-images.yml` in that directory. `activation-before.json` records the previous image IDs and branches; rollback tags follow `alpha_pos_server:pre-1.0.44-<service>`. These private backups remain on the server and are excluded from this report and GitHub. No database restore or historical-record rewrite was performed.
+
+## Verification
+
+| Check | Result |
+| --- | --- |
+| Previously completed full source suites | 3,683 passed; 29 documented skips; zero failures |
+| Additional PostgreSQL stock runs | 365 passed; zero failures, including reservation and version concurrency |
+| Release, desktop, and operations suite | 282 passed; 8 Windows-specific skips; zero failures |
+| Frozen Windows executable under Wine 11.16 | `SELFTEST OK`: embedded PostgreSQL, startup migrations, backend health, and mock fiscalization/sync |
+| Bundled and archived desktop core | 445 runtime source hashes matched in both; all seven recipe-package modules included; no private configuration files found |
+| Isolated server canary | Passed card checkout, exact fractional amount, payment retry, paid timestamp preservation, cloud cash guard, unit conversion, reservation/release, recipe versioning, and invalid-factor rejection |
+| Public signed update archive | Windows TUF client under Wine verified the chain from the installer-bundled trusted root, downloaded all 111,816,976 bytes, and verified the hash |
+| Existing update metadata | A client starting with version 4 metadata successfully advanced to version 5 |
+| Public Setup installer | Downloaded all 79,936,874 bytes over HTTPS and verified size and hash |
+
+These runs overlap and must not be summed as unique test cases. The server canary used a disposable database and an internal network with no production configuration or external service access. Initial fixture checks correctly rejected a synthetic HTTP license URL and cash settlement on the cloud; those fixtures were corrected without application changes.
+
+Native Windows GUI installation, ACL behavior, and the restaurant's actual peripherals have not been verified by the Wine test. Operator installation and observation of the next shift remain outstanding. The release does not establish that future counter totals will always match: comparison still needs dated actual cash/card closing figures, and old discrepancies are not rewritten by an upgrade.
+
+## Evidence
+
+The adjacent `release-1.0.44-verification.json` contains public-safe structured results. Full local build evidence is retained in `.release-builds/1.0.44`; previous audit evidence is in `.audit-work/2026-09-07-cleanup/evidence`. Public metadata from the previous release is retained on the control server in `.history/release-1.0.44-20260907`. Publication kept root metadata unchanged and promoted timestamp last. The canonical local update repository now matches the verified published release. Signing keys stayed local; the temporary signing-key link was removed.
