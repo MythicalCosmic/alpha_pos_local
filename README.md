@@ -49,5 +49,5 @@ python -m pytest
 ```
 
 Pytest excludes the shared submodule because `alpha_pos_core` has its own test
-suite. Release and operational procedures live in `RELEASES.md`,
-`desktop/UPDATES.md`, `OPERATIONS.md`, and `PRIVATE_RELEASE_BUILD.md`.
+suite. See the [documentation index](docs/README.md) for release procedures,
+operating guides, support-tunnel instructions, and historical release notes.

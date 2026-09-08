@@ -100,7 +100,7 @@ CONFIG_FIELDS = [
     # Self-update: base URL the signed tufup repo is served from (…/updates/metadata/
     # + …/updates/targets/). Read by desktop/updater.py; blank disables updates.
     # Points at the CONTROL CENTER (pos_control serves /updates) — publish a release
-    # there once and every till pulls it on next launch. See RELEASES.md.
+    # there once and every till pulls it on next launch. See docs/releases/README.md.
     ('ALPHA_POS_UPDATE_URL', 'https://control.78.111.91.113.nip.io/updates'),
     # The endpoint may be public knowledge, but enabling sync requires a
     # restaurant-specific branch id + token entered during provisioning.

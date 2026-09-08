@@ -52,7 +52,7 @@ Before building or rolling out the desktop release:
    `targets/AlphaPOS-<ver>.tar.gz` -> `metadata/targets.json` ->
    `metadata/snapshot.json` -> `metadata/timestamp.json`. The target must exist
    before metadata advertises it, and `timestamp.json` must always be last.
-   See `OPERATIONS.md` for the generic staging, verification, and atomic-rename
+   See `docs/operations/operations.md` for the generic staging, verification, and atomic-rename
    commands. Do not rsync or recursively copy the repository in arbitrary order.
 6. Verify the public target and `metadata/timestamp.json`, then let a canary till
    check for the update before wider rollout.

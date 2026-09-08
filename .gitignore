@@ -50,6 +50,7 @@ db.sqlite3
 
 # Tests / tooling
 .pytest_cache/
+.ruff_cache/
 .coverage
 
 # OS / IDE

@@ -253,7 +253,7 @@ Copy-Item (Join-Path $root 'tools\connect_support_relay.ps1') `
     "$deliv\AlphaPOS-Support-Connector.ps1" -Force
 Copy-Item (Join-Path $root 'tools\support_relay_known_hosts') `
     "$deliv\AlphaPOS-Support-Relay-Known-Hosts" -Force
-Copy-Item (Join-Path $root 'SUPPORT_TUNNEL_HOME_INSPECTION.md') `
+Copy-Item (Join-Path $root 'docs\operations\support-tunnel.md') `
     "$deliv\AlphaPOS-Support-Tunnel-Guide.md" -Force
 
 Write-Host ''
