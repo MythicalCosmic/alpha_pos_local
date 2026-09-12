@@ -1,0 +1,209 @@
+{
+  "source-revisions": {
+    "server": "b43af510891bec9af058e383b1ed01ebaaeb6411",
+    "cloud_core": "7048af52a5a79163a745a18ee3f7ee1ec458f4ca",
+    "desktop": "c8870f4991e487693c9522f52fd76c0b519b56a7",
+    "desktop_core": "e0b4c5ff3ce6ee1e58732c27fde7d0e982f61855",
+    "delivery_app": "24c66a779755bd5362556077b43759bc5cf61672"
+  },
+  "signed-release-manifest": {
+    "version": "1.0.45",
+    "archive": {
+      "name": "AlphaPOS-1.0.45.tar.gz",
+      "bytes": 111829264,
+      "sha256": "5e3bfc37f42cfd5b4a0636510d715196e91068f8b04939f2fb2a7e4a881e622c"
+    },
+    "installer": {
+      "name": "AlphaPOS-1.0.45-Setup.exe",
+      "bytes": 79962570,
+      "sha256": "a181f066417414c6754c2547699d759e00beca4dfc6778d5c48ef609eebae0ea"
+    },
+    "root_unchanged": true,
+    "roles": {
+      "targets": {
+        "version": 6,
+        "expires": "2026-10-12T13:29:37Z",
+        "sha256": "77384962616bb57e97450fff2b920186995aba9ed5be7a6ac7c8e42c0dd9089f"
+      },
+      "snapshot": {
+        "version": 6,
+        "expires": "2026-10-12T13:29:37Z",
+        "sha256": "7cd8c7a8c8c190b22be0b5577dba05acab2fa239467bc2df398458b583b2f49b"
+      },
+      "timestamp": {
+        "version": 6,
+        "expires": "2026-10-12T13:29:37Z",
+        "sha256": "a187c2792e2382c9c893d84d0ac3b9bfc1c007977f28d9a06a0b18a477969901"
+      }
+    }
+  },
+  "validation-frozen-selftest": {
+    "version": "1.0.45",
+    "result": "SELFTEST OK",
+    "exit_code": 0,
+    "environment": "Windows executable under Wine 11.16",
+    "disposable_test_data": true,
+    "external_services_disabled": true,
+    "test_cluster_locale": "C",
+    "native_windows_gui_verified": false,
+    "fresh_native_windows_install_verified": false,
+    "log_sha256": "52e96525437da4de3500aeb688bdf402e0d05d1790a9ef87aea7cb3434d83f56"
+  },
+  "validation-bundle": {
+    "version": "1.0.45",
+    "core_runtime_source_files_verified": 453,
+    "recipe_modules_verified": [
+      "__init__.py",
+      "byproducts.py",
+      "catalog.py",
+      "costing.py",
+      "ingredients.py",
+      "loading.py",
+      "steps.py"
+    ],
+    "root_sha256": "c1b0e6548dcb48562ad630d889968e00812724e87cda8ac0765f078eb76cc1f1",
+    "private_config_files": [],
+    "installer": {
+      "name": "AlphaPOS-1.0.45-Setup.exe",
+      "bytes": 79962570,
+      "sha256": "a181f066417414c6754c2547699d759e00beca4dfc6778d5c48ef609eebae0ea"
+    }
+  },
+  "validation-archive": {
+    "core_files_verified_in_archive": 453,
+    "private_configuration_files": [],
+    "archive": {
+      "name": "AlphaPOS-1.0.45.tar.gz",
+      "bytes": 111829264,
+      "sha256": "5e3bfc37f42cfd5b4a0636510d715196e91068f8b04939f2fb2a7e4a881e622c"
+    }
+  },
+  "validation-staged-tuf": {
+    "staged_signature_chain": "passed",
+    "root": "installer-bundled trusted root",
+    "target": "AlphaPOS-1.0.45.tar.gz",
+    "length": 111829264,
+    "sha256": "5e3bfc37f42cfd5b4a0636510d715196e91068f8b04939f2fb2a7e4a881e622c"
+  },
+  "cloud-deployed": {
+    "server_commit": "b43af510891bec9af058e383b1ed01ebaaeb6411",
+    "core_commit": "7048af52a5a79163a745a18ee3f7ee1ec458f4ca",
+    "server_tag": "alpha_pos_server:release-20260912-b43af510891b",
+    "delivery_commit": "24c66a779755bd5362556077b43759bc5cf61672",
+    "delivery_tag": "smartfood-webapp:release-24c66a779755",
+    "server_image": "sha256:e5c4da0545801b49c38f18447c199a5b0bc0b79a4ac9db3f497c3c3c501c7770",
+    "delivery_image": "sha256:a1128a91ad8b616e7d52af1a6d8886c60b89e8e04bb376da8e5e82c4988ba8db",
+    "deployed": true,
+    "health": "ok b43af510891bec9af058e383b1ed01ebaaeb6411",
+    "startup_tracebacks": {
+      "web": 0,
+      "smartfood_dispatch": 0,
+      "smartfood_messages": 0,
+      "staff_notifications": 0,
+      "bot": 0
+    },
+    "migrations_applied": true,
+    "environment_preserved": true,
+    "database_and_redis_preserved": true
+  },
+  "production-audit": {
+    "findings": {
+      "available_table_with_live_ticket": {
+        "count": 0,
+        "example_ids": []
+      },
+      "legacy_waiter_identity_requires_backfill_review": {
+        "count": 0,
+        "example_ids": []
+      },
+      "loyalty_balance_mismatch": {
+        "count": 0,
+        "example_ids": []
+      },
+      "multiple_live_tickets_per_table": {
+        "count": 0,
+        "example_ids": []
+      },
+      "occupied_table_without_live_ticket": {
+        "count": 0,
+        "example_ids": []
+      },
+      "receipt_credited_to_both_programs": {
+        "count": 0,
+        "example_ids": []
+      },
+      "stock_deduction_requires_review": {
+        "count": 0,
+        "example_ids": []
+      },
+      "telegram_sale_credited_to_legacy_program": {
+        "count": 0,
+        "example_ids": []
+      },
+      "waiter_shift_actor_mismatch": {
+        "count": 0,
+        "example_ids": []
+      },
+      "waiter_shift_branch_mismatch": {
+        "count": 0,
+        "example_ids": []
+      }
+    },
+    "read_only": true,
+    "requires_human_review_before_correction": true,
+    "waiter_policy": {
+      "enabled": false,
+      "payment_mode": "CASHIER_HANDOFF",
+      "require_shift": false
+    }
+  },
+  "validation-public-installer": {
+    "version": "1.0.45",
+    "full_https_download_verified": true,
+    "url": "https://control.78.111.91.113.nip.io/updates/installers/AlphaPOS-1.0.45-Setup.exe",
+    "bytes": 79962570,
+    "sha256": "a181f066417414c6754c2547699d759e00beca4dfc6778d5c48ef609eebae0ea",
+    "public_metadata": {
+      "root": {
+        "version": 1,
+        "sha256": "c1b0e6548dcb48562ad630d889968e00812724e87cda8ac0765f078eb76cc1f1"
+      },
+      "targets": {
+        "version": 6,
+        "sha256": "77384962616bb57e97450fff2b920186995aba9ed5be7a6ac7c8e42c0dd9089f"
+      },
+      "snapshot": {
+        "version": 6,
+        "sha256": "7cd8c7a8c8c190b22be0b5577dba05acab2fa239467bc2df398458b583b2f49b"
+      },
+      "timestamp": {
+        "version": 6,
+        "sha256": "a187c2792e2382c9c893d84d0ac3b9bfc1c007977f28d9a06a0b18a477969901"
+      }
+    },
+    "root_unchanged": true,
+    "published_manifest_and_checksum_verified": true
+  },
+  "validation-public-tuf": {
+    "version": "1.0.45",
+    "windows_tuf_client_under_wine": "passed",
+    "trust_anchor": "installer-bundled root.json",
+    "root_unchanged": true,
+    "signed_metadata_versions": {
+      "targets": 6,
+      "snapshot": 6,
+      "timestamp": 6
+    },
+    "existing_metadata_v5_to_v6": "passed",
+    "signature_and_full_download_verified": true,
+    "target": "AlphaPOS-1.0.45.tar.gz",
+    "url": "https://control.78.111.91.113.nip.io/updates/targets/AlphaPOS-1.0.45.tar.gz",
+    "bytes": 111829264,
+    "sha256": "5e3bfc37f42cfd5b4a0636510d715196e91068f8b04939f2fb2a7e4a881e622c"
+  },
+  "validation-canonical-update-repo": {
+    "version": "1.0.45",
+    "canonical_update_repository_synced": true,
+    "root_unchanged": true
+  }
+}
