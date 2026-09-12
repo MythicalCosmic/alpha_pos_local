@@ -13,7 +13,7 @@ from base.security.auth import login_required, role_required
 from customers.services.client_service import ClientService
 
 # Only the till staff may pull a client's history (it exposes other customers' orders).
-STAFF_ROLES = ('ADMIN', 'CASHIER', 'MANAGER', 'WAITER')
+STAFF_ROLES = ('ADMIN', 'CASHIER', 'MANAGER')
 
 
 @csrf_exempt

@@ -26,6 +26,7 @@ class WaiterAuthService:
             "last_name": user.last_name,
             "role": user.role,
             "status": user.status,
+            "permissions": user.permissions if isinstance(user.permissions, list) else [],
             "branch_id": resolve_actor_branch(user),
         }
 
@@ -45,7 +46,9 @@ class WaiterAuthService:
 
     @staticmethod
     def login(email, password, ip_address, user_agent):
-        user = UserRepository.get_by_email(email)
+        if not isinstance(email, str) or not isinstance(password, str) or len(email) > 254 or len(password) > 1024:
+            return ServiceResponse.validation_error({'credentials': 'Use bounded email and password strings.'})
+        user = UserRepository.get_by_email(email.strip())
         if not user:
             verify_password_dummy(password)
             return ServiceResponse.unauthorized("Invalid credentials")
@@ -58,6 +61,11 @@ class WaiterAuthService:
 
         if user.role != User.RoleChoices.WAITER:
             return ServiceResponse.forbidden("Only waiter accounts can log in here")
+
+        from base.services.waiter_policy import authorize_waiter
+        denied = authorize_waiter(user)
+        if denied:
+            return denied
 
         branch_id = str(getattr(settings, "BRANCH_ID", "") or "").strip()
         if branch_id and resolve_actor_branch(user) != branch_id:
@@ -91,15 +99,6 @@ class WaiterAuthService:
         # Shifts are manual: login no longer opens one. The waiter opens it
         # explicitly via POST /shifts/start.
 
-        try:
-            from hr.services import AttendanceService
-
-            AttendanceService.auto_check_in(user.id)
-        except Exception:
-            logger.exception(
-                "auto_check_in failed during waiter login (user=%s)", user.id
-            )
-
         return ServiceResponse.success(
             data={
                 "token": session_key,
@@ -121,16 +120,6 @@ class WaiterAuthService:
         # Shifts are manual now: logout no longer auto-ends an open shift. The
         # waiter ends it explicitly via POST /shifts/end, so a shift left open
         # at logout stays ACTIVE and can be resumed on the next login.
-
-        if user:
-            try:
-                from hr.services import AttendanceService
-
-                AttendanceService.auto_check_out(user.id)
-            except Exception:
-                logger.exception(
-                    "auto_check_out failed during waiter logout (user=%s)", user.id
-                )
 
         SessionRepository.invalidate_cache(session_key)
         SessionRepository.delete(session)
@@ -199,6 +188,10 @@ class WaiterAuthService:
         session = WaiterAuthService._get_session(session_key)
         if not session:
             return ServiceResponse.unauthorized("Invalid session")
+        from base.helpers.request import coerce_positive_id
+        target_session_id = coerce_positive_id(target_session_id)
+        if target_session_id is None:
+            return ServiceResponse.validation_error({'session_id': 'Use a positive integer ID.'})
         target = SessionRepository.get_by_id(target_session_id)
         if not target or target.user_id_id != session.user_id_id:
             return ServiceResponse.not_found("Session not found")

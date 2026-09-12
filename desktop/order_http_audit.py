@@ -54,7 +54,7 @@ def _is_order_mutation(request) -> bool:
     path = str(getattr(request, 'path', '') or '')
     method = str(getattr(request, 'method', '') or '').upper()
     return method in _MUTATING_METHODS and (
-        '/orders' in path or '/order/' in path
+        '/orders' in path or '/order/' in path or '/tables/' in path or '/shifts/' in path or path == '/api/waiters/settings'
         or path.rstrip('/').endswith('/auth-login')
     )
 

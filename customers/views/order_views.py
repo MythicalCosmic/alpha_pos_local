@@ -7,6 +7,8 @@ from base.helpers.response import json_response
 from base.security.auth import login_required, role_required
 from base.security.audit import audit
 from base.security.idempotency import idempotent
+from base.security.atomic_command import atomic_command
+from base.services.waiter_policy import waiter_permission
 from base.security.rate_limit import rate_limit, rate_limit_by
 from base.models import AuditLog
 from customers.services.order_service import (
@@ -31,6 +33,7 @@ def list_orders(request):
     payment_status = request.GET.get('payment_status')
     statuses = request.GET.get('statuses')
     category_ids = request.GET.get('category_ids')
+    waiter_user_id = request.user.id if request.user.role == 'WAITER' else None
     user_id = request.GET.get('user_id')
     cashier_id = request.GET.get('cashier_id')
     order_by = request.GET.get('order_by', '-created_at')
@@ -47,6 +50,7 @@ def list_orders(request):
         page=page, per_page=per_page, payment_status=payment_status,
         statuses=statuses, category_ids=category_ids, user_id=user_id,
         cashier_id=cashier_id, order_by=order_by, customer_id=customer_id,
+        waiter_user_id=waiter_user_id,
     )
     return JsonResponse(result, status=status_code)
 
@@ -162,7 +166,8 @@ def fail_receipt_print(request, claim_token):
 @csrf_exempt
 @require_POST
 @login_required
-@idempotent('orders.create')
+@waiter_permission('order.create')
+@atomic_command('orders.create', required=lambda r: r.user.role == 'WAITER')
 def create_order(request):
     data, error = create_order_request(request)
     if error:
@@ -214,6 +219,7 @@ def create_order(request):
             cashier_id=cashier_id,
             delivery_person_id=data.get('delivery_person_id'),
             customer_id=customer_id,
+            place_id=data.get('place_id'), table_id=data.get('table_id'),
         )
         if not result.get('success'):
             transaction.set_rollback(True)
@@ -223,6 +229,8 @@ def create_order(request):
 @csrf_exempt
 @require_POST
 @login_required
+@waiter_permission('order.update')
+@atomic_command('orders.add_item', required=lambda r: r.user.role == 'WAITER')
 def add_item(request, order_id):
     data, error = parse_json_body(request)
     if error:
@@ -256,6 +264,7 @@ def add_item(request, order_id):
 @csrf_exempt
 @require_http_methods(["PATCH"])
 @login_required
+@waiter_permission('order.update')
 def update_item(request, order_id, item_id):
     data, error = parse_json_body(request)
     if error:
@@ -280,6 +289,7 @@ def update_item(request, order_id, item_id):
 @csrf_exempt
 @require_http_methods(["DELETE"])
 @login_required
+@waiter_permission('order.update')
 def remove_item(request, order_id, item_id):
     cashier_id = request.user.id if request.user.role in ('CASHIER', 'MANAGER') else None
     result, status_code = CustomerOrderService.remove_item_from_order(
@@ -293,6 +303,7 @@ def remove_item(request, order_id, item_id):
 @require_http_methods(["PATCH"])
 @login_required
 @role_required(*STAFF_ROLES)
+@waiter_permission('order.update')
 def update_status(request, order_id):
     data, error = parse_json_body(request)
     if error:
@@ -318,6 +329,7 @@ def update_status(request, order_id):
 @require_http_methods(["PATCH"])
 @login_required
 @role_required(*STAFF_ROLES)
+@waiter_permission('order.update')
 def update_order_type(request, order_id):
     """Change an existing order's type (HALL / DELIVERY / PICKUP)."""
     data, error = parse_json_body(request)
@@ -344,6 +356,7 @@ def update_order_type(request, order_id):
 @require_POST
 @login_required
 @role_required(*STAFF_ROLES)
+@waiter_permission('order.pay')
 @idempotent(
     'orders.pay',
     fallback_key_from_request=True,
@@ -378,6 +391,7 @@ def pay_order(request, order_id):
 @require_POST
 @login_required
 @role_required(*STAFF_ROLES)
+@waiter_permission('order.update')
 def mark_ready(request, order_id):
     cashier_id = request.user.id if request.user.role in ('CASHIER', 'MANAGER') else None
     result, status_code = CustomerOrderService.mark_order_ready(
@@ -391,6 +405,7 @@ def mark_ready(request, order_id):
 @require_POST
 @login_required
 @role_required(*STAFF_ROLES)
+@waiter_permission('order.update')
 def mark_item_ready(request, order_id, item_id):
     cashier_id = request.user.id if request.user.role in ('CASHIER', 'MANAGER') else None
     result, status_code = CustomerOrderService.mark_item_ready(
@@ -404,6 +419,7 @@ def mark_item_ready(request, order_id, item_id):
 @require_POST
 @login_required
 @role_required(*STAFF_ROLES)
+@waiter_permission('order.update')
 def unmark_item_ready(request, order_id, item_id):
     cashier_id = request.user.id if request.user.role in ('CASHIER', 'MANAGER') else None
     result, status_code = CustomerOrderService.unmark_item_ready(
@@ -416,6 +432,7 @@ def unmark_item_ready(request, order_id, item_id):
 @csrf_exempt
 @require_POST
 @login_required
+@waiter_permission('order.cancel')
 @idempotent('orders.cancel')
 def cancel_order(request, order_id):
     # Optional cancellation reason (BE-1). Recorded on the audit trail so the
@@ -446,7 +463,7 @@ def cancel_order(request, order_id):
 @csrf_exempt
 @require_GET
 @login_required
-@role_required(*STAFF_ROLES)
+@role_required('ADMIN', 'CASHIER', 'MANAGER')
 def client_display(request):
     result, status_code = CustomerOrderService.get_client_display_orders()
     return JsonResponse(result, status=status_code)
@@ -455,7 +472,7 @@ def client_display(request):
 @csrf_exempt
 @require_GET
 @login_required
-@role_required(*STAFF_ROLES)
+@role_required('ADMIN', 'CASHIER', 'MANAGER')
 def chef_display(request):
     result, status_code = CustomerOrderService.get_chef_display_orders()
     return JsonResponse(result, status=status_code)
@@ -464,7 +481,7 @@ def chef_display(request):
 @csrf_exempt
 @require_GET
 @login_required
-@role_required(*STAFF_ROLES)
+@role_required('ADMIN', 'CASHIER', 'MANAGER')
 def list_couriers(request):
     result, status_code = CustomerOrderService.list_couriers()
     return JsonResponse(result, status=status_code)
@@ -474,6 +491,7 @@ def list_couriers(request):
 @require_POST
 @login_required
 @role_required(*STAFF_ROLES)
+@waiter_permission('order.update')
 def assign_courier(request, order_id):
     """Assign / replace / clear the courier on an existing order."""
     data, error = parse_json_body(request)
@@ -490,6 +508,7 @@ def assign_courier(request, order_id):
 @require_http_methods(["PATCH", "POST"])
 @login_required
 @role_required(*STAFF_ROLES)
+@waiter_permission('order.update')
 def update_order_details(request, order_id):
     """Partially edit order contact, delivery address, note, or courier."""
     data, error = parse_json_body(request)
@@ -518,6 +537,8 @@ def update_order_details(request, order_id):
 @require_POST
 @login_required
 @role_required(*STAFF_ROLES)
+@waiter_permission('discount.apply')
+@atomic_command('orders.discount.apply', required=lambda r: r.user.role == 'WAITER')
 def apply_discount(request, order_id):
     data, error = parse_json_body(request)
     if error:
@@ -531,6 +552,8 @@ def apply_discount(request, order_id):
 @require_POST
 @login_required
 @role_required(*STAFF_ROLES)
+@waiter_permission('discount.apply')
+@atomic_command('orders.discount.remove', required=lambda r: r.user.role == 'WAITER')
 def remove_discount(request, order_id):
     data, error = parse_json_body(request)
     if error:
@@ -552,6 +575,7 @@ def remove_discount(request, order_id):
     'discount_secret_word_order', 5, 300,
     lambda r: r.resolver_match.kwargs.get('order_id') if r.resolver_match else None,
 )
+@waiter_permission('discount.apply')
 def check_secret_word(request, order_id):
     data, error = parse_json_body(request)
     if error:

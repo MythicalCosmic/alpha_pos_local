@@ -1,7 +1,9 @@
 from django.urls import path
 from waiters.views import auth_views, order_views, waiter_views
+from waiters.views.settings_views import settings
 
 urlpatterns = [
+    path('settings', settings),
     path('auth-login', auth_views.login),
     path('auth-logout', auth_views.logout),
     path('auth-me', auth_views.me),

@@ -65,5 +65,5 @@ def stats(request):
 @login_required
 @role_required(*WAITER_ROLES)
 def venue_config(request):
-    result, status_code = WaiterService.get_venue_config()
+    result, status_code = WaiterService.get_venue_config(request.user)
     return JsonResponse(result, status=status_code)

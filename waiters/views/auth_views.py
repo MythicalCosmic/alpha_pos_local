@@ -16,7 +16,7 @@ def _login_email(request):
     except Exception:
         return None
     email = body.get('email') if isinstance(body, dict) else None
-    return (email or '').strip().lower()[:128] or None
+    return email.strip().lower()[:128] or None if isinstance(email, str) else None
 
 
 @csrf_exempt
@@ -28,8 +28,11 @@ def login(request):
     if error:
         return json_response(error)
 
-    email = data.get('email', '').strip()
-    password = data.get('password', '')
+    email = data.get('email')
+    password = data.get('password')
+    if not isinstance(email, str) or not isinstance(password, str) or len(email) > 254 or len(password) > 1024:
+        return json_response(ServiceResponse.validation_error({'credentials': 'Use bounded email and password strings.'}))
+    email = email.strip()
 
     if not email or not password:
         return json_response(ServiceResponse.validation_error(

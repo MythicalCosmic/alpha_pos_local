@@ -7,9 +7,12 @@ from django.db.models import Q
 from django.utils import timezone
 from datetime import timedelta
 from uuid import UUID, uuid4
-from base.repositories import OrderRepository, OrderItemRepository, ProductRepository, UserRepository, DeliveryPersonRepository, PlaceRepository, TableRepository
+from base.repositories import OrderRepository, OrderItemRepository, ProductRepository, UserRepository, DeliveryPersonRepository
 from base.services.inkassa_service import InkassaService
 from base.services.phone import normalize_uz_phone
+from base.services.order_state import validate_transition
+from base.services.order_floor import claim_table, reconcile_table
+from base.services.waiter_policy import authorize_waiter, current_policy
 from base.helpers.response import ServiceResponse
 from base.services.order_limits import (
     validate_item_change, validate_order_subtotal, validate_quantity,
@@ -320,7 +323,7 @@ def _dispatch_authority_conflict():
     }, 409)
 
 
-ALLOWED_STATUSES = ['PREPARING', 'READY', 'CANCELED']
+ALLOWED_STATUSES = ['PREPARING', 'READY', 'COMPLETED', 'CANCELED']
 
 
 def _operational_queue_cutoff():
@@ -430,6 +433,9 @@ def _serialize_order_list(order):
         'display_id': order.display_id,
         'order_type': order.order_type,
         'order_origin': order.order_origin,
+        'waiter_id': order.waiter_id,
+        'waiter_shift_id': order.waiter_shift_id,
+        'waiter_policy_snapshot': order.waiter_policy_snapshot,
         'phone_number': order.phone_number,
         'delivery_address': order.delivery_address,
         'description': order.description,
@@ -517,6 +523,9 @@ def _serialize_order_detail(order):
         'display_id': order.display_id,
         'order_type': order.order_type,
         'order_origin': order.order_origin,
+        'waiter_id': order.waiter_id,
+        'waiter_shift_id': order.waiter_shift_id,
+        'waiter_policy_snapshot': order.waiter_policy_snapshot,
         'phone_number': order.phone_number,
         'delivery_address': order.delivery_address,
         'description': order.description,
@@ -579,7 +588,8 @@ def _check_cashier_ownership(order, cashier_id, user_id=None, user_role=None):
     # their own table's order through the shared till surface (pay, items,
     # status). They cannot touch another staff member's order.
     if user_role == 'WAITER':
-        if user_id is not None and (order.cashier_id == user_id or order.user_id == user_id):
+        from base.services.waiter_policy import owns_order
+        if user_id is not None and owns_order(order, user_id):
             return None
         return ServiceResponse.forbidden(
             f'You do not have permission to modify order #{order.display_id} '
@@ -706,9 +716,10 @@ def _apply_order_stock_transition(order_id, old_status, new_status,
                 or not getattr(stock_settings, 'auto_deduct_on_sale', True)):
             return None
         location_id = StockSettingsService.get_default_location_id()
+        from stock.services.order_service import deduction_due
         needs_location = (
             (stock_settings.reserve_on_order_create and old_status is None)
-            or new_status == stock_settings.deduct_on_order_status
+            or deduction_due(stock_settings.deduct_on_order_status, old_status, new_status)
         )
         if needs_location and not location_id:
             return ServiceResponse.error(
@@ -735,18 +746,30 @@ def _apply_order_stock_transition(order_id, old_status, new_status,
         )
 
 
+def _make_ready(order, performed_by_id):
+    error = validate_transition(order, 'READY')
+    if error or order.status == 'READY':
+        return error
+    old_status = order.status
+    now = timezone.now()
+    order.status = 'READY'
+    order.ready_at = now
+    order.save(update_fields=['status', 'ready_at'])
+    for item in order.items.select_for_update().filter(is_deleted=False, ready_at__isnull=True):
+        item.ready_at = now
+        item.save(update_fields=['ready_at'])
+    stock_items = list(order.items.filter(is_deleted=False).values('product_id', 'quantity', 'id'))
+    for item in stock_items:
+        item['order_item_id'] = item.pop('id')
+    return _apply_order_stock_transition(order.pk, old_status, 'READY', stock_items, performed_by_id)
+
+
 def _check_and_update_ready(order):
-    total = order.items.filter(is_deleted=False).count()
-    ready = order.items.filter(is_deleted=False, ready_at__isnull=False).count()
-    all_ready = total > 0 and total == ready
-
-    if all_ready and order.status != 'READY':
-        order.status = 'READY'
-        order.ready_at = timezone.now()
-        order.save(update_fields=['status', 'ready_at'])
-        return True, True
-
-    return all_ready, False
+    items = order.items.filter(is_deleted=False)
+    all_ready = items.exists() and not items.filter(ready_at__isnull=True).exists()
+    changed = all_ready and order.status != 'READY'
+    error = _make_ready(order, order.user_id) if changed else None
+    return all_ready, changed and error is None, error
 
 
 class CustomerOrderService:
@@ -754,7 +777,7 @@ class CustomerOrderService:
     @staticmethod
     def get_all_orders(page=1, per_page=20, statuses=None, payment_status=None,
                        category_ids=None, user_id=None, cashier_id=None,
-                       order_by='-created_at', customer_id=None):
+                       order_by='-created_at', customer_id=None, waiter_user_id=None):
         statuses_list = _parse_statuses(statuses)
         category_ids_list = _parse_int_list(category_ids)
 
@@ -770,6 +793,9 @@ class CustomerOrderService:
             order_by=order_by,
             customer_id=customer_id,
         )
+        if waiter_user_id is not None:
+            from django.db.models import Q
+            qs = qs.filter(Q(waiter_id=waiter_user_id) | Q(waiter_id__isnull=True, user_id=waiter_user_id))
         # ``DeliveryAssignment`` lives in this local integration app rather
         # than alpha_pos_core; join it here so /orders does not issue one query
         # per row while serializing the assigned courier and its user fallback.
@@ -802,7 +828,10 @@ class CustomerOrderService:
             return ServiceResponse.not_found('Order not found')
         # Read-side ownership: staff (ADMIN/CASHIER/MANAGER/WAITER) may read any
         # order; a plain USER only their own.
-        if user_role not in ('ADMIN', 'CASHIER', 'MANAGER', 'WAITER') and user_id is not None and order.user_id != user_id:
+        from base.services.waiter_policy import owns_order
+        if (user_role == 'WAITER' and not owns_order(order, user_id)) or (
+                user_role not in ('ADMIN', 'CASHIER', 'MANAGER', 'WAITER')
+                and user_id is not None and order.user_id != user_id):
             return ServiceResponse.forbidden(
                 f'You do not have permission to view order #{order.display_id}.'
             )
@@ -814,8 +843,15 @@ class CustomerOrderService:
                      description=None, delivery_address=None, cashier_id=None,
                      delivery_person_id=None,
                      place_id=None, table_id=None, customer_id=None):
-        if not UserRepository.exists(id=user_id):
+        actor = UserRepository.get_by_id(user_id)
+        if not actor:
             return ServiceResponse.not_found('User not found')
+        denied = authorize_waiter(actor, 'order.create')
+        if denied:
+            return denied
+        is_waiter = actor.role == 'WAITER'
+        policy = current_policy() if is_waiter else None
+        waiter_shift = None
 
         if cashier_id and not UserRepository.exists(id=cashier_id, role__in=['CASHIER', 'MANAGER']):
             return ServiceResponse.error('Invalid cashier')
@@ -838,20 +874,21 @@ class CustomerOrderService:
             if not delivery_person:
                 return ServiceResponse.not_found('Delivery person not found')
 
-        place = None
-        if place_id:
-            place = PlaceRepository.get_by_id(place_id)
-            if not place:
-                return ServiceResponse.not_found('Place not found')
-
-        table = None
-        if table_id:
-            table = TableRepository.get_by_id(table_id)
-            if not table:
-                return ServiceResponse.not_found('Table not found')
+        for field, value in (('description', description), ('delivery_address', delivery_address)):
+            if value is not None and (not isinstance(value, str) or len(value) > 2000):
+                return ServiceResponse.validation_error({field: 'Use text of at most 2000 characters.'})
+        if not isinstance(items, list) or not 1 <= len(items) <= 100:
+            return ServiceResponse.validation_error({'items': 'Provide 1–100 order lines.'})
+        for item in items:
+            if not isinstance(item, dict):
+                return ServiceResponse.validation_error({'items': 'Each order line must be an object.'})
+            detail = item.get('detail')
+            if detail is not None and (not isinstance(detail, str) or len(detail) > 1000):
+                return ServiceResponse.validation_error({'detail': 'Use text of at most 1000 characters.'})
 
         product_ids = [item.get('product_id') for item in items]
-        products = {p.id: p for p in ProductRepository.filter(id__in=product_ids)}
+        products = {p.id: p for p in ProductRepository.filter(
+            id__in=product_ids, category__is_deleted=False, category__status='ACTIVE')}
 
         total_amount = Decimal('0.00')
         order_items_data = []
@@ -899,6 +936,20 @@ class CustomerOrderService:
             except SettlementInvariantError as exc:
                 return ServiceResponse.error(str(exc))
 
+        if is_waiter:
+            from base.models import Shift
+            waiter_shift = Shift.objects.select_for_update().filter(
+                user_id=user_id, is_deleted=False, status='ACTIVE',
+            ).order_by('-start_time', '-pk').first()
+            if policy.waiter_require_shift and waiter_shift is None:
+                return ServiceResponse.error('Start your waiter shift before creating orders')
+        place, table, floor_error = claim_table(
+            table_id=table_id, place_id=place_id, order_type=order_type,
+            branch_id=getattr(settings, 'BRANCH_ID', '') or '', require_table=is_waiter,
+        )
+        if floor_error:
+            return floor_error
+
         # Allocate visible identifiers only after every validation and shift
         # guard passed; a rejected/no-shift request must not burn counter rows.
         display_id = OrderRepository.next_display_id()
@@ -908,6 +959,11 @@ class CustomerOrderService:
         order = OrderRepository.create(
             user_id=user_id,
             cashier_id=cashier_id,
+            waiter_id=user_id if is_waiter else None,
+            waiter_shift=waiter_shift,
+            waiter_policy_snapshot=({'payment_mode': policy.waiter_payment_mode,
+                                     'require_shift': policy.waiter_require_shift, 'version': 1}
+                                    if is_waiter else {}),
             display_id=display_id,
             chef_queue_number=chef_queue_number,
             order_number=order_number,
@@ -971,12 +1027,13 @@ class CustomerOrderService:
             for row, item in zip(order_items_data, new_items)
         ]
         stock_error = _apply_order_stock_transition(
-            order.id, None, 'PREPARING', stock_items, user_id,
+            order.id, None, order.status, stock_items, user_id,
         )
         if stock_error:
             transaction.set_rollback(True)
             return stock_error
 
+        reconcile_table(order.table_id)
         _schedule_order_notification('new', order.id)
 
         return ServiceResponse.created(
@@ -1006,7 +1063,7 @@ class CustomerOrderService:
         if order.status != 'PREPARING':
             return ServiceResponse.error('Cannot modify order that is not in PREPARING status')
 
-        product = ProductRepository.get_by_id(product_id)
+        product = ProductRepository.first(id=product_id, category__is_deleted=False, category__status='ACTIVE')
         if not product:
             return ServiceResponse.not_found('Product not found')
 
@@ -1150,9 +1207,15 @@ class CustomerOrderService:
 
         if not order.items.filter(is_deleted=False).exists():
             order.delete()
+            reconcile_table(order.table_id)
             return ServiceResponse.success(message='Order deleted (no items remaining)')
 
-        _check_and_update_ready(order)
+        _all_ready, changed, ready_error = _check_and_update_ready(order)
+        if ready_error:
+            transaction.set_rollback(True)
+            return ready_error
+        if changed:
+            _schedule_order_notification('ready', order.pk)
         _recalculate_total(order)
         return ServiceResponse.success(message='Item removed from order successfully')
 
@@ -1190,6 +1253,17 @@ class CustomerOrderService:
                 errors={'status': 'A cancelled order cannot change status'},
                 message='Illegal status transition',
             )
+
+        transition_error = validate_transition(order, status)
+        if transition_error:
+            return transition_error
+        if order.status == status:
+            return CustomerOrderService.get_order_by_id(order_id, user_id=user_id, user_role=user_role)
+        if status == 'CANCELED' and user_role == 'WAITER':
+            actor = UserRepository.get_by_id(user_id)
+            denied = authorize_waiter(actor, 'order.refund' if order.is_paid else 'order.cancel')
+            if denied:
+                return denied
 
         old_status = order.status
         update_fields = ['status']
@@ -1241,6 +1315,7 @@ class CustomerOrderService:
             transaction.set_rollback(True)
             return stock_error
 
+        reconcile_table(order.table_id)
         if status == 'READY':
             _schedule_order_notification('ready', order_id)
         elif status == 'CANCELED':
@@ -1288,6 +1363,8 @@ class CustomerOrderService:
                 message='Illegal change',
             )
 
+        if order_type != 'HALL' and (order.table_id or order.place_id):
+            return ServiceResponse.validation_error({'order_type': 'A table ticket must remain dine-in.'})
         if order.order_type != order_type:
             order.order_type = order_type
             order.save(update_fields=['order_type'])
@@ -1305,7 +1382,7 @@ class CustomerOrderService:
     @staticmethod
     @transaction.atomic
     def mark_item_ready(order_id, item_id, cashier_id=None, user_id=None, user_role=None):
-        order = OrderRepository.get_by_id_with_relations(order_id)
+        order = OrderRepository.get_for_update(order_id)
         if not order:
             return ServiceResponse.not_found('Order not found')
 
@@ -1319,6 +1396,10 @@ class CustomerOrderService:
         if order.status == 'READY':
             return ServiceResponse.error('Order is already marked as ready')
 
+        error = validate_transition(order, 'READY')
+        if error:
+            return error
+
         item = order.items.filter(id=item_id, is_deleted=False).first()
         if not item:
             return ServiceResponse.not_found('Order item not found')
@@ -1331,7 +1412,10 @@ class CustomerOrderService:
         item.save(update_fields=['ready_at'])
 
         item_prep_time = (item.ready_at - order.created_at).total_seconds()
-        all_ready, order_became_ready = _check_and_update_ready(order)
+        all_ready, order_became_ready, ready_error = _check_and_update_ready(order)
+        if ready_error:
+            transaction.set_rollback(True)
+            return ready_error
 
         order_prep_time = None
         if order_became_ready and order.ready_at:
@@ -1374,7 +1458,7 @@ class CustomerOrderService:
     @staticmethod
     @transaction.atomic
     def unmark_item_ready(order_id, item_id, cashier_id=None, user_id=None, user_role=None):
-        order = OrderRepository.get_by_id(order_id)
+        order = OrderRepository.get_for_update(order_id)
         if not order:
             return ServiceResponse.not_found('Order not found')
 
@@ -1385,9 +1469,13 @@ class CustomerOrderService:
         if order.status == 'CANCELED':
             return ServiceResponse.error('Cannot modify cancelled order')
 
+        error = validate_transition(order, 'PREPARING', reopen=True)
+        if error or order.is_paid:
+            return error or ServiceResponse.error('A paid ticket cannot be reopened')
+
         from base.models import OrderItem
         item = OrderItem.objects.select_for_update().filter(
-            id=item_id, order=order, ready_at__isnull=False
+            id=item_id, order=order, ready_at__isnull=False, is_deleted=False
         ).first()
 
         if not item:
@@ -1443,6 +1531,13 @@ class CustomerOrderService:
 
         # Lock the order row for the duration of payment processing to prevent
         # double-pay races (two concurrent requests both passing is_paid check).
+        if user_role == 'WAITER':
+            actor = UserRepository.get_by_id(user_id)
+            if actor is None:
+                return ServiceResponse.forbidden('Waiter not found')
+            denied = authorize_waiter(actor, 'order.pay')
+            if denied:
+                return denied
         order = OrderRepository.get_for_update(order_id)
         if not order:
             return ServiceResponse.not_found('Order not found')
@@ -1617,6 +1712,8 @@ class CustomerOrderService:
                 'accounting_recorded_at',
             ] + cashier_fields)
 
+        reconcile_table(order.table_id)
+
         for line_index, (method, amount) in enumerate(lines):
             OrderPayment.objects.create(
                 order=order,
@@ -1663,62 +1760,26 @@ class CustomerOrderService:
     @staticmethod
     @transaction.atomic
     def mark_order_ready(order_id, cashier_id=None, user_id=None, user_role=None):
-        # Row-lock the order so the status flip and the items bulk-update
-        # run in the same transaction. Without atomic, a failure between
-        # order.save() and items.update() would leave order=READY with
-        # items still PREPARING — kitchen display contradicts the queue.
         order = OrderRepository.get_for_update(order_id)
         if not order:
             return ServiceResponse.not_found('Order not found')
-
-        ownership = _check_cashier_ownership(order, cashier_id, user_id=user_id, user_role=user_role)
-        if ownership:
-            return ownership
-
-        if order.status == 'CANCELED':
-            return ServiceResponse.error('Cannot mark cancelled order as ready')
-
-        if order.status == 'READY':
-            # Idempotent: the KDS may retry /ready on a flaky network. Return
-            # 200 with the current state instead of an error, and skip the
-            # side-effects (notification, ready_at re-stamp) so a retry can't
-            # reset the prep timer or re-notify.
-            order_prep_time = (
-                (order.ready_at - order.created_at).total_seconds()
-                if order.ready_at else None
-            )
-            return ServiceResponse.success(
-                data={
-                    'status': _to_api_status(order.status),
-                    'ready_at': order.ready_at.isoformat() if order.ready_at else None,
-                    'preparation_time_seconds': order_prep_time,
-                    'preparation_time_formatted': _format_duration(order_prep_time),
-                },
-                message='Order already marked as ready',
-            )
-
-        now = timezone.now()
-        order.status = 'READY'
-        order.ready_at = now
-        order.save(update_fields=['status', 'ready_at'])
-        for item in order.items.select_for_update().filter(
-            is_deleted=False, ready_at__isnull=True,
-        ):
-            item.ready_at = now
-            item.save(update_fields=['ready_at'])
-
-        order_prep_time = (order.ready_at - order.created_at).total_seconds()
-        _schedule_order_notification('ready', order_id)
-
-        return ServiceResponse.success(
-            data={
-                'status': _to_api_status(order.status),
-                'ready_at': order.ready_at.isoformat(),
-                'preparation_time_seconds': order_prep_time,
-                'preparation_time_formatted': _format_duration(order_prep_time),
-            },
-            message='Order marked as ready',
-        )
+        denied = _check_cashier_ownership(order, cashier_id, user_id=user_id, user_role=user_role)
+        if denied:
+            return denied
+        changed = order.status != 'READY'
+        error = _make_ready(order, user_id or cashier_id or order.user_id)
+        if error:
+            transaction.set_rollback(True)
+            return error
+        if changed:
+            _schedule_order_notification('ready', order_id)
+        duration = (order.ready_at - order.created_at).total_seconds() if order.ready_at else None
+        return ServiceResponse.success(data={
+            'status': _to_api_status(order.status),
+            'ready_at': order.ready_at.isoformat() if order.ready_at else None,
+            'preparation_time_seconds': duration,
+            'preparation_time_formatted': _format_duration(duration),
+        }, message='Order marked as ready' if changed else 'Order already marked as ready')
 
     @staticmethod
     def list_couriers():

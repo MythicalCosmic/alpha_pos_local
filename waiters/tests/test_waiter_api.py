@@ -37,7 +37,8 @@ def operating_now(monkeypatch):
 
 
 def _waiter(email="waiter1@test.local"):
-    from base.models import User
+    from base.models import User, AppSettings
+    AppSettings.objects.update_or_create(pk=1, defaults={"waiter_enabled": True})
     from base.security.hashing import hash_password
 
     return User.objects.create(
@@ -47,6 +48,7 @@ def _waiter(email="waiter1@test.local"):
         password=hash_password("1234"),
         role=User.RoleChoices.WAITER,
         status=User.UserStatus.ACTIVE,
+        permissions=["order.create", "order.update", "order.cancel"],
     )
 
 
@@ -157,7 +159,7 @@ def test_waiter_login_does_not_create_replicated_user_generation():
 
 
 @pytest.mark.django_db
-def test_waiter_cancel_uses_live_payment_rows_only():
+def test_paid_refund_requires_manager_and_uses_live_payment_rows_only():
     from decimal import Decimal
     from base.models import CashRegister, OrderPayment, Shift
     from waiters.services.order_service import WaiterOrderService
@@ -187,6 +189,17 @@ def test_waiter_cancel_uses_live_payment_rows_only():
     stale.delete()
 
     result, status = WaiterOrderService.cancel_order(order.id, waiter.id)
+    assert status == 403, result
+    order.refresh_from_db()
+    assert order.status != 'CANCELED'
+    from customers.services.order_service import CustomerOrderService
+    from base.models import User
+    manager = User.objects.create(first_name='Manager', role='MANAGER', email='refund@test.local')
+    Shift.objects.create(user=manager, status='ACTIVE', start_time=timezone.now(), branch_id=order.branch_id)
+    result, status = CustomerOrderService.update_order_status(
+        order.id, 'CANCELED', cashier_id=manager.pk, user_id=manager.pk,
+        user_role='MANAGER', reason='Manager-approved refund',
+    )
     assert status == 200, result
     register.refresh_from_db()
     assert register.current_balance == Decimal("0.00")
@@ -416,19 +429,19 @@ class TestVenueConfig:
 @pytest.mark.django_db
 class TestCreateOrderAttribution:
     def test_waiter_owns_created_order(self, product):
-        """Stats + ownership both key off cashier_id == waiter — verify
-        create_order sets it (the invariant request_payment / get_stats rely on)."""
+        """Service attribution is separate from eventual collection."""
         from base.models import Order
         from waiters.services.order_service import WaiterOrderService
 
         w = _waiter()
         res, st = WaiterOrderService.create_order(
-            user_id=w.id,
+            user_id=w.id, order_type="PICKUP",
             items=[{"product_id": product.id, "quantity": 2}],
         )
         assert st == 201
         o = Order.objects.get(pk=res["data"]["order_id"])
-        assert o.cashier_id == w.id
+        assert o.waiter_id == w.id
+        assert o.cashier_id is None
         assert o.user_id == w.id
 
 
@@ -508,7 +521,7 @@ class TestCreateOrderValidation:
 
         w = _waiter()
         _, st = WaiterOrderService.create_order(
-            user_id=w.id, items=[{"product_id": str(product.id), "quantity": "3"}]
+            user_id=w.id, order_type="PICKUP", items=[{"product_id": str(product.id), "quantity": "3"}]
         )
         assert st == 201
 
@@ -572,6 +585,7 @@ class TestStatsExcludesCancelledPaid:
         assert st == 200
         d = res["data"]
         assert d["sales_total"] == "20.00"
-        assert d["paid_count"] == 1
+        assert d["paid_count"] == 2
+        assert d["cancelled_refund_count"] == 1
         assert d["cancelled_count"] == 1
         assert d["orders_count"] == 2

@@ -136,9 +136,18 @@ def test_failed_waiter_cancel_emits_no_cancel_notification(
     monkeypatch, order_factory, regular_user,
     django_capture_on_commit_callbacks,
 ):
-    from waiters.services import order_service
+    from customers.services import order_service
+    from waiters.services.order_service import WaiterOrderService
+    from base.services.waiter_settings import update_policy
 
-    order = order_factory(user=regular_user, cashier=regular_user)
+    update_policy({'waiter_enabled': True})
+    regular_user.role = 'WAITER'
+    regular_user.permissions = ['order.cancel']
+    regular_user.branch_id = 'main'
+    regular_user.save(update_fields=['role', 'permissions', 'branch_id'])
+    order = order_factory(user=regular_user)
+    order.waiter = regular_user
+    order.save(update_fields=['waiter'])
     _reject_stock(monkeypatch)
     emitted = []
     monkeypatch.setattr(
@@ -148,7 +157,7 @@ def test_failed_waiter_cancel_emits_no_cancel_notification(
     )
 
     with django_capture_on_commit_callbacks(execute=True) as callbacks:
-        result, status = order_service.WaiterOrderService.cancel_order(
+        result, status = WaiterOrderService.cancel_order(
             order.id, regular_user.id,
         )
 

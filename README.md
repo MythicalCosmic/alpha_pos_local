@@ -20,8 +20,8 @@ Shared business rules come from the pinned `alpha_pos_core` submodule.
 
 The shared core supplies users, shifts, financial models, synchronization,
 stock, cashbox, fiscalization, licensing, notifications, and HR attendance
-services. Local cashier and waiter login call the shared attendance service
-directly.
+services. Cashier login resumes a collecting shift. Waiter attendance follows explicit
+shift start and close, independently of login and logout.
 
 ## Runtime
 

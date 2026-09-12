@@ -1,125 +1,18 @@
-import logging
-from decimal import Decimal
-
 from django.db import transaction
 from django.utils import timezone
 
 from base.repositories import (
     OrderRepository,
-    OrderItemRepository,
-    ProductRepository,
     UserRepository,
     PlaceRepository,
     TableRepository,
 )
 from base.helpers.response import ServiceResponse
-from base.services.order_limits import (
-    validate_item_change, validate_order_subtotal, validate_quantity,
-)
 from base.helpers.request import coerce_positive_id, coerce_quantity
-from notifications.handlers.order import OrderNotification
-from base.models import Table
-
-logger = logging.getLogger(__name__)
-
-
-def _schedule_order_notification(event, order_id):
-    """Keep external messages behind the successful transaction boundary."""
-
-    def notify():
-        if event == "new":
-            order = OrderRepository.get_by_id_with_relations(order_id)
-            if order:
-                OrderNotification.on_new_order(order)
-        elif event == "ready":
-            OrderNotification.on_order_ready(order_id)
-        elif event == "cancelled":
-            OrderNotification.on_order_cancelled(order_id)
-
-    transaction.on_commit(notify, robust=True)
-
-
-def _adjust_order_stock(
-    order_id, product_id, quantity_delta, performed_by_id, order_item_id=None,
-):
-    """Apply an edit to already-deducted stock, or fail the order transaction."""
-    if quantity_delta == 0:
-        return None
-    try:
-        from stock.services import OrderStockService, StockSettingsService
-
-        location_id = StockSettingsService.get_default_location_id()
-        result, status = OrderStockService.adjust_for_item_change(
-            order_id,
-            product_id,
-            quantity_delta,
-            location_id,
-            performed_by_id,
-            order_item_id=order_item_id,
-        )
-        if status >= 400:
-            logger.error(
-                "stock adjustment rejected for waiter order=%s product=%s: %s",
-                order_id,
-                product_id,
-                result,
-            )
-            return result, status
-        return None
-    except Exception:
-        logger.exception("stock adjustment failed in waiter order edit flow")
-        return ServiceResponse.error(
-            "Stock adjustment failed; the order change was not applied. Please retry."
-        )
-
-
-def _apply_order_stock_transition(
-    order_id, old_status, new_status, stock_items, performed_by_id
-):
-    try:
-        from stock.services import OrderStatusHandler, StockSettingsService
-
-        stock_settings = StockSettingsService.load()
-        if not stock_settings.stock_enabled or not getattr(
-            stock_settings, "auto_deduct_on_sale", True
-        ):
-            return None
-        location_id = StockSettingsService.get_default_location_id()
-        needs_location = (
-            stock_settings.reserve_on_order_create and old_status is None
-        ) or new_status == stock_settings.deduct_on_order_status
-        if needs_location and not location_id:
-            return ServiceResponse.error(
-                "Stock is enabled but no default stock location is configured."
-            )
-        result, status = OrderStatusHandler.on_status_change(
-            order_id,
-            old_status,
-            new_status,
-            stock_items,
-            location_id,
-            performed_by_id,
-        )
-        if status >= 400:
-            logger.error(
-                "stock transition rejected for waiter order=%s %s->%s: %s",
-                order_id,
-                old_status,
-                new_status,
-                result,
-            )
-            return result, status
-        return None
-    except Exception:
-        logger.exception(
-            "stock transition failed for waiter order=%s %s->%s",
-            order_id,
-            old_status,
-            new_status,
-        )
-        return ServiceResponse.error(
-            "Stock processing failed; the order change was not applied. Please retry."
-        )
+from base.models import Table, Order
+from django.db.models import Q, Count
+from base.services.waiter_policy import owns_order
+from customers.services.order_service import CustomerOrderService
 
 
 def _live_items(order):
@@ -231,6 +124,9 @@ def _serialize_order_detail(order):
         }
         if order.table
         else None,
+        "waiter_id": order.waiter_id,
+        "waiter_shift_id": order.waiter_shift_id,
+        "waiter_policy_snapshot": order.waiter_policy_snapshot,
         "cashier": {
             "id": order.cashier.id,
             "name": f"{order.cashier.first_name} {order.cashier.last_name}",
@@ -263,48 +159,11 @@ def _serialize_order_detail(order):
 
 
 def _check_waiter_ownership(order, waiter_user_id):
-    if order.cashier_id != waiter_user_id:
+    if not owns_order(order, waiter_user_id):
         return ServiceResponse.forbidden(
             f"You do not have permission to modify this order. Order #{order.display_id} belongs to another waiter."
         )
     return None
-
-
-def _recalculate_total(order):
-    from discounts.repositories import OrderDiscountRepository
-    from discounts.services.discount_service import DiscountService
-
-    order.subtotal = OrderItemRepository.calculate_order_total(order)
-    # Recompute each applied discount against the *current* items rather than
-    # trusting the frozen OrderDiscount.discount_amount. A percentage / BUY_X /
-    # FREE_ITEM rule frozen at apply-time goes stale the moment items change:
-    # if the order grew the customer is over-charged, if it shrank the drawer is
-    # under-credited (mark_as_paid would settle the wrong cash, or drive
-    # total_amount negative and *remove* real cash via add_to_register). The
-    # OrderDiscount rows are the source of truth — refresh them, then sum.
-    order_items = list(
-        order.items.filter(is_deleted=False).select_related(
-            "product__category",
-        )
-    )
-    applied = Decimal("0")
-    for od in (
-        OrderDiscountRepository.get_for_order(order.id)
-        .select_related("discount__discount_type")
-        .order_by("created_at", "pk")
-    ):
-        new_amount = DiscountService.calculate_discount(
-            od.discount,
-            order_items,
-            already_applied_discount=applied,
-        )
-        if new_amount != od.discount_amount:
-            od.discount_amount = new_amount
-            od.save(update_fields=["discount_amount"])
-        applied += new_amount
-    order.discount_amount = min(applied, order.subtotal)
-    order.total_amount = max(Decimal("0"), order.subtotal - order.discount_amount)
-    order.save(update_fields=["subtotal", "discount_amount", "total_amount"])
 
 
 class WaiterOrderService:
@@ -325,14 +184,17 @@ class WaiterOrderService:
 
     @staticmethod
     def list_my_orders(waiter_user_id, page=1, per_page=20, status=None):
+        statuses = status if isinstance(status, list) else ([status] if status else [])
+        if any(value not in Order.Status.values for value in statuses):
+            return ServiceResponse.validation_error({'status': 'Use a supported order status.'})
         qs = OrderRepository.build_filtered_queryset(
-            cashier_id=waiter_user_id,
             statuses=status
             if isinstance(status, list)
             else ([status] if status else None),
             order_by="-created_at",
         )
 
+        qs = qs.filter(Q(waiter_id=waiter_user_id) | Q(waiter_id__isnull=True, user_id=waiter_user_id))
         page_obj, paginator = OrderRepository.paginate(qs, page, per_page)
         orders = [_serialize_order_list(o) for o in page_obj.object_list]
 
@@ -351,215 +213,30 @@ class WaiterOrderService:
         )
 
     @staticmethod
-    @transaction.atomic
-    def create_order(
-        user_id,
-        items,
-        place_id=None,
-        table_id=None,
-        order_type="HALL",
-        phone_number=None,
-        description=None,
-    ):
-        if not UserRepository.exists(id=user_id, role="WAITER"):
-            return ServiceResponse.not_found("Waiter not found")
-
-        if not items:
-            return ServiceResponse.validation_error(
-                errors={"items": "At least one item is required"},
-                message="Order must have at least one item",
-            )
-
-        if order_type not in ["HALL", "DELIVERY", "PICKUP"]:
-            return ServiceResponse.validation_error(
-                errors={"order_type": "Must be HALL, DELIVERY, or PICKUP"},
-                message="Invalid order type",
-            )
-
-        # Validate the items payload shape BEFORE touching the DB so malformed
-        # input (non-list, non-dict element, non-int product_id, bad quantity)
-        # returns a clean 422 instead of crashing deep in the loop (-> HTTP 500).
-        if not isinstance(items, list):
-            return ServiceResponse.validation_error(
-                errors={"items": "Must be a list of {product_id, quantity}"},
-                message="Invalid items",
-            )
-        cleaned_items = []
+    def create_order(user_id, items, place_id=None, table_id=None, order_type="HALL",
+                     phone_number=None, description=None):
+        if not UserRepository.exists(id=user_id, role='WAITER'):
+            return ServiceResponse.not_found('Waiter not found')
+        if not isinstance(items, list) or not items:
+            return ServiceResponse.validation_error({'items': 'Provide a non-empty list of items.'})
+        cleaned = []
         for raw in items:
             if not isinstance(raw, dict):
-                return ServiceResponse.validation_error(
-                    errors={"items": "Each item must be an object"},
-                    message="Invalid item",
-                )
-            cleaned_product_id = coerce_positive_id(raw.get("product_id"))
-            if cleaned_product_id is None:
-                return ServiceResponse.validation_error(
-                    errors={"product_id": "must be a positive integer ID"},
-                    message="Invalid product_id",
-                )
-            cleaned_quantity = coerce_quantity(raw.get("quantity", 1))
-            if cleaned_quantity is None:
-                return ServiceResponse.validation_error(
-                    errors={"quantity": "must be a positive integer"},
-                    message="Quantity must be greater than 0",
-                )
-            cleaned_items.append(
-                {
-                    "product_id": cleaned_product_id,
-                    "quantity": cleaned_quantity,
-                    "detail": raw.get("detail"),
-                }
-            )
-
-        place = None
-        table = None
-
-        # Coerce optional place_id/table_id so a non-numeric body value returns a
-        # clean 422 rather than a 500 from the ORM PK lookup.
-        if place_id is not None and place_id != "":
-            place_id = coerce_positive_id(place_id)
-            if place_id is None:
-                return ServiceResponse.validation_error(
-                    errors={"place_id": "must be a positive integer ID"},
-                    message="Invalid place_id",
-                )
-            place = PlaceRepository.get_by_id(place_id)
-            if not place:
-                return ServiceResponse.not_found("Place not found")
-
-        if table_id is not None and table_id != "":
-            table_id = coerce_positive_id(table_id)
-            if table_id is None:
-                return ServiceResponse.validation_error(
-                    errors={"table_id": "must be a positive integer ID"},
-                    message="Invalid table_id",
-                )
-            table = TableRepository.get_by_id(table_id)
-            if not table:
-                return ServiceResponse.not_found("Table not found")
-            if place and table.place_id != place.id:
-                return ServiceResponse.error(
-                    "Table does not belong to the specified place"
-                )
-            if not place:
-                place = table.place
-
-        product_ids = [it["product_id"] for it in cleaned_items]
-        products = {p.id: p for p in ProductRepository.filter(id__in=product_ids)}
-
-        total_amount = Decimal("0.00")
-        order_items_data = []
-
-        for item_data in cleaned_items:
-            product = products.get(item_data["product_id"])
-            if not product:
-                return ServiceResponse.not_found(
-                    f"Product with id {item_data['product_id']} not found"
-                )
-
-            order_items_data.append(
-                {
-                    "product": product,
-                    "detail": item_data["detail"],
-                    "quantity": item_data["quantity"],
-                    "price": product.price,
-                }
-            )
-            total_amount += product.price * item_data["quantity"]
-
-        limit_error = validate_order_subtotal(total_amount)
-        if limit_error:
-            return limit_error
-
-        display_id = OrderRepository.next_display_id()
-        chef_queue_number = OrderRepository.next_chef_queue_number()
-        order_number = OrderRepository.next_order_number()
-
-        order = OrderRepository.create(
-            user_id=user_id,
-            cashier_id=user_id,
-            display_id=display_id,
-            chef_queue_number=chef_queue_number,
-            order_number=order_number,
-            order_type=order_type,
-            phone_number=phone_number,
-            description=description,
-            status="PREPARING",
-            is_paid=False,
-            subtotal=total_amount,
-            total_amount=total_amount,
-            place=place,
-            table=table,
-        )
-
-        from base.models import OrderItem
-
-        now = timezone.now()
-        # Instant items (drinks, packaged goods) need no kitchen prep, so they
-        # are born ready and never hit the chef display. Mirrors the customer
-        # order path so an instant product behaves the same on every surface.
-        any_kitchen_item = False
-        new_items = []
-        for d in order_items_data:
-            instant = d["product"].is_instant
-            if not instant:
-                any_kitchen_item = True
-            new_items.append(
-                OrderItem(
-                    order=order,
-                    product=d["product"],
-                    detail=d["detail"],
-                    quantity=d["quantity"],
-                    price=d["price"],
-                    ready_at=now if instant else None,
-                )
-            )
-        # bulk_create bypasses Model.save(), which is what stamps branch_id and
-        # marks a row pending for the cloud push. Without it these line items keep
-        # branch_id='' and the sync sweep (it only sends THIS branch's rows) skips
-        # them forever — so the cloud received order headers + payments but never
-        # the items. Stamp branch_id so they sync like every individually-saved row.
-        from django.conf import settings as _settings
-
-        _bid = getattr(_settings, "BRANCH_ID", "") or ""
-        for _it in new_items:
-            _it.branch_id = _bid
-        OrderItem.objects.bulk_create(new_items)
-
-        # An order made up entirely of instant items has nothing to cook —
-        # it's ready the moment it's placed.
-        if not any_kitchen_item:
-            order.status = "READY"
-            order.ready_at = now
-            order.save(update_fields=["status", "ready_at"])
-
-        if table:
-            TableRepository.update_status(table.id, Table.Status.OCCUPIED)
-
-        stock_items = [
-            {
-                "product_id": row["product"].id,
-                "quantity": row["quantity"],
-                "order_item_id": item.id,
-            }
-            for row, item in zip(order_items_data, new_items)
-        ]
-        stock_error = _apply_order_stock_transition(
-            order.id,
-            None,
-            "PREPARING",
-            stock_items,
-            user_id,
-        )
-        if stock_error:
-            transaction.set_rollback(True)
-            return stock_error
-
-        _schedule_order_notification("new", order.id)
-
-        return ServiceResponse.created(
-            data={"order_id": order.id, "display_id": order.display_id},
-            message="Order created successfully",
+                return ServiceResponse.validation_error({'items': 'Each line must be an object.'})
+            product_id = coerce_positive_id(raw.get('product_id'))
+            quantity = coerce_quantity(raw.get('quantity', 1))
+            if product_id is None or quantity is None:
+                return ServiceResponse.validation_error({'items': 'Use positive product IDs and quantities.'})
+            cleaned.append({'product_id': product_id, 'quantity': quantity, 'detail': raw.get('detail')})
+        references = {}
+        for name, value in (('place_id', place_id), ('table_id', table_id)):
+            parsed = coerce_positive_id(value) if value not in (None, '') else None
+            if value not in (None, '') and parsed is None:
+                return ServiceResponse.validation_error({name: 'Use a positive ID.'})
+            references[name] = parsed
+        return CustomerOrderService.create_order(
+            user_id=user_id, items=cleaned, order_type=order_type, phone_number=phone_number,
+            description=description, **references,
         )
 
     @staticmethod
@@ -575,241 +252,27 @@ class WaiterOrderService:
         return ServiceResponse.success(data={"order": _serialize_order_detail(order)})
 
     @staticmethod
-    @transaction.atomic
     def add_item(order_id, product_id, quantity, waiter_user_id):
-        # Row-lock the order so concurrent add-item calls serialize across
-        # both the quantity increment and the subtotal recalculate.
-        order = OrderRepository.get_for_update(order_id)
-        if not order:
-            return ServiceResponse.not_found("Order not found")
-
-        ownership = _check_waiter_ownership(order, waiter_user_id)
-        if ownership:
-            return ownership
-
-        if order.is_paid:
-            # A paid order's total was already credited to the cash register on
-            # payment. Editing items afterwards rewrites total_amount with no
-            # matching register adjustment, desyncing the drawer. Block it.
-            return ServiceResponse.error(
-                "Cannot modify an order that has already been paid"
-            )
-
-        if order.status != "PREPARING":
-            return ServiceResponse.error(
-                "Cannot modify order that is not in PREPARING status"
-            )
-
-        product = ProductRepository.get_by_id(product_id)
-        if not product:
-            return ServiceResponse.not_found("Product not found")
-
-        quantity_error = validate_quantity(quantity)
-        if quantity_error:
-            return quantity_error
-
-        is_instant = product.is_instant
-        existing = OrderItemRepository.get_existing_unready(order_id, product_id)
-        replacing = existing if existing and not is_instant else None
-        limit_error = validate_item_change(
-            order, quantity=(existing.quantity + quantity) if replacing else quantity,
-            price=existing.price if replacing else product.price, replacing=replacing,
+        return CustomerOrderService.add_item_to_order(
+            order_id, product_id, quantity, user_id=waiter_user_id, user_role='WAITER',
         )
-        if limit_error:
-            return limit_error
-        if existing and not is_instant:
-            # The parent Order row is locked above, so concurrent additions for
-            # this ticket are serialized. Use save() so SyncMixin marks the line
-            # dirty; a bulk update silently left the cloud quantity stale.
-            existing.quantity += quantity
-            existing.save(update_fields=["quantity"])
-            target_item = existing
-        else:
-            # Instant items are born ready and never need the kitchen.
-            target_item = OrderItemRepository.create(
-                order=order,
-                product=product,
-                quantity=quantity,
-                price=product.price,
-                ready_at=timezone.now() if is_instant else None,
-            )
-
-        # Only adding a real (non-instant) item reopens a ready order for the
-        # kitchen; tacking on a drink must not send the order back to PREPARING.
-        if not is_instant and order.ready_at:
-            order.ready_at = None
-            order.status = "PREPARING"
-            order.save(update_fields=["ready_at", "status"])
-
-        _recalculate_total(order)
-        stock_error = _adjust_order_stock(
-            order_id,
-            product_id,
-            quantity,
-            waiter_user_id,
-            order_item_id=target_item.id,
-        )
-        if stock_error:
-            transaction.set_rollback(True)
-            return stock_error
-        return ServiceResponse.success(message="Item added to order successfully")
 
     @staticmethod
-    @transaction.atomic
     def update_item(order_id, item_id, quantity, waiter_user_id):
-        order = OrderRepository.get_for_update(order_id)
-        if not order:
-            return ServiceResponse.not_found("Order not found")
-
-        ownership = _check_waiter_ownership(order, waiter_user_id)
-        if ownership:
-            return ownership
-
-        if order.is_paid:
-            # A paid order's total was already credited to the cash register on
-            # payment. Editing items afterwards rewrites total_amount with no
-            # matching register adjustment, desyncing the drawer. Block it.
-            return ServiceResponse.error(
-                "Cannot modify an order that has already been paid"
-            )
-
-        if order.status != "PREPARING":
-            return ServiceResponse.error(
-                "Cannot modify order that is not in PREPARING status"
-            )
-
-        quantity_error = validate_quantity(quantity)
-        if quantity_error:
-            return quantity_error
-
-        item = OrderItemRepository.first(id=item_id, order_id=order_id)
-        if not item:
-            return ServiceResponse.not_found("Order item not found")
-
-        limit_error = validate_item_change(
-            order, quantity=quantity, price=item.price, replacing=item,
+        return CustomerOrderService.update_order_item(
+            order_id, item_id, quantity, user_id=waiter_user_id, user_role='WAITER',
         )
-        if limit_error:
-            return limit_error
-
-        old_quantity = item.quantity
-        product_id = item.product_id
-        item.quantity = quantity
-        item.save(update_fields=["quantity"])
-        _recalculate_total(order)
-
-        stock_error = _adjust_order_stock(
-            order_id,
-            product_id,
-            quantity - old_quantity,
-            waiter_user_id,
-            order_item_id=item.id,
-        )
-        if stock_error:
-            transaction.set_rollback(True)
-            return stock_error
-
-        return ServiceResponse.success(message="Order item updated successfully")
 
     @staticmethod
-    @transaction.atomic
     def remove_item(order_id, item_id, waiter_user_id):
-        order = OrderRepository.get_for_update(order_id)
-        if not order:
-            return ServiceResponse.not_found("Order not found")
-
-        ownership = _check_waiter_ownership(order, waiter_user_id)
-        if ownership:
-            return ownership
-
-        if order.is_paid:
-            # A paid order's total was already credited to the cash register on
-            # payment. Editing items afterwards rewrites total_amount with no
-            # matching register adjustment, desyncing the drawer. Block it.
-            return ServiceResponse.error(
-                "Cannot modify an order that has already been paid"
-            )
-
-        if order.status != "PREPARING":
-            return ServiceResponse.error(
-                "Cannot modify order that is not in PREPARING status"
-            )
-
-        item = OrderItemRepository.first(id=item_id, order_id=order_id)
-        if not item:
-            return ServiceResponse.not_found("Order item not found")
-
-        product_id = item.product_id
-        removed_quantity = item.quantity
-        order_item_id = item.id
-
-        stock_error = _adjust_order_stock(
-            order_id,
-            product_id,
-            -removed_quantity,
-            waiter_user_id,
-            order_item_id=order_item_id,
+        return CustomerOrderService.remove_item_from_order(
+            order_id, item_id, user_id=waiter_user_id, user_role='WAITER',
         )
-        if stock_error:
-            transaction.set_rollback(True)
-            return stock_error
-        # Preserve the exact sold-line relation used by stock returns and COGS.
-        # The soft-deleted row remains auditable and syncs as a tombstone.
-        item.delete()
-
-        if not order.items.filter(is_deleted=False).exists():
-            if order.table:
-                TableRepository.update_status(order.table_id, Table.Status.AVAILABLE)
-            order.delete()
-            return ServiceResponse.success(message="Order deleted (no items remaining)")
-
-        _recalculate_total(order)
-        return ServiceResponse.success(message="Item removed from order successfully")
 
     @staticmethod
-    @transaction.atomic
     def mark_ready(order_id, waiter_user_id):
-        order = OrderRepository.get_for_update(order_id)
-        if not order:
-            return ServiceResponse.not_found("Order not found")
-
-        ownership = _check_waiter_ownership(order, waiter_user_id)
-        if ownership:
-            return ownership
-
-        if order.status == "CANCELED":
-            return ServiceResponse.error("Cannot mark cancelled order as ready")
-
-        if order.status == "READY":
-            # Idempotent: a flaky-LAN retry of an order that's already ready gets
-            # a benign 200 (not a 4xx) and we skip re-stamping ready_at /
-            # re-notifying. Mirrors CustomerOrderService.mark_order_ready.
-            return ServiceResponse.success(
-                data={
-                    "status": order.status,
-                    "ready_at": order.ready_at.isoformat() if order.ready_at else None,
-                },
-                message="Order is already ready",
-            )
-
-        now = timezone.now()
-        order.status = "READY"
-        order.ready_at = now
-        order.save(update_fields=["status", "ready_at"])
-        # Preserve SyncMixin dirty/version state for every line. A bulk update
-        # changes the local KDS only and silently leaves the cloud stale.
-        for item in order.items.select_for_update().filter(
-            is_deleted=False,
-            ready_at__isnull=True,
-        ):
-            item.ready_at = now
-            item.save(update_fields=["ready_at"])
-
-        _schedule_order_notification("ready", order_id)
-
-        return ServiceResponse.success(
-            data={"status": order.status, "ready_at": order.ready_at.isoformat()},
-            message="Order marked as ready",
+        return CustomerOrderService.mark_order_ready(
+            order_id, user_id=waiter_user_id, user_role='WAITER',
         )
 
     @staticmethod
@@ -848,93 +311,38 @@ class WaiterOrderService:
         )
 
     @staticmethod
-    @transaction.atomic
     def cancel_order(order_id, waiter_user_id):
-        order = OrderRepository.get_for_update(order_id)
-        if not order:
-            return ServiceResponse.not_found("Order not found")
-
-        ownership = _check_waiter_ownership(order, waiter_user_id)
-        if ownership:
-            return ownership
-
-        if order.status == "CANCELED":
-            return ServiceResponse.error("Order is already cancelled")
-
-        old_status = order.status
-        order.status = "CANCELED"
-
-        refund = None
-        if order.is_paid:
-            from base.services.order_refund import (
-                SettlementInvariantError,
-                record_paid_order_refund,
-            )
-
-            try:
-                refund, _ = record_paid_order_refund(
-                    order.id,
-                    waiter_user_id,
-                    reason="Cancelled from waiter app",
-                )
-            except SettlementInvariantError as exc:
-                return ServiceResponse.error(str(exc))
-        order.save(update_fields=["status"])
-
-        if order.table:
-            TableRepository.update_status(order.table_id, Table.Status.AVAILABLE)
-
-        stock_items = [
-            {
-                "product_id": i.product_id,
-                "quantity": i.quantity,
-                "order_item_id": i.id,
-            }
-            for i in order.items.filter(is_deleted=False)
-        ]
-        stock_error = _apply_order_stock_transition(
-            order.id,
-            old_status,
-            "CANCELED",
-            stock_items,
-            order.user_id,
-        )
-        if stock_error:
-            transaction.set_rollback(True)
-            return stock_error
-
-        _schedule_order_notification("cancelled", order_id)
-
-        return ServiceResponse.success(
-            data={
-                "status": "CANCELED",
-                "refund_id": refund.id if refund else None,
-            },
-            message="Order cancelled successfully",
+        return CustomerOrderService.update_order_status(
+            order_id, 'CANCELED', user_id=waiter_user_id, user_role='WAITER',
+            reason='Canceled from waiter app',
         )
 
     @staticmethod
-    def list_places():
-        places = PlaceRepository.get_active()
+    def list_places(branch_id=None):
+        places = PlaceRepository.get_active().annotate(active_table_count=Count('tables', filter=Q(tables__is_deleted=False, tables__is_active=True)))
+        if branch_id:
+            places = places.filter(branch_id__in=['', branch_id])
         data = [
             {
                 "id": p.id,
                 "name": p.name,
                 "place_type": p.place_type,
                 "capacity": p.capacity,
-                "tables_count": p.tables.filter(is_deleted=False).count(),
+                "tables_count": p.active_table_count,
             }
             for p in places
         ]
         return ServiceResponse.success(data={"places": data})
 
     @staticmethod
-    def list_tables(place_id=None):
+    def list_tables(place_id=None, branch_id=None):
         if place_id:
             tables = TableRepository.get_for_place(place_id)
         else:
             tables = TableRepository.get_active()
 
+        if branch_id:
+            tables = tables.filter(branch_id__in=['', branch_id], place__branch_id__in=['', branch_id])
         data = [
             {
                 "id": t.id,
@@ -954,40 +362,28 @@ class WaiterOrderService:
         return ServiceResponse.success(data={"tables": data})
 
     @staticmethod
+    @transaction.atomic
     def update_table_status(table_id, status, actor_user_id=None, actor_role=None):
-        valid_statuses = [c[0] for c in Table.Status.choices]
-        if status not in valid_statuses:
-            return ServiceResponse.validation_error(
-                errors={"status": f'Must be one of: {", ".join(valid_statuses)}'},
-                message="Invalid table status",
-            )
-
-        # Non-admin waiters can only flip a table they're actively serving.
-        # Without this check WAITER A could re-flag any table in any branch.
-        # An admin can transition any table (cleanup / closeout flows).
-        if actor_role and actor_role != "ADMIN":
-            from base.repositories import OrderRepository
-
-            has_active_order = OrderRepository.model.objects.filter(
-                is_deleted=False,
-                table_id=table_id,
-                cashier_id=actor_user_id,
-                status__in=("PREPARING", "READY"),
-            ).exists()
-            if not has_active_order:
-                return ServiceResponse.forbidden(
-                    "You can only update the status of a table you are serving",
-                )
-
-        table = TableRepository.update_status(table_id, status)
-        if not table:
-            return ServiceResponse.not_found("Table not found")
-
-        return ServiceResponse.success(
-            data={
-                "id": table.id,
-                "number": table.number,
-                "status": table.status,
-            },
-            message="Table status updated",
-        )
+        from base.services.order_floor import live_orders
+        if status not in Table.Status.values:
+            return ServiceResponse.validation_error({'status': 'Choose a valid table status.'})
+        table = Table.objects.select_for_update().filter(pk=table_id, is_deleted=False, is_active=True).first()
+        from base.services.branch_scope import resolve_actor_branch
+        actor = UserRepository.get_by_id(actor_user_id)
+        branch = resolve_actor_branch(actor) if actor else None
+        if (not table or not actor or table.branch_id not in ('', branch) or
+                not table.place or not table.place.is_active or table.place.is_deleted or
+                table.place.branch_id not in ('', branch)):
+            return ServiceResponse.not_found('Table not found')
+        active = live_orders(table_id)
+        if actor_role != 'ADMIN' and not active.filter(
+            Q(waiter_id=actor_user_id) | Q(waiter_id__isnull=True, user_id=actor_user_id),
+        ).exists():
+            return ServiceResponse.forbidden('You can only update a table you are serving')
+        has_ticket = active.exists()
+        if (status == 'OCCUPIED') != has_ticket:
+            return ({'success': False, 'code': 'TABLE_STATE_CONFLICT',
+                     'message': 'Table status must match its active tickets.'}, 409)
+        table.status = status
+        table.save(update_fields=['status'])
+        return ServiceResponse.success(data={'id': table.pk, 'number': table.number, 'status': table.status})

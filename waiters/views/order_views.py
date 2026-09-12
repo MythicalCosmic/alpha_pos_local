@@ -5,17 +5,15 @@ from base.helpers.request import parse_json_body, validate_pagination, coerce_qu
 from base.helpers.response import json_response
 from base.security.auth import login_required, role_required
 from base.security.audit import audit
-from base.security.idempotency import idempotent
+from base.security.atomic_command import atomic_command
+from base.services.waiter_policy import waiter_permission
 from base.security.rate_limit import rate_limit, rate_limit_by
 from base.models import AuditLog
+from base.services.branch_scope import resolve_actor_branch
 from waiters.services.order_service import WaiterOrderService
 
-# Routes under /api/waiters/ are reachable with any valid session token —
-# WaiterAuthService refuses non-WAITER at login, but a USER or CASHIER
-# session minted by a sibling auth endpoint authenticates here just as
-# well. Pin every mutation to WAITER or ADMIN so a stolen USER token can't
-# create / cancel / modify orders or flip table state through this surface.
-WAITER_ROLES = ('WAITER', 'ADMIN')
+# This is the personal waiter surface. Managers use the shared POS/admin APIs.
+WAITER_ROLES = ('WAITER',)
 
 
 @csrf_exempt
@@ -39,7 +37,8 @@ def my_orders(request):
 @require_POST
 @login_required
 @role_required(*WAITER_ROLES)
-@idempotent('orders.create')
+@waiter_permission('order.create')
+@atomic_command('waiter.orders.create')
 def create_order(request):
     data, error = parse_json_body(request)
     if error:
@@ -78,6 +77,8 @@ def get_order(request, order_id):
 @require_POST
 @login_required
 @role_required(*WAITER_ROLES)
+@waiter_permission('order.update')
+@atomic_command('waiter.orders.add_item')
 def add_item(request, order_id):
     data, error = parse_json_body(request)
     if error:
@@ -110,6 +111,7 @@ def add_item(request, order_id):
 @require_http_methods(["PATCH"])
 @login_required
 @role_required(*WAITER_ROLES)
+@waiter_permission('order.update')
 def update_item(request, order_id, item_id):
     data, error = parse_json_body(request)
     if error:
@@ -133,6 +135,7 @@ def update_item(request, order_id, item_id):
 @require_http_methods(["DELETE"])
 @login_required
 @role_required(*WAITER_ROLES)
+@waiter_permission('order.update')
 def remove_item(request, order_id, item_id):
     result, status_code = WaiterOrderService.remove_item(
         order_id, item_id, waiter_user_id=request.user.id,
@@ -144,6 +147,7 @@ def remove_item(request, order_id, item_id):
 @require_POST
 @login_required
 @role_required(*WAITER_ROLES)
+@waiter_permission('order.update')
 def mark_ready(request, order_id):
     result, status_code = WaiterOrderService.mark_ready(order_id, waiter_user_id=request.user.id)
     return JsonResponse(result, status=status_code)
@@ -153,6 +157,7 @@ def mark_ready(request, order_id):
 @require_POST
 @login_required
 @role_required(*WAITER_ROLES)
+@waiter_permission('order.update')
 def request_payment(request, order_id):
     result, status_code = WaiterOrderService.request_payment(
         order_id, waiter_user_id=request.user.id,
@@ -164,7 +169,8 @@ def request_payment(request, order_id):
 @require_POST
 @login_required
 @role_required(*WAITER_ROLES)
-@idempotent('orders.cancel')
+@waiter_permission('order.cancel')
+@atomic_command('waiter.orders.cancel')
 def cancel_order(request, order_id):
     result, status_code = WaiterOrderService.cancel_order(order_id, waiter_user_id=request.user.id)
     if result.get('success'):
@@ -183,7 +189,7 @@ def cancel_order(request, order_id):
 @login_required
 @role_required(*WAITER_ROLES)
 def places(request):
-    result, status_code = WaiterOrderService.list_places()
+    result, status_code = WaiterOrderService.list_places(branch_id=resolve_actor_branch(request.user))
     return JsonResponse(result, status=status_code)
 
 
@@ -194,15 +200,14 @@ def places(request):
 def tables(request):
     place_id = request.GET.get('place_id')
     if place_id:
-        try:
-            place_id = int(place_id)
-        except (TypeError, ValueError):
+        place_id = coerce_positive_id(place_id)
+        if place_id is None:
             return json_response(({
                 "success": False,
                 "message": "place_id must be an integer",
             }, 400))
 
-    result, status_code = WaiterOrderService.list_tables(place_id=place_id)
+    result, status_code = WaiterOrderService.list_tables(place_id=place_id, branch_id=resolve_actor_branch(request.user))
     return JsonResponse(result, status=status_code)
 
 
@@ -210,6 +215,7 @@ def tables(request):
 @require_http_methods(["PATCH"])
 @login_required
 @role_required(*WAITER_ROLES)
+@waiter_permission('order.update')
 def table_status(request, table_id):
     data, error = parse_json_body(request)
     if error:
@@ -227,6 +233,9 @@ def table_status(request, table_id):
         table_id, status,
         actor_user_id=request.user.id, actor_role=request.user.role,
     )
+    if result.get('success'):
+        audit(request, AuditLog.Action.TABLE_STATUS_UPDATE, target_type='Table',
+              target_id=table_id, metadata={'status': status})
     return JsonResponse(result, status=status_code)
 
 
@@ -234,6 +243,8 @@ def table_status(request, table_id):
 @require_POST
 @login_required
 @role_required(*WAITER_ROLES)
+@waiter_permission('discount.apply')
+@atomic_command('orders.discount.apply', required=lambda r: r.user.role == 'WAITER')
 def apply_discount(request, order_id):
     data, error = parse_json_body(request)
     if error:
@@ -254,6 +265,8 @@ def apply_discount(request, order_id):
 @require_POST
 @login_required
 @role_required(*WAITER_ROLES)
+@waiter_permission('discount.apply')
+@atomic_command('orders.discount.remove', required=lambda r: r.user.role == 'WAITER')
 def remove_discount(request, order_id):
     data, error = parse_json_body(request)
     if error:
@@ -264,9 +277,8 @@ def remove_discount(request, order_id):
     order_discount_id = data.get('order_discount_id')
     if order_discount_id is not None:
         # Coerce so a non-numeric id returns 422 instead of a 500 from the PK lookup.
-        try:
-            order_discount_id = int(order_discount_id)
-        except (TypeError, ValueError):
+        order_discount_id = coerce_positive_id(order_discount_id)
+        if order_discount_id is None:
             return json_response(({
                 "success": False,
                 "message": "Invalid order_discount_id",
@@ -289,6 +301,7 @@ def remove_discount(request, order_id):
     'discount_secret_word_order', 5, 300,
     lambda r: r.resolver_match.kwargs.get('order_id') if r.resolver_match else None,
 )
+@waiter_permission('discount.apply')
 def check_secret_word(request, order_id):
     data, error = parse_json_body(request)
     if error:

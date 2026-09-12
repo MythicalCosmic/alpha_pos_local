@@ -25,7 +25,11 @@ def surface(request, regular_user, cashier_user):
     if package == 'waiters':
         actor = regular_user
         actor.role = 'WAITER'
-        actor.save(update_fields=['role'])
+        actor.permissions = ['order.create', 'order.update']
+        actor.save(update_fields=['role', 'permissions'])
+        from base.models import AppSettings
+        AppSettings.objects.update_or_create(pk=1, defaults={'waiter_enabled': True})
+        module = importlib.import_module('customers.services.order_service')
     else:
         from core.shifts.service import ShiftService
         result, status = ShiftService.start_shift(actor.id)
@@ -49,7 +53,7 @@ def test_create_rejects_total_overflow_without_side_effects(surface, product, mo
         pytest.fail('Rejected order reached stock writes')
     monkeypatch.setattr(module, '_apply_order_stock_transition', forbidden)
     before = _state()
-    kwargs = {'user_id': actor.id, 'items': [{'product_id': product.id, 'quantity': 2}]}
+    kwargs = {'user_id': actor.id, 'order_type': 'PICKUP', 'items': [{'product_id': product.id, 'quantity': 2}]}
     if package != 'waiters':
         kwargs['cashier_id'] = actor.id
     if package == 'admins':

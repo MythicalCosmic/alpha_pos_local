@@ -12,7 +12,7 @@ def create_order_request(request):
     if not isinstance(data, dict):
         return None, ({"success": False, "message": "Expected JSON object"}, 400)
 
-    for field in ('customer_id', 'delivery_person_id'):
+    for field in ('customer_id', 'delivery_person_id', 'place_id', 'table_id'):
         if field not in data:
             continue
         if data[field] is None or data[field] == '':

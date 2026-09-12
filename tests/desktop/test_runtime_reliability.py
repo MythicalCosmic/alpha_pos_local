@@ -118,7 +118,8 @@ def test_frozen_build_never_falls_back_when_postgres_binaries_are_missing(
         monkeypatch):
     monkeypatch.setattr(pg_embedded.sys, 'frozen', True, raising=False)
     monkeypatch.setattr(pg_embedded, '_binaries_dir', lambda: None)
-    monkeypatch.delenv('DB_HOST', raising=False)
+    for key in ('DB_ENGINE', 'DB_NAME', 'DB_USER', 'DB_PASSWORD', 'DB_HOST', 'DB_PORT'):
+        monkeypatch.delenv(key, raising=False)
     with pytest.raises(pg_embedded.EmbeddedPostgresError, match='binaries are missing'):
         pg_embedded.start()
     assert 'binaries are missing' in pg_embedded.migration_status()['error']
@@ -159,8 +160,8 @@ def test_tcp_listener_cannot_spoof_embedded_postgres_readiness(monkeypatch, tmp_
     ])
     monkeypatch.setattr(pg_embedded, '_configured_embedded', False)
     monkeypatch.setattr(pg_embedded, '_started', False)
-    monkeypatch.delenv('DB_HOST', raising=False)
-    monkeypatch.delenv('DB_PORT', raising=False)
+    for key in ('DB_ENGINE', 'DB_NAME', 'DB_USER', 'DB_PASSWORD', 'DB_HOST', 'DB_PORT'):
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(pg_embedded, '_binaries_dir', lambda: tmp_path)
     monkeypatch.setattr(pg_embedded, '_data_dir', lambda: data)
     monkeypatch.setattr(pg_embedded, '_legacy_data_candidates', lambda _canonical: ())

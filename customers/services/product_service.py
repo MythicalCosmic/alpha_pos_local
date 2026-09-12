@@ -34,7 +34,7 @@ class CustomerProductService:
     @staticmethod
     def get_all_products(page=1, per_page=20, search=None, category_ids=None,
                          order_by='-created_at', popular=True):
-        queryset = ProductRepository.model.objects.select_related('category').filter(is_deleted=False)
+        queryset = ProductRepository.model.objects.select_related('category').filter(is_deleted=False, category__is_deleted=False, category__status='ACTIVE')
 
         if search:
             queryset = ProductRepository.search(queryset, search)
@@ -75,7 +75,7 @@ class CustomerProductService:
     @staticmethod
     def get_products_by_category(category_id):
         category = CategoryRepository.get_by_id(category_id)
-        if not category:
+        if not category or category.status != 'ACTIVE':
             return ServiceResponse.not_found("Category not found")
 
         products = ProductRepository.get_by_category_id(category_id).select_related('category').order_by('name')
@@ -91,7 +91,7 @@ class CustomerProductService:
     @staticmethod
     def get_product_by_id(product_id):
         product = ProductRepository.get_by_id_cached(product_id)
-        if not product:
+        if not product or not product.category or product.category.is_deleted or product.category.status != 'ACTIVE':
             return ServiceResponse.not_found("Product not found")
 
         return ServiceResponse.success(data={'product': _serialize_product(product)})
