@@ -106,6 +106,18 @@ def _serialize_order_detail(order):
             }
         )
 
+    discounts = [
+        {
+            "id": applied.id,
+            "code": applied.discount_code,
+            "name": applied.discount.name,
+            "amount": str(applied.discount_amount),
+        }
+        for applied in order.applied_discounts.filter(
+            is_deleted=False,
+        ).select_related("discount")
+    ]
+
     return {
         "id": order.id,
         "display_id": order.display_id,
@@ -148,7 +160,10 @@ def _serialize_order_detail(order):
             if order.payment_requested_at
             else None
         ),
+        "subtotal": str(order.subtotal),
+        "discount_amount": str(order.discount_amount),
         "total_amount": str(order.total_amount),
+        "discounts": discounts,
         "items": items,
         "items_ready_count": sum(1 for i in items if i["is_ready"]),
         "items_total_count": len(items),
@@ -214,7 +229,7 @@ class WaiterOrderService:
 
     @staticmethod
     def create_order(user_id, items, place_id=None, table_id=None, order_type="HALL",
-                     phone_number=None, description=None):
+                     phone_number=None, description=None, delivery_address=None):
         if not UserRepository.exists(id=user_id, role='WAITER'):
             return ServiceResponse.not_found('Waiter not found')
         if not isinstance(items, list) or not items:
@@ -236,7 +251,7 @@ class WaiterOrderService:
             references[name] = parsed
         return CustomerOrderService.create_order(
             user_id=user_id, items=cleaned, order_type=order_type, phone_number=phone_number,
-            description=description, **references,
+            description=description, delivery_address=delivery_address, **references,
         )
 
     @staticmethod
@@ -311,10 +326,10 @@ class WaiterOrderService:
         )
 
     @staticmethod
-    def cancel_order(order_id, waiter_user_id):
+    def cancel_order(order_id, waiter_user_id, reason=None):
         return CustomerOrderService.update_order_status(
             order_id, 'CANCELED', user_id=waiter_user_id, user_role='WAITER',
-            reason='Canceled from waiter app',
+            reason=(reason or '').strip() or 'Canceled from waiter app',
         )
 
     @staticmethod

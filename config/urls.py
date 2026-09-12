@@ -15,6 +15,7 @@ from django.urls import path, include
 from base.services.sync.views import get_sync_urls
 from notifications.views import qr_order_views
 from desktop.version import __version__
+from waiters import webapp as waiter_webapp
 
 
 def healthz(_request):
@@ -28,6 +29,9 @@ def healthz(_request):
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('healthz', healthz),
+    path('waiter/sw.js', waiter_webapp.service_worker, name='waiter-service-worker'),
+    path('waiter/', waiter_webapp.index, name='waiter-webapp'),
+    path('waiter/<path:route>', waiter_webapp.index, name='waiter-webapp-route'),
     path('api/waiters/', include('waiters.urls')),
     # Cashbox (drawer) expenses — money paid OUT of the active shift's drawer.
     # Same core views as the server's api/admins/cashbox/, but the till runs them

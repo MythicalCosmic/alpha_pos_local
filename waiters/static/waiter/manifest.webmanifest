@@ -1,0 +1,17 @@
+{
+  "name": "Alpha Waiter",
+  "short_name": "Waiter",
+  "description": "Alpha POS waiter workspace",
+  "id": "/waiter/",
+  "start_url": "/waiter/",
+  "scope": "/waiter/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f2eee3",
+  "theme_color": "#123f35",
+  "icons": [
+    { "src": "/static/waiter/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/static/waiter/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
+

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Alpha Waiter">
+  <rect width="512" height="512" rx="112" fill="#123f35"/>
+  <path d="M128 116h256v292H128z" fill="#f8f5ed"/>
+  <path d="M164 172h184M164 226h184M164 280h116" fill="none" stroke="#123f35" stroke-width="24" stroke-linecap="round"/>
+  <circle cx="328" cy="334" r="56" fill="#e7a928"/>
+  <path d="M304 334h48M328 310v48" fill="none" stroke="#123f35" stroke-width="18" stroke-linecap="round"/>
+</svg>
+

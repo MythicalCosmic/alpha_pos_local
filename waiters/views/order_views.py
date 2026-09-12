@@ -60,6 +60,7 @@ def create_order(request):
         order_type=data.get('order_type', 'HALL'),
         phone_number=data.get('phone_number'),
         description=data.get('description'),
+        delivery_address=data.get('delivery_address'),
     )
     return JsonResponse(result, status=status_code)
 
@@ -172,14 +173,30 @@ def request_payment(request, order_id):
 @waiter_permission('order.cancel')
 @atomic_command('waiter.orders.cancel')
 def cancel_order(request, order_id):
-    result, status_code = WaiterOrderService.cancel_order(order_id, waiter_user_id=request.user.id)
+    data, error = parse_json_body(request)
+    if error:
+        return json_response(error)
+    reason = data.get('reason', '')
+    if not isinstance(reason, str) or len(reason.strip()) > 255:
+        return json_response(({
+            "success": False,
+            "message": "Invalid cancellation reason",
+            "errors": {"reason": "reason must be text up to 255 characters"},
+        }, 422))
+
+    reason = reason.strip() or 'Canceled from waiter app'
+    result, status_code = WaiterOrderService.cancel_order(
+        order_id,
+        waiter_user_id=request.user.id,
+        reason=reason,
+    )
     if result.get('success'):
         audit(
             request,
             AuditLog.Action.ORDER_CANCEL,
             target_type='Order',
             target_id=order_id,
-            metadata={'role': 'WAITER'},
+            metadata={'role': 'WAITER', 'reason': reason},
         )
     return JsonResponse(result, status=status_code)
 
