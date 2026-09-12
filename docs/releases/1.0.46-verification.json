@@ -1,0 +1,66 @@
+{
+  "version": "1.0.46",
+  "source_revisions": {
+    "desktop": "51ff19986e699f802bb31cb5960a1a67572ba9c4",
+    "desktop_core": "e0b4c5ff3ce6ee1e58732c27fde7d0e982f61855",
+    "waiter_frontend": "257056323509da2744e69b07464fdebb57b660e9"
+  },
+  "schema": {
+    "migrations_added": [],
+    "cloud_deployment_required": false
+  },
+  "validation": {
+    "frontend_tests": 6,
+    "frontend_test_files": 2,
+    "typescript": "passed",
+    "vite_production_build": "passed",
+    "npm_audit_vulnerabilities": 0,
+    "npm_audit_dependencies": 207,
+    "focused_backend_tests": 5,
+    "broader_regression_tests": 118,
+    "broader_regression_skips": 2,
+    "django_system_check": "passed",
+    "frozen_windows_selftest": "SELFTEST OK",
+    "core_runtime_source_files_verified": 453,
+    "waiter_bundle_files_verified": 32,
+    "waiter_archive_files_verified": 32,
+    "private_configuration_files": []
+  },
+  "artifacts": {
+    "installer": {
+      "name": "AlphaPOS-1.0.46-Setup.exe",
+      "bytes": 80153691,
+      "sha256": "11d755248dd8eb48d4737dd47f2e93cb208621b2df98b99ebcef929e54d7309c",
+      "url": "https://control.78.111.91.113.nip.io/updates/installers/AlphaPOS-1.0.46-Setup.exe"
+    },
+    "signed_target": {
+      "name": "AlphaPOS-1.0.46.tar.gz",
+      "bytes": 112038062,
+      "sha256": "23c033a839142bcd5796d42a40b850a1e3a19f5b4f06bd47b054145bf0997cfd",
+      "url": "https://control.78.111.91.113.nip.io/updates/targets/AlphaPOS-1.0.46.tar.gz"
+    }
+  },
+  "signed_metadata": {
+    "root": 1,
+    "targets": 7,
+    "snapshot": 7,
+    "timestamp": 7,
+    "root_unchanged": true,
+    "existing_metadata_v6_to_v7": "passed",
+    "signature_and_full_download_verified": true
+  },
+  "publication": {
+    "control_server": "published",
+    "metadata_backup": "/srv/alpha_pos_updates/.history/release-1.0.46-20260913",
+    "canonical_local_repository_synced": true,
+    "github_branch": "release/desktop-1.0.46",
+    "github_tag": "v1.0.46",
+    "github_release": "https://github.com/MythicalCosmic/alpha_pos_local/releases/tag/v1.0.46",
+    "waiter_source_repository": "https://github.com/MythicalCosmic/alpha-pos-waiter-app"
+  },
+  "remaining_field_checks": [
+    "fresh native Windows installation",
+    "restaurant phone-browser visual inspection",
+    "restaurant peripherals and operational canary"
+  ]
+}
