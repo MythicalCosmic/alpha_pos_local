@@ -108,6 +108,8 @@ export interface LicenseInfo {
 }
 
 export interface UpdateStatus {
+  /** 'shell' when the Tauri desktop app installs updates itself. */
+  managed_by?: 'shell';
   version?: string;
   enabled?: boolean;
   reason?: string;

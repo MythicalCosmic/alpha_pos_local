@@ -328,6 +328,7 @@ const ru: Record<keyof typeof en, string> = {
   "upd.current": "Эта установка",
   "upd.dev": "Запуск из исходников",
   "upd.disabledMode": "Обновления отключены",
+  "upd.shellMode": "Автоматически (приложение)",
   "upd.history": "История обновлений",
   "upd.installNow": "Установить",
   "upd.installed": "Установленное приложение",

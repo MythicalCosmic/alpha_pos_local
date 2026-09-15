@@ -27,6 +27,7 @@ export default function Updates() {
     else if (r.busy) toast(t('upd.checking'), 'info');
     else if (r.available && r.available !== u?.version) toast(t('upd.newAvailable'), 'info');
     else if (r.enabled !== false) toast(t('upd.upToDate'), 'ok');
+    else if (u?.managed_by === 'shell') toast(t('upd.shellMode'), 'info');
     else toast(r.reason || t('upd.disabledMode'), 'warn');
   };
 
@@ -68,7 +69,7 @@ export default function Updates() {
                       <div class="big mono">{d.version ? `v${d.version}` : '—'}</div>
                     </div>
                     <KeyValue>
-                      <KV label={t('upd.mode')}>{t(!d.frozen ? 'upd.dev' : d.enabled === false ? 'upd.disabledMode' : 'upd.installed')}</KV>
+                      <KV label={t('upd.mode')}>{t(d.managed_by === 'shell' ? 'upd.shellMode' : !d.frozen ? 'upd.dev' : d.enabled === false ? 'upd.disabledMode' : 'upd.installed')}</KV>
                       <KV label={t('upd.server')} mono dim={!d.update_url}>{d.update_url || t('common.none')}</KV>
                       <KV label={t('upd.availableV')} mono>{d.available ? `v${d.available}` : t('upd.upToDate')}</KV>
                     </KeyValue>
@@ -106,7 +107,7 @@ export default function Updates() {
               <Button variant="primary" loading={busy === 'restart'} disabled={!!busy || !(u?.pending || newer)} onClick={() => void restart()}>
                 {t('upd.restart')}
               </Button>
-            ) : (
+            ) : u?.managed_by === 'shell' ? null : (
               <Button variant="primary" icon={<IconDownload size={14} />} loading={busy === 'install'} disabled={!!busy || !!u?.active || !newer} onClick={() => void install()}>
                 {t(u?.active ? 'upd.installing' : 'upd.installNow')}
               </Button>

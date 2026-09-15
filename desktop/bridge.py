@@ -587,8 +587,14 @@ class Api:
         updates are enabled, the configured server, pending state, and the
         recorded last-check / last-update / available-version / history."""
         self._ensure_update_env()
+        import os
         from desktop import updater
-        return {'ok': True, **updater.get_status_info()}
+        info = {'ok': True, **updater.get_status_info()}
+        shell_version = os.environ.get('ALPHA_POS_SHELL_VERSION', '').strip()
+        if shell_version:
+            # The Tauri desktop app downloads, installs and confirms updates.
+            info.update(managed_by='shell', shell_version=shell_version)
+        return info
 
     @_safe
     def check_updates_only(self):

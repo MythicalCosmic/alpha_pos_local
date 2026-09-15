@@ -327,6 +327,7 @@ const en = {
   "upd.current": "This install",
   "upd.dev": "Running from source",
   "upd.disabledMode": "Updates disabled",
+  "upd.shellMode": "Automatic (desktop app)",
   "upd.history": "Update history",
   "upd.installNow": "Install now",
   "upd.installed": "Installed app",

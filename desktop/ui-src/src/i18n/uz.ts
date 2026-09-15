@@ -328,6 +328,7 @@ const uz: Record<keyof typeof en, string> = {
   "upd.current": "Ushbu o‘rnatma",
   "upd.dev": "Manbadan ishlamoqda",
   "upd.disabledMode": "Yangilanishlar o‘chirilgan",
+  "upd.shellMode": "Avtomatik (ilova)",
   "upd.history": "Yangilanishlar tarixi",
   "upd.installNow": "O‘rnatish",
   "upd.installed": "O‘rnatilgan ilova",

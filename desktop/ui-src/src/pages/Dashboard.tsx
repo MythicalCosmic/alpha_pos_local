@@ -329,7 +329,7 @@ function UpdatesTile() {
         {(u) => (
           <KeyValue>
             <KV label={t('upd.version')} mono>{u.version ? `v${u.version}` : '—'}</KV>
-            <KV label={t('upd.mode')}>{t(!u.frozen ? 'upd.dev' : u.enabled === false ? 'upd.disabledMode' : 'upd.installed')}</KV>
+            <KV label={t('upd.mode')}>{t(u.managed_by === 'shell' ? 'upd.shellMode' : !u.frozen ? 'upd.dev' : u.enabled === false ? 'upd.disabledMode' : 'upd.installed')}</KV>
           </KeyValue>
         )}
       </QueryBoundary>

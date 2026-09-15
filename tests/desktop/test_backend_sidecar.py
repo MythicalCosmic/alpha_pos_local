@@ -226,3 +226,18 @@ def test_backend_spec_is_windowless_console_without_gui_or_updater():
         assert forbidden not in code
     assert "'webview'" in spec and "'tufup'" in spec  # explicitly excluded
     assert "('desktop/ui', 'desktop/ui')" in spec
+
+
+def test_update_status_reports_updates_managed_by_the_shell(monkeypatch):
+    from desktop import updater
+    from desktop.bridge import Api
+    monkeypatch.setattr(updater, 'get_status_info', lambda: {'version': '1.1.0', 'enabled': False})
+    monkeypatch.setattr(Api, '_ensure_update_env', lambda self: None)
+
+    monkeypatch.delenv('ALPHA_POS_SHELL_VERSION', raising=False)
+    assert 'managed_by' not in Api().update_status()
+
+    monkeypatch.setenv('ALPHA_POS_SHELL_VERSION', '1.1.0')
+    status = Api().update_status()
+    assert status['managed_by'] == 'shell' and status['shell_version'] == '1.1.0'
+
