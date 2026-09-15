@@ -286,13 +286,18 @@ def test_waiter_attendance_follows_shift_not_login_session(waiter, django_captur
 
 def test_refund_of_yesterdays_sale_does_not_make_paid_count_negative(waiter, product):
     from base.models import OrderRefund
+    from base.services.business_day import business_date, day_window
+    # Anchor to operating-day windows, not the wall clock: between 03:00 and
+    # 07:00 local time "now" is in the quiet gap that stats deliberately exclude.
+    today_start, _ = day_window(business_date())
     order = create(waiter, product)
     Order.objects.filter(pk=order.pk).update(status='CANCELED', is_paid=True,
-        paid_at=timezone.now() - timedelta(days=1))
-    shift = Shift.objects.create(user=waiter, status='ENDED', start_time=timezone.now()-timedelta(hours=1),
-                                  end_time=timezone.now(), branch_id=order.branch_id)
+        paid_at=today_start - timedelta(days=1) + timedelta(hours=1))
+    refunded_at = today_start + timedelta(hours=1)
+    shift = Shift.objects.create(user=waiter, status='ENDED', start_time=refunded_at - timedelta(hours=1),
+                                  end_time=refunded_at, branch_id=order.branch_id)
     OrderRefund.objects.create(order=order, shift=shift, cashier=waiter,
-        amount=10, cash_amount=10, drawer_cash_amount=10, refunded_at=timezone.now(),
+        amount=10, cash_amount=10, drawer_cash_amount=10, refunded_at=refunded_at,
         source='ORDER_CANCEL', source_id=f'order-cancel:{order.uuid}', branch_id=order.branch_id)
     result, status = WaiterService.get_stats(waiter.pk)
     assert status == 200
