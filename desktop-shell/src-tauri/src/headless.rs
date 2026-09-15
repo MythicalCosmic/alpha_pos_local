@@ -18,6 +18,8 @@ const SERVING_TIMEOUT: Duration = Duration::from_secs(300);
 pub enum Mode {
     Smoke,
     Serve(u64),
+    /// Hand a verified staged update to the guard (support / end-to-end tests).
+    InstallStaged,
 }
 
 pub fn parse(args: &[String]) -> Option<Mode> {
@@ -25,6 +27,7 @@ pub fn parse(args: &[String]) -> Option<Mode> {
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--headless-smoke" => return Some(Mode::Smoke),
+            "--headless-install-staged" => return Some(Mode::InstallStaged),
             "--headless-serve" => {
                 let seconds = iter.next().and_then(|v| v.parse().ok()).unwrap_or(60);
                 return Some(Mode::Serve(seconds));
@@ -49,6 +52,23 @@ fn log(message: &str) {
 
 pub fn run(mode: Mode) -> i32 {
     log(&format!("headless {mode:?} started"));
+    if mode == Mode::InstallStaged {
+        let data_dir = backend::data_dir();
+        let Some(staged) = crate::updates::installable_staged(&data_dir) else {
+            log("no verified, newer staged update to install");
+            return 6;
+        };
+        return match crate::updates::launch_guard(&data_dir, &staged) {
+            Ok(()) => {
+                log(&format!("guard started for {}", staged.version));
+                0
+            }
+            Err(error) => {
+                log(&format!("guard launch failed: {error}"));
+                7
+            }
+        };
+    }
     let started = Instant::now();
     let mut backend = match Backend::spawn() {
         Ok(backend) => backend,

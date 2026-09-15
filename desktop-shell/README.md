@@ -49,6 +49,34 @@ the backend is 16.6.
   the shell terminates the job after 35 s.
 - Panel calls go through the `backend_call` command → `POST /api/<method>`.
 
+## Updates (Discord-style, never mid-shift)
+
+1. Before the backend starts, `update_policy::decide()` runs:
+   a 1.0.x `update_pending.flag` or a `--post-update` launch skips updates;
+   a verified, newer, not-blocked installer in `DATA\update\staged` installs now;
+   otherwise `latest.json` is checked within 4 s (offline → start normally).
+2. A newer release downloads on the splash (signature verified by
+   `tauri-plugin-updater`). If the ETA after 2 s is ≤ 20 s it installs right
+   away; otherwise the POS starts and the download finishes in the background,
+   installing on the next launch or via tray **Restart to update**.
+3. Installing copies `bin\alphapos-update-guard.exe` to `DATA\update\guard\`,
+   starts it detached and exits. The guard re-verifies the signature, stops
+   anything running from the install folder, runs the NSIS installer
+   `/P /UPDATE /D=<install dir>`, checks `version.txt`, relaunches with
+   `--post-update <ver>` and waits ≤ 180 s for `DATA\update\confirmed-<ver>.ok`
+   (written once the backend serves). On failure it blocks the version in
+   `DATA\update\shell-update-state.json`, records the rollback and reinstalls
+   the last-known-good installer when one is available.
+4. A background check every 6 h only downloads and stages.
+
+Release: build with `tauri.release.conf.json` (bundles the backend onedir and
+the guard, creates `*-setup.exe.sig` with `TAURI_SIGNING_PRIVATE_KEY[_PASSWORD]`
+from `update_keys/`), then `python tools/make_latest_json.py` and publish the
+installer, its `.sig`, then `updates/tauri/stable/latest.json` last.
+
+Support/CI entry points: `AlphaPOS.exe --headless-smoke`,
+`--headless-serve <seconds>`, `--headless-install-staged`.
+
 ## NSIS findings (tauri-bundler 2.9.4 template)
 
 - `installMode: currentUser` defaults `$INSTDIR` to `$LOCALAPPDATA\<productName>`
