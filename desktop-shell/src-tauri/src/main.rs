@@ -6,6 +6,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backend;
+mod headless;
+mod migration;
 #[cfg(windows)]
 mod job;
 
@@ -89,7 +91,16 @@ fn confirm_quit() -> bool {
     true
 }
 
+/// The mutex name used by the 1.0.x launcher and Inno Setup `AppMutex`.
+#[cfg(windows)]
+fn legacy_single_instance_mutex() -> windows_sys::Win32::Foundation::HANDLE {
+    let name: Vec<u16> = "Global\\AlphaPOS_SingleInstance_v1".encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe { windows_sys::Win32::System::Threading::CreateMutexW(std::ptr::null(), 0, name.as_ptr()) }
+}
+
 fn boot(app: AppHandle) {
+    // A 1.0.x update helper may be waiting for this launch to confirm health.
+    let handshake = migration::LegacyHandshake::detect();
     set_splash(&app, "Starting Alpha POS…", Some(5));
     let mut backend = match backend::Backend::spawn() {
         Ok(backend) => backend,
@@ -100,6 +111,7 @@ fn boot(app: AppHandle) {
     };
 
     let deadline = Instant::now() + SERVING_WAIT;
+    let mut serving = false;
     loop {
         if backend.exited().is_some() {
             set_splash(&app, "The POS backend stopped unexpectedly. Please reopen Alpha POS.", None);
@@ -107,6 +119,7 @@ fn boot(app: AppHandle) {
         }
         if let Ok(snapshot) = backend.lifecycle() {
             if snapshot.phase.is_serving() {
+                serving = true;
                 break;
             }
             let (text, progress) = phase_text(snapshot.phase);
@@ -132,6 +145,9 @@ fn boot(app: AppHandle) {
         Ok(_) => {
             if let Some(splash) = app.get_webview_window(SPLASH) {
                 let _ = splash.close();
+            }
+            if serving {
+                handshake.confirm_serving();
             }
         }
         Err(error) => set_splash(&app, &format!("Could not open the panel: {error}"), None),
@@ -180,6 +196,17 @@ async fn backend_call(shell: State<'_, Shell>, method: String, args: Option<Vec<
 }
 
 fn main() {
+    // CI/support verification: no windows, no tray, no single-instance lock.
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(mode) = headless::parse(&args) {
+        std::process::exit(headless::run(mode));
+    }
+
+    // Held for the whole process: the 1.0.x installer (AppMutex) and any stray
+    // old launcher recognise a running Alpha POS by this name.
+    #[cfg(windows)]
+    let _legacy_mutex = legacy_single_instance_mutex();
+
     let app = tauri::Builder::default()
         // Must be the first plugin: a second launch only focuses this window.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| focus_existing(app)))

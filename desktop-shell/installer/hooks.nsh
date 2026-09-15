@@ -47,6 +47,8 @@
   ${If} $INSTDIR == "$LOCALAPPDATA\${PRODUCTNAME}"
     StrCpy $INSTDIR "${ALPHAPOS_LEGACY_DIR}"
     SetOutPath $INSTDIR
+    ; The template already created the default folder; remove it if empty.
+    RMDir "$LOCALAPPDATA\${PRODUCTNAME}"
   ${EndIf}
 
   !insertmacro ALPHAPOS_STOP_EVERYTHING
@@ -69,6 +71,7 @@
   Delete "$SMPROGRAMS\Alpha POS\Uninstall Alpha POS.lnk"
 
   ; --- Start with Windows so the POS is up after every reboot ---
+  CreateDirectory "$SMSTARTUP"
   CreateShortCut "$SMSTARTUP\Alpha POS.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
 
   ; --- LAN access for waiter tablets / terminals (best effort without admin) ---
