@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Alpha POS</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f7f8f7; --text: #17211c; --muted: #5d6b63; --accent: #1e6b4c; --track: #dfe5e1; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #141a17; --text: #eef2ef; --muted: #9aa8a0; --accent: #3fae80; --track: #26302b; } }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13px "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; user-select: none; }
+  main { height: 100%; display: grid; place-content: center; gap: 18px; padding: 0 36px; text-align: center; }
+  h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
+  p { margin: 0; color: var(--muted); min-height: 1.4em; }
+  .bar { width: 280px; height: 4px; border-radius: 2px; background: var(--track); overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s linear; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Alpha POS</h1>
+  <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"><i id="progress"></i></div>
+  <p id="status">Starting…</p>
+</main>
+</body>
+</html>

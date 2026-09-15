@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Splash and panel windows may only use the shell's own commands.",
+  "windows": ["splash", "main"],
+  "permissions": ["core:event:default"]
+}

@@ -1,0 +1,11 @@
+[package]
+name = "alphapos-shell-core"
+description = "Platform-neutral decisions for the Alpha POS desktop shell"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
