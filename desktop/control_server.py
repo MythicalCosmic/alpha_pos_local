@@ -138,13 +138,11 @@ class Handler(BaseHTTPRequestHandler):
             cache_control=cache, headers=headers,
         )
 
-    # Static assets used by the fully local, precompiled panel.  Source JSX is
-    # kept available for development diagnostics, but production loads only the
-    # generated app.bundle.js and never runs a browser-side compiler.
+    # Static assets of the fully local panel: the committed Vite build in
+    # desktop/ui (sources live in desktop/ui-src). Nothing is compiled at runtime.
     _CTYPES = {
         '.css': 'text/css; charset=utf-8',
         '.js': 'application/javascript; charset=utf-8',
-        '.jsx': 'text/babel; charset=utf-8',
         '.json': 'application/json; charset=utf-8',
         '.map': 'application/json; charset=utf-8',
         '.svg': 'image/svg+xml',

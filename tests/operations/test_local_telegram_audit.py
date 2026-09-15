@@ -809,13 +809,19 @@ def test_shift_document_http_is_direct_utf8_attachment(monkeypatch, tmp_path):
 
 
 def test_local_audit_polling_cannot_overwrite_dirty_form_source():
-    source = Path('desktop/ui/app/screens-admin.jsx').read_text(encoding='utf-8')
-    status_update = source.index('setStatus(r);', source.index('function LocalTelegramAuditScreen'))
+    source = Path('desktop/ui-src/src/pages/LocalAudit.tsx').read_text(encoding='utf-8')
+    apply_status = source.index(
+        'const applyStatus = useCallback(',
+        source.index('export default function LocalAudit'),
+    )
     hydration_guard = source.index(
         'if (hydrated.current && !forceHydrate) return;',
-        status_update,
+        apply_status,
     )
-    form_update = source.index('setForm((old)', hydration_guard)
-    assert status_update < hydration_guard < form_update
+    form_update = source.index('setForm(formFromStatus(r));', hydration_guard)
+    assert apply_status < hydration_guard < form_update
+    # Background polls feed the guard without forcing hydration; only an
+    # explicit save/discard re-hydrates the form.
+    assert 'applyStatus(q.data, false)' in source
     assert 'setDirty(true);' in source
     assert 'applyStatus(r, true)' in source

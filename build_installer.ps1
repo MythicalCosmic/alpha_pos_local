@@ -128,16 +128,23 @@ if (-not (Test-Path (Join-Path $root 'alpha_pos_core\pyproject.toml'))) {
 & $py -m pip install --quiet --no-deps --force-reinstall (Join-Path $root 'alpha_pos_core')
 if ($LASTEXITCODE -ne 0) { throw "core install failed ($LASTEXITCODE)" }
 
-Write-Host '== 1/5  Precompiling desktop UI ==' -ForegroundColor Cyan
-$nodeCommand = Get-Command node -ErrorAction SilentlyContinue
-if (-not $nodeCommand) {
-    throw "Node.js is required to precompile the desktop UI. Install Node.js, then rerun the build."
+Write-Host '== 1/5  Building desktop control panel UI ==' -ForegroundColor Cyan
+# Preact + Vite sources live in desktop\ui-src; the build writes desktop\ui
+# (committed) plus build-manifest.json and enforces the size budgets.
+$npmCommand = Get-Command npm -ErrorAction SilentlyContinue
+if (-not $npmCommand) {
+    throw "Node.js (with npm) is required to build the desktop UI. Install Node.js LTS, then rerun the build."
 }
-$node = $nodeCommand.Source
-& $node 'tools\compile_desktop_ui.js'
-if ($LASTEXITCODE -ne 0) { throw "desktop UI compilation failed ($LASTEXITCODE)" }
-& $node 'tools\compile_desktop_ui.js' '--check'
-if ($LASTEXITCODE -ne 0) { throw "desktop UI bundle freshness check failed ($LASTEXITCODE)" }
+$npm = $npmCommand.Source
+Push-Location (Join-Path $root 'desktop\ui-src')
+try {
+    & $npm ci --no-audit --no-fund
+    if ($LASTEXITCODE -ne 0) { throw "npm ci for the desktop UI failed ($LASTEXITCODE)" }
+    & $npm run build
+    if ($LASTEXITCODE -ne 0) { throw "desktop UI build failed ($LASTEXITCODE)" }
+} finally {
+    Pop-Location
+}
 
 Write-Host '== 2/5  Generating icon ==' -ForegroundColor Cyan
 & $py 'desktop\make_icon.py'

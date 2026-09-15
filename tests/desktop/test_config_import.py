@@ -11,19 +11,22 @@ from desktop import bridge, config_store, local_telegram_audit, support_tunnel
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PARSER = ROOT / 'desktop' / 'ui' / 'app' / 'config-import.js'
+PARSER = ROOT / 'desktop' / 'ui-src' / 'src' / 'lib' / 'config-import.mjs'
+CONFIG_PAGE = ROOT / 'desktop' / 'ui-src' / 'src' / 'pages' / 'Config.tsx'
 MASK = '••••••••'
 
 
 def _parse_with_node(source, recognized):
     script = """
-const parser = require(process.argv[1]);
+import { pathToFileURL } from 'node:url';
+const parser = await import(pathToFileURL(process.argv[1]).href);
 const source = process.argv[2];
 const recognized = JSON.parse(process.argv[3]);
 process.stdout.write(JSON.stringify(parser.parseConfigImport(source, recognized)));
 """
     result = subprocess.run(
-        ['node', '-e', script, str(PARSER), source, json.dumps(recognized)],
+        ['node', '--input-type=module', '-e', script, str(PARSER), source,
+         json.dumps(recognized)],
         cwd=ROOT,
         capture_output=True,
         text=True,
@@ -92,11 +95,10 @@ def test_ui_parser_rejects_invalid_json_and_unrecognized_files():
 
 
 def test_config_picker_accepts_json_support_bundles():
-    source = (
-        ROOT / 'desktop' / 'ui' / 'app' / 'screens-admin.jsx'
-    ).read_text(encoding='utf-8')
+    source = CONFIG_PAGE.read_text(encoding='utf-8')
 
     assert 'accept=".env,.json,text/plain,application/json"' in source
+    assert "from '../lib/config-import.mjs'" in source
 
 
 def test_bridge_import_preserves_masked_secret_and_restarts_tunnel(monkeypatch):

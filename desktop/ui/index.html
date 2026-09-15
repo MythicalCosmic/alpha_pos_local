@@ -1,27 +1,21 @@
-<!DOCTYPE html>
-<html lang="en" data-dir="porcelain">
+<!doctype html>
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Alpha POS Backend</title>
-<link rel="icon" type="image/png" href="AlphaPOS.png">
-<!-- Fully local first paint: a render-blocking Google Fonts request made the
-     window appear blank/slow whenever a till's internet or DNS was degraded.
-     themes.css uses polished native system-font stacks instead. -->
-<link rel="stylesheet" href="themes.css">
+<meta name="alpha-control-token" content="{{CONTROL_TOKEN}}">
+<meta name="color-scheme" content="light dark">
+<title>Alpha POS</title>
+<link rel="icon" type="image/png" href="./AlphaPOS.png">
+  <script type="module" crossorigin src="./assets/index-DvgLx9oQ.js"></script>
+  <link rel="modulepreload" crossorigin href="./assets/ui-BTzQ-Nsw.js">
+  <link rel="modulepreload" crossorigin href="./assets/useQuery-CVzcNqTJ.js">
+  <link rel="modulepreload" crossorigin href="./assets/router-D2TvL6wQ.js">
+  <link rel="modulepreload" crossorigin href="./assets/queries-L56Dp9QF.js">
+  <link rel="modulepreload" crossorigin href="./assets/sync-B6jWsWv3.js">
+  <link rel="stylesheet" crossorigin href="./assets/index-DlmIQmuu.css">
 </head>
 <body>
 <div id="root"></div>
-
-<!-- Per-launch control token injected by control_server.py; the bridge sends it
-     on every /api call so a stray browser page can't drive the panel. -->
-<script>window.__CONTROL_TOKEN__ = "{{CONTROL_TOKEN}}";</script>
-
-<!-- React is vendored for offline tills. JSX is compiled once at release time,
-     not by a 3.1 MB Babel runtime on every operator launch. Regenerate with:
-       node tools/compile_desktop_ui.js -->
-<script src="vendor/react.production.min.js"></script>
-<script src="vendor/react-dom.production.min.js"></script>
-<script src="app.bundle.js"></script>
 </body>
 </html>

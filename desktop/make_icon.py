@@ -16,7 +16,8 @@ HERE = Path(__file__).resolve().parent
 MARK = HERE / 'AlphaPOS-mark.png'
 OUT_PNG = HERE / 'AlphaPOS.png'
 OUT_ICO = HERE / 'AlphaPOS.ico'
-OUT_UI = HERE / 'ui' / 'AlphaPOS.png'
+# Copied verbatim into desktop/ui by the Vite build (desktop/ui-src/public).
+OUT_UI = HERE / 'ui-src' / 'public' / 'AlphaPOS.png'
 SIZE = 512
 
 
