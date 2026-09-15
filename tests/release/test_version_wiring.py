@@ -36,3 +36,35 @@ def test_inno_script_accepts_build_override_with_safe_fallback():
     assert "#ifndef AppVersion" in script
     assert f'#define AppVersion "{__version__}"' in script
     assert "#endif" in script
+
+
+def test_tauri_shell_versions_match_the_single_source():
+    from tools import sync_version
+
+    assert sync_version.main(['--check']) == 0
+
+
+def test_sync_version_rewrites_drifted_shell_manifests(tmp_path):
+    import json
+    from tools import sync_version
+
+    version_file = tmp_path / 'version.py'
+    version_file.write_text('__version__ = "2.3.4"\n', encoding='utf-8')
+    cargo = tmp_path / 'Cargo.toml'
+    cargo.write_text(
+        '[workspace]\nmembers = ["a"]\n\n[workspace.package]\nversion = "1.1.0"\nedition = "2021"\n\n'
+        '[profile.release]\nopt-level = "s"\n',
+        encoding='utf-8',
+    )
+    tauri = tmp_path / 'tauri.conf.json'
+    tauri.write_text('{\n  "productName": "Alpha POS",\n  "version": "1.1.0",\n  "bundle": {"version": "keep"}\n}\n', encoding='utf-8')
+    paths = {'version_file': version_file, 'cargo_toml': cargo, 'tauri_conf': tauri}
+
+    assert sync_version.main(['--check'], **paths) == 1
+    assert sync_version.main([], **paths) == 0
+    assert sync_version.main(['--check'], **paths) == 0
+    assert 'version = "2.3.4"' in cargo.read_text(encoding='utf-8')
+    assert 'opt-level = "s"' in cargo.read_text(encoding='utf-8')
+    config = json.loads(tauri.read_text(encoding='utf-8'))
+    assert config['version'] == '2.3.4' and config['bundle']['version'] == 'keep'
+

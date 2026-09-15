@@ -61,3 +61,6 @@ Thumbs.db
 
 # Desktop panel per-install API token (generated)
 .control_token
+
+# Local Claude Code worktrees and session files
+/.claude/
