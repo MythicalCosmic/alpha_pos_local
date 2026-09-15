@@ -5,6 +5,9 @@ FROM rust:1-bookworm
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends nsis clang lld llvm ca-certificates \
+    # tauri-cli probes the host for appindicator when the tray-icon feature is on,
+    # even when bundling for Windows.
+    libayatana-appindicator3-dev \
  && rm -rf /var/lib/apt/lists/*
 
 RUN rustup target add x86_64-pc-windows-msvc \
