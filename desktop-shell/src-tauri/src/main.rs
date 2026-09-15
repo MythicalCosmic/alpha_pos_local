@@ -173,7 +173,7 @@ fn background_update_checks(app: AppHandle) {
     }
 }
 
-fn restart_to_update(app: &AppHandle) {
+fn restart_into_update(app: &AppHandle) {
     let data_dir = backend::data_dir();
     let Some(staged) = updates::installable_staged(&data_dir) else {
         message_box("Alpha POS is up to date. New versions are downloaded automatically.", false);
@@ -276,7 +276,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             TRAY_OPEN => focus_existing(app),
             TRAY_UPDATE => {
                 let handle = app.clone();
-                let _ = std::thread::Builder::new().name("restart-to-update".into()).spawn(move || restart_to_update(&handle));
+                let _ = std::thread::Builder::new().name("restart-to-update".into()).spawn(move || restart_into_update(&handle));
             }
             TRAY_QUIT => {
                 if message_box(&format!("Quit Alpha POS?\n\n{QUIT_WARNING}"), true) {
@@ -321,9 +321,10 @@ fn update_state() -> Value {
     })
 }
 
+/// Called by the panel's Tauri transport (`invoke('restart_to_update')`).
 #[tauri::command]
-fn restart_to_update_command(app: AppHandle) {
-    let _ = std::thread::Builder::new().name("restart-to-update".into()).spawn(move || restart_to_update(&app));
+fn restart_to_update(app: AppHandle) {
+    let _ = std::thread::Builder::new().name("restart-to-update".into()).spawn(move || restart_into_update(&app));
 }
 
 fn main() {
@@ -344,7 +345,7 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| focus_existing(app)))
         .plugin(tauri_plugin_updater::Builder::new().pubkey(updates::PUBKEY).build())
         .manage(Shell::default())
-        .invoke_handler(tauri::generate_handler![backend_call, update_state, restart_to_update_command])
+        .invoke_handler(tauri::generate_handler![backend_call, update_state, restart_to_update])
         .setup(move |app| {
             WebviewWindowBuilder::new(app, SPLASH, WebviewUrl::App("splash.html".into()))
                 .title("Alpha POS")
