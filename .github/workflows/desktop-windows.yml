@@ -1,0 +1,154 @@
+name: Desktop (Windows)
+
+# Native Windows build + smoke for the Tauri shell and the windowless backend.
+# The release build is cross-compiled on Linux; this job proves the same
+# sources build, install and run on real Windows with a real WebView2 runtime.
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/desktop-1.1-tauri
+      - 'release/desktop-*'
+    paths:
+      - 'desktop/**'
+      - 'desktop-shell/**'
+      - 'alpha_pos_core'
+      - 'AlphaPOSBackend.spec'
+      - 'requirements-desktop.txt'
+      - 'tools/**'
+      - '.github/workflows/desktop-windows.yml'
+
+concurrency:
+  group: desktop-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-install-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      PG_ZIP_URL: https://get.enterprisedb.com/postgresql/postgresql-16.6-1-windows-x64-binaries.zip
+      INSTALL_DIR: ${{ github.workspace }}\..\install\AlphaPOS
+      # Keep the smoke run offline and self-contained.
+      SECRET_KEY: ci-desktop-smoke-only
+      SYNC_ENABLED: 'False'
+      LICENSE_HEARTBEAT_DISABLED: '1'
+      LICENSE_CONTROL_CENTER_URL: http://127.0.0.1:9/
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.SUBMODULE_TOKEN || github.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: requirements-desktop.txt
+
+      - name: Portable PostgreSQL 16.6
+        id: pg
+        uses: actions/cache@v4
+        with:
+          path: _pg
+          key: pgsql-16.6-1-windows-x64
+
+      - name: Download PostgreSQL binaries
+        if: steps.pg.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest $env:PG_ZIP_URL -OutFile pg.zip
+          Expand-Archive pg.zip -DestinationPath _pg
+          Remove-Item pg.zip
+
+      - name: Backend build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-desktop.txt pyinstaller
+          python -m pip install --no-deps --no-build-isolation ./alpha_pos_core
+
+      - name: Build windowless backend
+        shell: pwsh
+        env:
+          ALPHA_POS_PGSQL_DIR: ${{ github.workspace }}\_pg\pgsql
+          DEBUG: 'True'
+        run: python -m PyInstaller --noconfirm --clean AlphaPOSBackend.spec
+
+      - name: Backend selftest
+        shell: pwsh
+        run: |
+          & dist\AlphaPOSBackend\AlphaPOSBackend.exe --selftest
+          if ($LASTEXITCODE -ne 0) { throw "backend selftest failed ($LASTEXITCODE)" }
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop-shell
+
+      - name: Tauri CLI
+        shell: pwsh
+        run: cargo install tauri-cli --version "^2" --locked
+
+      - name: Shell unit tests
+        working-directory: desktop-shell
+        run: cargo test -p alphapos-shell-core -p alphapos-update
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          python tools/sync_version.py --check
+          if ($LASTEXITCODE -ne 0) { throw "version drift" }
+          Push-Location desktop-shell
+          cargo tauri build --bundles nsis --config src-tauri/tauri.release.conf.json
+          Pop-Location
+
+      - name: Install silently into a scratch folder
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem desktop-shell\target\release\bundle\nsis\*-setup.exe | Select-Object -First 1
+          New-Item -ItemType Directory -Force $env:INSTALL_DIR | Out-Null
+          $p = Start-Process $setup.FullName -ArgumentList '/S', "/D=$((Resolve-Path $env:INSTALL_DIR).Path)" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "installer exited $($p.ExitCode)" }
+          if (-not (Test-Path "$env:INSTALL_DIR\AlphaPOS.exe")) { throw 'shell missing from install' }
+          if (-not (Test-Path "$env:INSTALL_DIR\backend\AlphaPOSBackend.exe")) { throw 'backend missing from install' }
+          if ((Get-Content "$env:INSTALL_DIR\version.txt").Trim() -ne (python -c "from desktop.version import __version__; print(__version__)")) { throw 'version.txt mismatch' }
+
+      - name: Headless smoke (start, serve, graceful stop)
+        shell: pwsh
+        run: |
+          $p = Start-Process "$env:INSTALL_DIR\AlphaPOS.exe" -ArgumentList '--headless-smoke' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "headless smoke failed ($($p.ExitCode))" }
+          Start-Sleep -Seconds 2
+          if (Get-Process postgres -ErrorAction SilentlyContinue) { throw 'postgres.exe survived a graceful stop' }
+
+      - name: Job Object kills the backend tree with the shell
+        shell: pwsh
+        run: |
+          $p = Start-Process "$env:INSTALL_DIR\AlphaPOS.exe" -ArgumentList '--headless-serve', '120' -PassThru
+          $deadline = (Get-Date).AddMinutes(4)
+          while (-not (Get-Process postgres -ErrorAction SilentlyContinue)) {
+            if ((Get-Date) -gt $deadline) { throw 'backend never started postgres' }
+            Start-Sleep -Seconds 2
+          }
+          Stop-Process -Id $p.Id -Force
+          Start-Sleep -Seconds 5
+          if (Get-Process postgres, AlphaPOSBackend -ErrorAction SilentlyContinue) { throw 'backend tree survived the shell' }
+
+      - name: Collect logs
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force ci-logs | Out-Null
+          if (Test-Path "$env:LOCALAPPDATA\AlphaPOS\logs") { Copy-Item "$env:LOCALAPPDATA\AlphaPOS\logs\*" ci-logs -Recurse -ErrorAction SilentlyContinue }
+          if (Test-Path "$env:LOCALAPPDATA\AlphaPOS\pgdata\pg.log") { Copy-Item "$env:LOCALAPPDATA\AlphaPOS\pgdata\pg.log" ci-logs }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-windows-${{ github.sha }}
+          path: |
+            ci-logs
+            desktop-shell/target/release/bundle/nsis/*-setup.exe
+          retention-days: 7

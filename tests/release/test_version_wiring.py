@@ -58,7 +58,8 @@ def test_sync_version_rewrites_drifted_shell_manifests(tmp_path):
     )
     tauri = tmp_path / 'tauri.conf.json'
     tauri.write_text('{\n  "productName": "Alpha POS",\n  "version": "1.1.0",\n  "bundle": {"version": "keep"}\n}\n', encoding='utf-8')
-    paths = {'version_file': version_file, 'cargo_toml': cargo, 'tauri_conf': tauri}
+    version_txt = tmp_path / 'version.txt'
+    paths = {'version_file': version_file, 'cargo_toml': cargo, 'tauri_conf': tauri, 'version_txt': version_txt}
 
     assert sync_version.main(['--check'], **paths) == 1
     assert sync_version.main([], **paths) == 0
@@ -67,4 +68,5 @@ def test_sync_version_rewrites_drifted_shell_manifests(tmp_path):
     assert 'opt-level = "s"' in cargo.read_text(encoding='utf-8')
     config = json.loads(tauri.read_text(encoding='utf-8'))
     assert config['version'] == '2.3.4' and config['bundle']['version'] == 'keep'
+    assert version_txt.read_text(encoding='utf-8') == '2.3.4\n'
 

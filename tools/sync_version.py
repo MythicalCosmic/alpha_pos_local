@@ -20,6 +20,9 @@ ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = ROOT / 'desktop' / 'version.py'
 CARGO_TOML = ROOT / 'desktop-shell' / 'Cargo.toml'
 TAURI_CONF = ROOT / 'desktop-shell' / 'src-tauri' / 'tauri.conf.json'
+# Shipped beside AlphaPOS.exe; the update guard reads it after installing to
+# confirm the expected version actually landed on disk.
+VERSION_TXT = ROOT / 'desktop-shell' / 'src-tauri' / 'version.txt'
 
 _SEMVER = re.compile(r'\d+\.\d+\.\d+')
 _WORKSPACE_VERSION = re.compile(
@@ -57,7 +60,7 @@ def with_tauri_version(text: str, version: str) -> str:
     return updated
 
 
-def main(argv=None, *, version_file=VERSION_FILE, cargo_toml=CARGO_TOML, tauri_conf=TAURI_CONF) -> int:
+def main(argv=None, *, version_file=VERSION_FILE, cargo_toml=CARGO_TOML, tauri_conf=TAURI_CONF, version_txt=VERSION_TXT) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--check', action='store_true', help='report drift without writing')
     args = parser.parse_args(argv)
@@ -70,6 +73,9 @@ def main(argv=None, *, version_file=VERSION_FILE, cargo_toml=CARGO_TOML, tauri_c
         drift.append(f'{cargo_toml.name}: {cargo_version(cargo_text)}')
     if json.loads(tauri_text).get('version') != version:
         drift.append(f'{tauri_conf.name}: {json.loads(tauri_text).get("version")}')
+    shipped = version_txt.read_text(encoding='utf-8').strip() if version_txt.exists() else None
+    if shipped != version:
+        drift.append(f'{version_txt.name}: {shipped}')
 
     if args.check:
         if drift:
@@ -81,6 +87,7 @@ def main(argv=None, *, version_file=VERSION_FILE, cargo_toml=CARGO_TOML, tauri_c
     if drift:
         cargo_toml.write_text(with_cargo_version(cargo_text, version), encoding='utf-8')
         tauri_conf.write_text(with_tauri_version(tauri_text, version), encoding='utf-8')
+        version_txt.write_text(version + '\n', encoding='utf-8')
         print(f'synced desktop shell to {version} ({", ".join(drift)})')
     else:
         print(f'desktop shell already at {version}')
