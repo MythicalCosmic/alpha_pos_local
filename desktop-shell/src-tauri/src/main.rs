@@ -1,8 +1,8 @@
 // Alpha POS desktop shell.
 //
-// Owns the native window, the single-instance lock, the splash/loader and the
-// windowless Python backend. Closing the panel hides it; the POS server keeps
-// serving waiters and couriers until the shell exits.
+// Owns the native window, the single-instance lock, the splash/loader, the tray
+// icon and the windowless Python backend. Closing the panel hides it to the
+// tray; the POS server keeps serving waiters and couriers until "Quit".
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backend;
@@ -14,10 +14,14 @@ use std::time::{Duration, Instant};
 
 use alphapos_shell_core::lifecycle::Phase;
 use serde_json::Value;
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 const SPLASH: &str = "splash";
 const MAIN: &str = "main";
+const TRAY_OPEN: &str = "open";
+const TRAY_QUIT: &str = "quit";
 /// Show the panel even if setup is still running after this long; the panel
 /// reports the backend phase itself.
 const SERVING_WAIT: Duration = Duration::from_secs(120);
@@ -55,6 +59,34 @@ fn phase_text(phase: Phase) -> (&'static str, u8) {
         Phase::Stopping => ("Stopping…", 100),
         Phase::Error => ("Still starting — retrying…", 50),
     }
+}
+
+/// Native Yes/No confirmation without extra plugins.
+#[cfg(windows)]
+fn confirm_quit() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, IDYES, MB_DEFBUTTON2, MB_ICONWARNING, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO,
+    };
+    let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let text = wide(
+        "Quit Alpha POS?\n\nThe POS server will stop: waiters, couriers and other devices \
+         cannot place orders until Alpha POS is opened again.",
+    );
+    let title = wide("Alpha POS");
+    let answer = unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_TOPMOST | MB_SETFOREGROUND,
+        )
+    };
+    answer == IDYES
+}
+
+#[cfg(not(windows))]
+fn confirm_quit() -> bool {
+    true
 }
 
 fn boot(app: AppHandle) {
@@ -106,6 +138,37 @@ fn boot(app: AppHandle) {
     }
 }
 
+fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    let open = MenuItem::with_id(app, TRAY_OPEN, "Open Alpha POS", true, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let quit = MenuItem::with_id(app, TRAY_QUIT, "Quit Alpha POS", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &separator, &quit])?;
+
+    let mut tray = TrayIconBuilder::with_id("main")
+        .tooltip("Alpha POS")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            TRAY_OPEN => focus_existing(app),
+            TRAY_QUIT => {
+                if confirm_quit() {
+                    app.exit(0);
+                }
+            }
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                focus_existing(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
 #[tauri::command]
 async fn backend_call(shell: State<'_, Shell>, method: String, args: Option<Vec<Value>>) -> Result<Value, ()> {
     let args = args.unwrap_or_default();
@@ -130,6 +193,7 @@ fn main() {
                 .decorations(false)
                 .center()
                 .build()?;
+            build_tray(app)?;
             let handle = app.handle().clone();
             std::thread::Builder::new().name("boot".into()).spawn(move || boot(handle))?;
             Ok(())
@@ -146,12 +210,15 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("failed to build Alpha POS shell");
 
-    app.run(|app, event| {
-        if let RunEvent::Exit = event {
+    app.run(|app, event| match event {
+        // Hiding the last window must not end the app; only tray Quit exits.
+        RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
+        RunEvent::Exit => {
             let backend = app.state::<Shell>().backend.lock().unwrap().take();
             if let Some(backend) = backend {
                 backend.stop();
             }
         }
+        _ => {}
     });
 }

@@ -105,6 +105,10 @@ impl Backend {
             .arg("--ready-file")
             .arg(&ready_path)
             .env(TOKEN_ENV, &token)
+            // Heartbeat diagnostics (licensing/services/heartbeat.py).
+            .env("ALPHA_POS_SHELL_VERSION", env!("CARGO_PKG_VERSION"))
+            .env("ALPHA_POS_WEBVIEW2_VERSION", tauri::webview_version().unwrap_or_default())
+            .env("ALPHA_POS_SHELL_STATE_FILE", data.join("update").join("shell-update-state.json"))
             // Never let a child keep the install directory open as its cwd.
             .current_dir(&data)
             .stdin(Stdio::null())
