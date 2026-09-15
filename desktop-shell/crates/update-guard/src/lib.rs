@@ -38,6 +38,53 @@ pub fn state_path(data_dir: &Path) -> PathBuf {
     update_dir(data_dir).join("shell-update-state.json")
 }
 
+/// Verified installer staged for the next update.
+pub fn staged_dir(data_dir: &Path) -> PathBuf {
+    update_dir(data_dir).join("staged")
+}
+
+/// Installer of the last version that confirmed healthy on this till.
+pub fn lkg_dir(data_dir: &Path) -> PathBuf {
+    update_dir(data_dir).join("lkg")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstallerFiles {
+    pub version: String,
+    pub installer: PathBuf,
+    pub signature: PathBuf,
+}
+
+#[derive(Serialize, Deserialize)]
+struct InstallerMeta {
+    version: String,
+}
+
+/// Read a `setup.exe` + `setup.exe.sig` + `meta.json` folder (staged or lkg).
+pub fn read_installer_dir(dir: &Path) -> Option<InstallerFiles> {
+    let meta: InstallerMeta = serde_json::from_slice(&fs::read(dir.join("meta.json")).ok()?).ok()?;
+    let installer = dir.join("setup.exe");
+    let signature = dir.join("setup.exe.sig");
+    (installer.is_file() && signature.is_file()).then_some(InstallerFiles { version: meta.version, installer, signature })
+}
+
+/// After `version` confirmed healthy, keep its staged installer as the
+/// last-known-good copy (replacing the previous one). No download needed: the
+/// staged installer is exactly what is now running.
+pub fn promote_staged_to_lkg(data_dir: &Path, version: &str) -> io::Result<bool> {
+    let staged = staged_dir(data_dir);
+    match read_installer_dir(&staged) {
+        Some(files) if files.version == version => {}
+        _ => return Ok(false),
+    }
+    let lkg = lkg_dir(data_dir);
+    if lkg.exists() {
+        fs::remove_dir_all(&lkg)?;
+    }
+    fs::rename(&staged, &lkg)?;
+    Ok(true)
+}
+
 /// NSIS arguments: passive progress UI, update mode, pinned install folder.
 /// `/D=` must be last and unquoted. `/R` is deliberately omitted so the guard
 /// launches the new shell itself and can watch it.
@@ -179,6 +226,43 @@ mod tests {
         assert_eq!(loaded.blocked_versions, vec!["1.1.2".to_string()]);
         assert_eq!(loaded.pending_confirmation.as_deref(), Some("1.1.3"));
         let _ = fs::remove_dir_all(dir);
+    }
+
+    fn write_installer_dir(dir: &Path, version: &str) {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join("setup.exe"), format!("MZ {version}")).unwrap();
+        fs::write(dir.join("setup.exe.sig"), "sig").unwrap();
+        fs::write(dir.join("meta.json"), format!("{{\"version\":\"{version}\"}}")).unwrap();
+    }
+
+    #[test]
+    fn confirmed_staged_installer_becomes_last_known_good() {
+        let data = std::env::temp_dir().join(format!("alphapos-lkg-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&data);
+        write_installer_dir(&lkg_dir(&data), "1.1.0");
+        write_installer_dir(&staged_dir(&data), "1.1.1");
+
+        // A different version never replaces the last known good installer.
+        assert!(!promote_staged_to_lkg(&data, "1.1.2").unwrap());
+        assert_eq!(read_installer_dir(&lkg_dir(&data)).unwrap().version, "1.1.0");
+
+        assert!(promote_staged_to_lkg(&data, "1.1.1").unwrap());
+        let lkg = read_installer_dir(&lkg_dir(&data)).unwrap();
+        assert_eq!(lkg.version, "1.1.1");
+        assert_eq!(fs::read_to_string(lkg.installer).unwrap(), "MZ 1.1.1");
+        assert!(!staged_dir(&data).exists());
+        let _ = fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn incomplete_installer_dirs_are_ignored() {
+        let data = std::env::temp_dir().join(format!("alphapos-lkg-incomplete-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&data);
+        write_installer_dir(&staged_dir(&data), "1.1.1");
+        fs::remove_file(staged_dir(&data).join("setup.exe.sig")).unwrap();
+        assert!(read_installer_dir(&staged_dir(&data)).is_none());
+        assert!(!promote_staged_to_lkg(&data, "1.1.1").unwrap());
+        let _ = fs::remove_dir_all(data);
     }
 
     #[test]

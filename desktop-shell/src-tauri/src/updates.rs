@@ -10,7 +10,10 @@ use std::time::Duration;
 
 use alphapos_shell_core::legacy_update::PendingFlag;
 use alphapos_shell_core::update_policy::{self, AfterCheck, RemoteCheck, StagedUpdate, StartupDecision, StartupInputs};
-use alphapos_update::{confirm_marker, state_path, update_dir, verify_signature, UpdateState, TRUSTED_PUBLIC_KEYS};
+use alphapos_update::{
+    confirm_marker, lkg_dir, promote_staged_to_lkg, read_installer_dir, staged_dir, state_path, update_dir,
+    verify_signature, UpdateState, TRUSTED_PUBLIC_KEYS,
+};
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 use tauri_plugin_updater::{Update, UpdaterExt};
@@ -26,22 +29,16 @@ struct StagedMeta {
     version: String,
 }
 
-pub struct Staged {
-    pub version: String,
-    pub installer: PathBuf,
-    pub signature: PathBuf,
-}
-
-fn staged_dir(data_dir: &Path) -> PathBuf {
-    update_dir(data_dir).join("staged")
-}
+pub type Staged = alphapos_update::InstallerFiles;
 
 pub fn find_staged(data_dir: &Path) -> Option<Staged> {
-    let dir = staged_dir(data_dir);
-    let meta: StagedMeta = serde_json::from_slice(&fs::read(dir.join("meta.json")).ok()?).ok()?;
-    let installer = dir.join("setup.exe");
-    let signature = dir.join("setup.exe.sig");
-    (installer.is_file() && signature.is_file()).then_some(Staged { version: meta.version, installer, signature })
+    read_installer_dir(&staged_dir(data_dir))
+}
+
+/// The last version that confirmed healthy here, if its installer still verifies.
+pub fn find_lkg(data_dir: &Path) -> Option<Staged> {
+    let lkg = read_installer_dir(&lkg_dir(data_dir))?;
+    verify_staged(&lkg).then_some(lkg)
 }
 
 /// Re-verify on every use: the file on disk is not trusted just because the
@@ -166,6 +163,8 @@ pub fn launch_guard(data_dir: &Path, staged: &Staged) -> io::Result<()> {
     let guard = guard_dir.join("alphapos-update-guard.exe");
     fs::copy(&bundled, &guard)?;
 
+    // Reinstall target if the new version fails its health check.
+    let lkg = find_lkg(data_dir).filter(|lkg| lkg.version != staged.version);
     let spawn = |flags: u32| {
         let mut command = std::process::Command::new(&guard);
         command
@@ -184,6 +183,9 @@ pub fn launch_guard(data_dir: &Path, staged: &Staged) -> io::Result<()> {
             .arg("--from-version")
             .arg(CURRENT_VERSION)
             .current_dir(data_dir);
+        if let Some(lkg) = &lkg {
+            command.arg("--lkg-installer").arg(&lkg.installer).arg("--lkg-signature").arg(&lkg.signature);
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -207,7 +209,10 @@ pub fn confirm_post_update(data_dir: &Path, version: &str) {
         let _ = fs::create_dir_all(dir);
     }
     let _ = fs::write(&marker, version);
-    if find_staged(data_dir).map(|s| s.version == version).unwrap_or(false) {
+    // Keep the installer that just proved healthy for future rollbacks.
+    if !promote_staged_to_lkg(data_dir, version).unwrap_or(false)
+        && find_staged(data_dir).map(|s| s.version == version).unwrap_or(false)
+    {
         discard_staged(data_dir);
     }
 }
