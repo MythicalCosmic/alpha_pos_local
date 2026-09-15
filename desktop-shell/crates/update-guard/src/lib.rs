@@ -17,7 +17,10 @@ use serde::{Deserialize, Serialize};
 
 /// Minisign public keys (Tauri updater format: base64 of the key file text)
 /// accepted for installers. A list allows rotating the signing key.
-pub const TRUSTED_PUBLIC_KEYS: &[&str] = &[];
+pub const TRUSTED_PUBLIC_KEYS: &[&str] = &[
+    // minisign key A20C07FC786EF2F4, generated 2026-09-16 (private key kept offline in update_keys/).
+    "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEEyMEMwN0ZDNzg2RUYyRjQKUldUMDhtNTQvQWNNb3BTRUFHQWpULzh1bUY5Z0RPdHdZOWFQelUrTmpVQkx1TENscW82OWE5VVEK",
+];
 
 pub const SHELL_EXIT_TIMEOUT: Duration = Duration::from_secs(60);
 pub const INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
@@ -186,6 +189,26 @@ mod tests {
         fs::write(&path, b"{not json").unwrap();
         assert_eq!(UpdateState::load(&path), UpdateState::default());
         let _ = fs::remove_dir_all(dir);
+    }
+
+    // Signed with the real updater key: `cargo tauri signer sign fixture.bin`.
+    const FIXTURE_DATA: &[u8] = b"Alpha POS signature fixture v1\n";
+    const FIXTURE_SIG: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUMDhtNTQvQWNNb2pjOStObHM2anA1MldhaGRJV2RlMHpjck9tR0pGcGptbkVTcmdYSC95WjhVbVBESTJKcFUzQ1o0R05SUGhsMU5qMndEcTNmaEUyTWZtcXVUMi85cGdFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg5NTA5ODU3CWZpbGU6Zml4dHVyZS5iaW4KZmFqR0hVd3ZGYld3UkxrQ2xkS1RSWlo0NHRTdzJSTHEzUTdqeXlGN3RvRTFYQ002TU5aVUhKSmMzQXZ0Qll3VGp0Uk1NMjI4WU5JNmFhSG1HcEVaQlE9PQo=";
+
+    #[test]
+    fn real_updater_signature_verifies_and_tampering_is_rejected() {
+        assert_eq!(verify_signature(TRUSTED_PUBLIC_KEYS, FIXTURE_SIG, FIXTURE_DATA), Ok(()));
+        assert_eq!(
+            verify_signature(TRUSTED_PUBLIC_KEYS, FIXTURE_SIG, b"Alpha POS signature fixture v2\n"),
+            Err(SignatureError::Invalid)
+        );
+        // A garbage key is skipped; with no other key the signature is invalid.
+        assert_eq!(verify_signature(&["bm90IGEga2V5"], FIXTURE_SIG, FIXTURE_DATA), Err(SignatureError::Invalid));
+        // Key rotation: an extra untrusted entry must not block the real key.
+        assert_eq!(
+            verify_signature(&["bm90IGEga2V5", TRUSTED_PUBLIC_KEYS[0]], FIXTURE_SIG, FIXTURE_DATA),
+            Ok(())
+        );
     }
 
     #[test]
