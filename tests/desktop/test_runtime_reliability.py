@@ -2,6 +2,7 @@
 
 import hashlib
 import http.client
+import json
 import re
 import subprocess
 import sys
@@ -2195,7 +2196,15 @@ def test_server_bind_failure_is_reported_not_false_online(monkeypatch):
     assert not manager.is_running()
 
 
+def _ui_build_manifest():
+    root = Path(__file__).resolve().parents[2]
+    return json.loads(
+        (root / 'desktop' / 'ui' / 'build-manifest.json').read_text(encoding='utf-8'),
+    )
+
+
 def test_static_assets_revalidate_but_html_is_never_cached():
+    entry_js = '/' + _ui_build_manifest()['entry']['js']
     httpd = control_server.ThreadingHTTPServer(
         ('127.0.0.1', 0), control_server.Handler,
     )
@@ -2204,7 +2213,7 @@ def test_static_assets_revalidate_but_html_is_never_cached():
     host, port = httpd.server_address
     try:
         conn = http.client.HTTPConnection(host, port, timeout=5)
-        conn.request('GET', '/app.bundle.js')
+        conn.request('GET', entry_js)
         first = conn.getresponse()
         first.read()
         etag = first.getheader('ETag')
@@ -2214,7 +2223,7 @@ def test_static_assets_revalidate_but_html_is_never_cached():
         conn.close()
 
         conn = http.client.HTTPConnection(host, port, timeout=5)
-        conn.request('GET', '/app.bundle.js', headers={'If-None-Match': etag})
+        conn.request('GET', entry_js, headers={'If-None-Match': etag})
         second = conn.getresponse()
         second.read()
         assert second.status == 304
@@ -2231,37 +2240,113 @@ def test_static_assets_revalidate_but_html_is_never_cached():
         httpd.server_close()
 
 
-def test_precompiled_ui_bundle_matches_every_source():
-    root = Path(__file__).resolve().parents[2]
-    ui = root / 'desktop' / 'ui'
-    inputs = [
-        'app/bridge.js', 'app/config-import.js', 'app/i18n.js', 'app/ui.jsx',
-        'app/screens-main.jsx', 'app/screens-admin.jsx',
-        'app/screens-ops.jsx', 'app/screens-updates.jsx',
-        'app/screens-logs.jsx', 'app/main.jsx',
-    ]
+UI_BUDGETS = {
+    'initial_js': 70_000,
+    'initial_css': 25_000,
+    'page_chunk': 30_000,
+    'locale_chunk': 20_000,
+    'total_js': 150_000,
+    'total_non_png': 400_000,
+    'single_file': 100_000,
+}
+
+
+def _ui_source_digest(src_root):
+    """Mirror desktop/ui-src/scripts/write-manifest.mjs:sourceDigest()."""
+    inputs = sorted(
+        [
+            'src/' + path.relative_to(src_root / 'src').as_posix()
+            for path in (src_root / 'src').rglob('*') if path.is_file()
+        ]
+        + ['index.html', 'vite.config.ts', 'package-lock.json', 'tsconfig.json'],
+    )
     digest = hashlib.sha256()
     for relative in inputs:
-        source = (ui / relative).read_text(encoding='utf-8-sig')
+        source = (src_root / relative).read_text(encoding='utf-8-sig')
         source = source.replace('\r\n', '\n').replace('\r', '\n')
         digest.update(relative.encode())
         digest.update(b'\0')
         digest.update(source.encode())
         digest.update(b'\0')
-    bundle = (ui / 'app.bundle.js').read_text(encoding='utf-8')
-    match = re.search(r'source-sha256: ([0-9a-f]{64})', bundle)
-    assert match and match.group(1) == digest.hexdigest()
+    return digest.hexdigest()
+
+
+def test_precompiled_ui_bundle_matches_every_source():
+    root = Path(__file__).resolve().parents[2]
+    ui = root / 'desktop' / 'ui'
+    src_root = root / 'desktop' / 'ui-src'
+    manifest = _ui_build_manifest()
+
+    # The committed build was produced from exactly the committed sources.
+    assert manifest['source_sha256'] == _ui_source_digest(src_root)
+
+    # Every recorded output exists with the recorded size, and nothing else.
+    recorded = {item['path']: item['size'] for item in manifest['files']}
+    on_disk = {
+        path.relative_to(ui).as_posix(): path.stat().st_size
+        for path in ui.rglob('*')
+        if path.is_file() and path.name != 'build-manifest.json'
+    }
+    assert on_disk == recorded
+    for relative in [manifest['entry']['js'], *manifest['entry']['css'],
+                     *manifest['pages'].values(), *manifest['locales'].values()]:
+        assert relative in recorded
+    assert set(manifest['pages']) == {
+        'Dashboard', 'License', 'LocalAudit', 'Config', 'Tests', 'Fiscal',
+        'Logs', 'Updates',
+    }
+    assert set(manifest['locales']) == {'uz', 'ru'}
+
+    # Size budgets (same rules as scripts/check-budgets.mjs).
+    graph = manifest['graph']
+
+    def closure(start):
+        seen, stack = set(), [start]
+        while stack:
+            name = stack.pop()
+            if name in seen:
+                continue
+            seen.add(name)
+            stack.extend(graph.get(name, {}).get('imports', []))
+        return seen
+
+    initial = closure(manifest['entry']['js']) | closure(manifest['pages']['Dashboard'])
+    initial_css = set(manifest['entry']['css'])
+    for name in initial:
+        initial_css.update(graph.get(name, {}).get('css', []))
+    assert sum(recorded[name] for name in initial) <= UI_BUDGETS['initial_js']
+    assert sum(recorded[name] for name in initial_css) <= UI_BUDGETS['initial_css']
+    for name in manifest['pages'].values():
+        assert recorded[name] <= UI_BUDGETS['page_chunk'], name
+    for name in manifest['locales'].values():
+        assert recorded[name] <= UI_BUDGETS['locale_chunk'], name
+    js_total = sum(size for name, size in recorded.items() if name.endswith('.js'))
+    assert js_total <= UI_BUDGETS['total_js']
+    assert sum(
+        size for name, size in recorded.items() if not name.endswith('.png')
+    ) <= UI_BUDGETS['total_non_png']
+    assert max(recorded.values()) <= UI_BUDGETS['single_file']
+    assert not [p for p in ui.rglob('*') if p.suffix.lower() in {'.woff', '.woff2', '.ttf', '.otf'}]
+
+    # No legacy runtime-compiled panel remains.
+    for legacy in ('app.bundle.js', 'themes.css', 'app', 'vendor'):
+        assert not (ui / legacy).exists(), legacy
+    assert not (root / 'tools' / 'compile_desktop_ui.js').exists()
 
     index = (ui / 'index.html').read_text(encoding='utf-8')
-    assert 'app.bundle.js' in index
-    assert 'type="text/babel"' not in index
-    assert 'vendor/babel.min.js' not in index
-    assert 'fonts.googleapis.com' not in index
-    assert len(bundle.encode('utf-8')) < 250_000
+    assert '<meta name="alpha-control-token" content="{{CONTROL_TOKEN}}">' in index
+    assert manifest['entry']['js'] in index
+    assert 'http://' not in index and 'https://' not in index
+    assert 'babel' not in index.lower()
+    assert 'fonts.' not in index
+    assert re.search(r'<script(?![^>]*\bsrc=)[^>]*>', index) is None
 
     build = (root / 'build_installer.ps1').read_text(encoding='utf-8')
-    compile_pos = build.index("tools\\compile_desktop_ui.js")
+    ui_dir_pos = build.index("desktop\\ui-src")
+    npm_ci_pos = build.index("npm ci")
+    npm_build_pos = build.index("npm run build")
     pyinstaller_pos = build.index("& $pyinstaller")
-    assert compile_pos < pyinstaller_pos
+    assert ui_dir_pos < npm_ci_pos < npm_build_pos < pyinstaller_pos
+    assert 'compile_desktop_ui' not in build
     assert "AlphaPOS-$version-Setup.exe" in build
     assert "AlphaPOS-$version-Portable.exe" in build
