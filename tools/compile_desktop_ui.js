@@ -25,7 +25,6 @@ const inputs = [
   'app/i18n.js',
   'app/ui.jsx',
   'app/screens-main.jsx',
-  'app/screens-sales.jsx',
   'app/screens-admin.jsx',
   'app/screens-ops.jsx',
   'app/screens-updates.jsx',
