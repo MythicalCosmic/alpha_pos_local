@@ -88,7 +88,7 @@ def _profile_dir() -> str:
     return str(p)
 
 
-def _selftest():
+def _selftest(*, require_webview=True):
     """Validate a frozen build loads all modules + the pipeline works, without a
     display. Run: AlphaPOS.exe --selftest"""
     import json
@@ -135,11 +135,12 @@ def _selftest():
         if not fiscal.get('ok') or not fiscal.get('fiscal_sign'):
             raise RuntimeError(fiscal.get('error') or 'mock fiscalization failed')
 
-        try:
-            import webview  # noqa: F401 — confirms the native-GUI backend bundled
-            print('webview   : importable (native window available)')
-        except Exception as exc:  # noqa: BLE001
-            raise RuntimeError(f'native GUI backend missing: {exc}') from exc
+        if require_webview:
+            try:
+                import webview  # noqa: F401 — confirms the native-GUI backend bundled
+                print('webview   : importable (native window available)')
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(f'native GUI backend missing: {exc}') from exc
     except Exception as exc:  # noqa: BLE001
         logger.exception('desktop selftest failed')
         print('SELFTEST FAILED:', exc)
@@ -407,7 +408,7 @@ def _graceful_update_shutdown(httpd):
     ).start()
 
 
-def _boot_worker(*, shutdown_event=None):
+def _boot_worker(*, shutdown_event=None, check_updates=None):
     """Bring the heavy backend up BEHIND the already-painted panel: finish any
     armed factory reset, start embedded Postgres, load config env, supervise the
     POS server, then run a DEFERRED self-update check. None of this is on the
@@ -452,7 +453,9 @@ def _boot_worker(*, shutdown_event=None):
 
     # Confirm an applied update only after the autostart thread reports a real
     # uvicorn bind. Metadata refresh is independent and may happen meanwhile.
-    if '--no-update' not in sys.argv:
+    if check_updates is None:
+        check_updates = '--no-update' not in sys.argv
+    if check_updates:
         try:
             from desktop import updater
             threading.Thread(
@@ -463,6 +466,20 @@ def _boot_worker(*, shutdown_event=None):
             updater.check_only()
         except Exception:  # noqa: BLE001
             logger.exception('boot: self-update check failed; continuing')
+
+
+def main_selftest(*, require_webview=True):
+    """Bring embedded Postgres up synchronously and run the pipeline selftest."""
+    try:
+        from desktop import config_store, pg_embedded
+        config_store.apply_env_to_process()
+        pg_embedded.start()
+        atexit.register(pg_embedded.stop)
+    except Exception:  # noqa: BLE001
+        logger.exception('selftest backend bootstrap failed')
+        print('SELFTEST FAILED: backend bootstrap failed')
+        return 1
+    return _selftest(require_webview=require_webview)
 
 
 def main():
@@ -496,16 +513,7 @@ def main():
 
     # --selftest brings the backend up synchronously (no window).
     if '--selftest' in sys.argv:
-        try:
-            from desktop import config_store, pg_embedded
-            config_store.apply_env_to_process()
-            pg_embedded.start()
-            atexit.register(pg_embedded.stop)
-        except Exception:  # noqa: BLE001
-            logger.exception('selftest backend bootstrap failed')
-            print('SELFTEST FAILED: backend bootstrap failed')
-            return 1
-        return _selftest()
+        return main_selftest()
 
     # 2) Bind the lightweight control-panel server and PAINT THE WINDOW IMMEDIATELY.
     #    The heavy backend (embedded Postgres + the POS uvicorn server) boots on a

@@ -776,6 +776,7 @@ class ServerManager:
                     logger.error('server start failed: %s', error)
                     return {'running': False, 'error': error}
 
+                self._started_at = datetime.now(timezone.utc).isoformat()
                 self.ensure_background_workers()
                 logger.info(
                     'POS server bound on 0.0.0.0:%s — reachable on the LAN at %s',
@@ -823,6 +824,7 @@ class ServerManager:
             if thread is None or not thread.is_alive():
                 self._server = None
                 self._thread = None
+                self._started_at = None
             self._record_worker(
                 'heartbeat', next_run_in_s=None, last_status='stopped',
             )
@@ -924,6 +926,7 @@ class ServerManager:
             'lan_ip': self.lan_ip(),
             'port': self.port,
             'django_ready': self._django_ready,
+            'started_at': getattr(self, '_started_at', None) if self.is_running() else None,
             'last_error': self._last_error,
             'workers': workers,
             'environment': environment,

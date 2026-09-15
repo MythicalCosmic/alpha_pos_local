@@ -33,11 +33,13 @@ from desktop.version import APP_NAME, __version__  # noqa: E402
 REPO_DIR = Path("update_repo")          # generated metadata + targets (publish this)
 KEYS_DIR = Path("update_keys")          # PRIVATE signing keys — NEVER commit/upload
 KEY_NAMES = ("root", "targets", "snapshot", "timestamp")
+# Online roles last ~6 months: tills that miss a re-sign must still be able to
+# reach the Tauri bridge release instead of failing every update check.
 EXPIRATION_DAYS = {
     "root": 365,
-    "targets": 30,
-    "snapshot": 30,
-    "timestamp": 30,
+    "targets": 180,
+    "snapshot": 180,
+    "timestamp": 180,
 }
 
 
