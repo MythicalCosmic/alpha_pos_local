@@ -23,10 +23,9 @@ impl LegacyHandshake {
         Self { flag, data_dir }
     }
 
-    /// While an old helper may be watching, the shell must not update itself.
-    #[allow(dead_code)]
-    pub fn blocks_self_update(&self) -> bool {
-        self.flag.blocks_self_update()
+    /// The update policy skips self-updates while an old helper may be watching.
+    pub fn flag(&self) -> PendingFlag {
+        self.flag.clone()
     }
 
     /// Call only after the backend reported `serving`.

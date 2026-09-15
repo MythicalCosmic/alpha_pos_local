@@ -3,7 +3,9 @@
   "bundle": {
     "resources": {
       "../../dist/AlphaPOSBackend/": "backend/",
-      "version.txt": "version.txt"
-    }
+      "version.txt": "version.txt",
+      "resources/bin/alphapos-update-guard.exe": "bin/alphapos-update-guard.exe"
+    },
+    "createUpdaterArtifacts": true
   }
 }

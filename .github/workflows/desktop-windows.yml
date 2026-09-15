@@ -95,13 +95,22 @@ jobs:
         working-directory: desktop-shell
         run: cargo test -p alphapos-shell-core -p alphapos-update
 
+      - name: Build update guard
+        shell: pwsh
+        working-directory: desktop-shell
+        run: |
+          cargo build --release -p alphapos-update --bin alphapos-update-guard
+          New-Item -ItemType Directory -Force src-tauri\resources\bin | Out-Null
+          Copy-Item target\release\alphapos-update-guard.exe src-tauri\resources\bin\
+
       - name: Build installer
         shell: pwsh
         run: |
           python tools/sync_version.py --check
           if ($LASTEXITCODE -ne 0) { throw "version drift" }
           Push-Location desktop-shell
-          cargo tauri build --bundles nsis --config src-tauri/tauri.release.conf.json
+          # CI has no updater signing key (and must not): skip signed updater artifacts.
+          cargo tauri build --bundles nsis --config src-tauri/tauri.release.conf.json --config src-tauri/tauri.ci.conf.json
           Pop-Location
 
       - name: Install silently into a scratch folder
@@ -113,6 +122,7 @@ jobs:
           if ($p.ExitCode -ne 0) { throw "installer exited $($p.ExitCode)" }
           if (-not (Test-Path "$env:INSTALL_DIR\AlphaPOS.exe")) { throw 'shell missing from install' }
           if (-not (Test-Path "$env:INSTALL_DIR\backend\AlphaPOSBackend.exe")) { throw 'backend missing from install' }
+          if (-not (Test-Path "$env:INSTALL_DIR\bin\alphapos-update-guard.exe")) { throw 'update guard missing from install' }
           if ((Get-Content "$env:INSTALL_DIR\version.txt").Trim() -ne (python -c "from desktop.version import __version__; print(__version__)")) { throw 'version.txt mismatch' }
 
       - name: Headless smoke (start, serve, graceful stop)

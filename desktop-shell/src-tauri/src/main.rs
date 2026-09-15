@@ -1,20 +1,25 @@
 // Alpha POS desktop shell.
 //
 // Owns the native window, the single-instance lock, the splash/loader, the tray
-// icon and the windowless Python backend. Closing the panel hides it to the
-// tray; the POS server keeps serving waiters and couriers until "Quit".
+// icon, startup updates and the windowless Python backend. Closing the panel
+// hides it to the tray; the POS server keeps serving waiters and couriers until
+// "Quit".
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backend;
 mod headless;
-mod migration;
 #[cfg(windows)]
 mod job;
+mod migration;
+mod updates;
 
+use std::path::Path;
+use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use alphapos_shell_core::lifecycle::Phase;
+use alphapos_shell_core::update_policy::{self, DownloadMode, StartupDecision};
 use serde_json::Value;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -23,6 +28,7 @@ use tauri::{AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilde
 const SPLASH: &str = "splash";
 const MAIN: &str = "main";
 const TRAY_OPEN: &str = "open";
+const TRAY_UPDATE: &str = "update";
 const TRAY_QUIT: &str = "quit";
 /// Show the panel even if setup is still running after this long; the panel
 /// reports the backend phase itself.
@@ -63,33 +69,34 @@ fn phase_text(phase: Phase) -> (&'static str, u8) {
     }
 }
 
-/// Native Yes/No confirmation without extra plugins.
+/// Native message box without extra plugins. Returns true for Yes/OK.
 #[cfg(windows)]
-fn confirm_quit() -> bool {
+fn message_box(text: &str, question: bool) -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        MessageBoxW, IDYES, MB_DEFBUTTON2, MB_ICONWARNING, MB_SETFOREGROUND, MB_TOPMOST, MB_YESNO,
+        MessageBoxW, IDOK, IDYES, MB_DEFBUTTON2, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MB_SETFOREGROUND,
+        MB_TOPMOST, MB_YESNO,
     };
     let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
-    let text = wide(
-        "Quit Alpha POS?\n\nThe POS server will stop: waiters, couriers and other devices \
-         cannot place orders until Alpha POS is opened again.",
-    );
+    let text = wide(text);
     let title = wide("Alpha POS");
-    let answer = unsafe {
-        MessageBoxW(
-            std::ptr::null_mut(),
-            text.as_ptr(),
-            title.as_ptr(),
-            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_TOPMOST | MB_SETFOREGROUND,
-        )
+    let style = if question {
+        MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2
+    } else {
+        MB_OK | MB_ICONINFORMATION
     };
-    answer == IDYES
+    let answer = unsafe {
+        MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), style | MB_TOPMOST | MB_SETFOREGROUND)
+    };
+    answer == IDYES || answer == IDOK
 }
 
 #[cfg(not(windows))]
-fn confirm_quit() -> bool {
+fn message_box(_text: &str, _question: bool) -> bool {
     true
 }
+
+const QUIT_WARNING: &str = "The POS server will stop: waiters, couriers and other devices cannot place orders \
+     until Alpha POS is running again.";
 
 /// The mutex name used by the 1.0.x launcher and Inno Setup `AppMutex`.
 #[cfg(windows)]
@@ -98,10 +105,104 @@ fn legacy_single_instance_mutex() -> windows_sys::Win32::Foundation::HANDLE {
     unsafe { windows_sys::Win32::System::Threading::CreateMutexW(std::ptr::null(), 0, name.as_ptr()) }
 }
 
-fn boot(app: AppHandle) {
+/// Hand a staged update to the guard and exit. Returns false if the app is
+/// now exiting.
+fn install_staged(app: &AppHandle, data_dir: &Path) -> bool {
+    let Some(staged) = updates::installable_staged(data_dir) else { return true };
+    set_splash(app, &format!("Installing update {}…", staged.version), Some(95));
+    match updates::launch_guard(data_dir, &staged) {
+        Ok(()) => {
+            app.exit(0);
+            false
+        }
+        Err(_) => true,
+    }
+}
+
+/// Startup update step, before the backend starts. Returns false if the app is
+/// exiting to install an update.
+fn run_startup_update(app: &AppHandle, data_dir: &Path, handshake: &migration::LegacyHandshake, post_update: bool) -> bool {
+    let (decision, state) = updates::startup_decision(data_dir, handshake.flag(), post_update);
+    match decision {
+        StartupDecision::StartWithoutUpdates(_) => true,
+        StartupDecision::InstallStaged { .. } => install_staged(app, data_dir),
+        StartupDecision::CheckRemote { discard_staged } => {
+            if discard_staged {
+                updates::discard_staged(data_dir);
+            }
+            set_splash(app, "Checking for updates…", Some(8));
+            let Some(update) = updates::check_remote(app, &state.blocked_versions) else { return true };
+            let version = update.version.clone();
+            let progress = updates::start_download(data_dir.to_path_buf(), update);
+            let started = Instant::now();
+            loop {
+                if progress.done.load(Ordering::Relaxed) {
+                    let finished = matches!(progress.result.lock().unwrap().as_ref(), Some(Ok(())));
+                    return if finished { install_staged(app, data_dir) } else { true };
+                }
+                let downloaded = progress.downloaded.load(Ordering::Relaxed);
+                let total = progress.total();
+                if update_policy::download_mode(downloaded, total, started.elapsed()) == DownloadMode::Background {
+                    // Keeps downloading; installs on the next launch or via
+                    // "Restart to update".
+                    return true;
+                }
+                let percent = total.map(|t| (downloaded.min(t) * 100 / t.max(1)) as u8).unwrap_or(0);
+                set_splash(app, &format!("Downloading update {version}…"), Some(10 + percent * 8 / 10));
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+    }
+}
+
+/// Every few hours: download and stage only, never restart on our own.
+fn background_update_checks(app: AppHandle) {
+    let data_dir = backend::data_dir();
+    loop {
+        std::thread::sleep(updates::BACKGROUND_CHECK_EVERY);
+        if updates::installable_staged(&data_dir).is_some() {
+            continue;
+        }
+        let state = alphapos_update::UpdateState::load(&alphapos_update::state_path(&data_dir));
+        if let Some(update) = updates::check_remote(&app, &state.blocked_versions) {
+            let progress = updates::start_download(data_dir.clone(), update);
+            while !progress.done.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_secs(5));
+            }
+        }
+    }
+}
+
+fn restart_to_update(app: &AppHandle) {
+    let data_dir = backend::data_dir();
+    let Some(staged) = updates::installable_staged(&data_dir) else {
+        message_box("Alpha POS is up to date. New versions are downloaded automatically.", false);
+        return;
+    };
+    let question = format!("Install Alpha POS {} now?\n\n{QUIT_WARNING}\nIt restarts by itself when the update is installed.", staged.version);
+    if !message_box(&question, true) {
+        return;
+    }
+    // Stop the backend first so the guard finds nothing running.
+    if let Some(backend) = app.state::<Shell>().backend.lock().unwrap().take() {
+        backend.stop();
+    }
+    if updates::launch_guard(&data_dir, &staged).is_ok() {
+        app.exit(0);
+    } else {
+        message_box("The update could not be started. Please try again later.", false);
+    }
+}
+
+fn boot(app: AppHandle, post_update: Option<String>) {
     // A 1.0.x update helper may be waiting for this launch to confirm health.
     let handshake = migration::LegacyHandshake::detect();
+    let data_dir = backend::data_dir();
     set_splash(&app, "Starting Alpha POS…", Some(5));
+    if !run_startup_update(&app, &data_dir, &handshake, post_update.is_some()) {
+        return;
+    }
+
     let mut backend = match backend::Backend::spawn() {
         Ok(backend) => backend,
         Err(error) => {
@@ -148,17 +249,24 @@ fn boot(app: AppHandle) {
             }
             if serving {
                 handshake.confirm_serving();
+                if let Some(version) = &post_update {
+                    updates::confirm_post_update(&data_dir, version);
+                }
             }
         }
         Err(error) => set_splash(&app, &format!("Could not open the panel: {error}"), None),
     }
+
+    let checker = app.clone();
+    let _ = std::thread::Builder::new().name("update-checks".into()).spawn(move || background_update_checks(checker));
 }
 
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, TRAY_OPEN, "Open Alpha POS", true, None::<&str>)?;
+    let update = MenuItem::with_id(app, TRAY_UPDATE, "Restart to update", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, TRAY_QUIT, "Quit Alpha POS", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &separator, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &update, &separator, &quit])?;
 
     let mut tray = TrayIconBuilder::with_id("main")
         .tooltip("Alpha POS")
@@ -166,8 +274,12 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             TRAY_OPEN => focus_existing(app),
+            TRAY_UPDATE => {
+                let handle = app.clone();
+                let _ = std::thread::Builder::new().name("restart-to-update".into()).spawn(move || restart_to_update(&handle));
+            }
             TRAY_QUIT => {
-                if confirm_quit() {
+                if message_box(&format!("Quit Alpha POS?\n\n{QUIT_WARNING}"), true) {
                     app.exit(0);
                 }
             }
@@ -195,12 +307,32 @@ async fn backend_call(shell: State<'_, Shell>, method: String, args: Option<Vec<
     Ok(backend.call(&method, &args, backend::call_timeout(&method)))
 }
 
+#[tauri::command]
+fn update_state() -> Value {
+    let data_dir = backend::data_dir();
+    let staged = updates::installable_staged(&data_dir);
+    let state = alphapos_update::UpdateState::load(&alphapos_update::state_path(&data_dir));
+    serde_json::json!({
+        "ok": true,
+        "current_version": updates::CURRENT_VERSION,
+        "staged_version": staged.map(|s| s.version),
+        "blocked_versions": state.blocked_versions,
+        "last_rollback": state.last_rollback,
+    })
+}
+
+#[tauri::command]
+fn restart_to_update_command(app: AppHandle) {
+    let _ = std::thread::Builder::new().name("restart-to-update".into()).spawn(move || restart_to_update(&app));
+}
+
 fn main() {
     // CI/support verification: no windows, no tray, no single-instance lock.
     let args: Vec<String> = std::env::args().collect();
     if let Some(mode) = headless::parse(&args) {
         std::process::exit(headless::run(mode));
     }
+    let post_update = args.windows(2).find(|pair| pair[0] == "--post-update").map(|pair| pair[1].clone());
 
     // Held for the whole process: the 1.0.x installer (AppMutex) and any stray
     // old launcher recognise a running Alpha POS by this name.
@@ -210,9 +342,10 @@ fn main() {
     let app = tauri::Builder::default()
         // Must be the first plugin: a second launch only focuses this window.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| focus_existing(app)))
+        .plugin(tauri_plugin_updater::Builder::new().pubkey(updates::PUBKEY).build())
         .manage(Shell::default())
-        .invoke_handler(tauri::generate_handler![backend_call])
-        .setup(|app| {
+        .invoke_handler(tauri::generate_handler![backend_call, update_state, restart_to_update_command])
+        .setup(move |app| {
             WebviewWindowBuilder::new(app, SPLASH, WebviewUrl::App("splash.html".into()))
                 .title("Alpha POS")
                 .inner_size(420.0, 260.0)
@@ -222,7 +355,8 @@ fn main() {
                 .build()?;
             build_tray(app)?;
             let handle = app.handle().clone();
-            std::thread::Builder::new().name("boot".into()).spawn(move || boot(handle))?;
+            let post_update = post_update.clone();
+            std::thread::Builder::new().name("boot".into()).spawn(move || boot(handle, post_update))?;
             Ok(())
         })
         .on_window_event(|window, event| {

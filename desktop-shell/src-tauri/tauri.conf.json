@@ -16,9 +16,13 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "publisher": "Alpha POS",
-    "icon": ["icons/icon.ico"],
+    "icon": [
+      "icons/icon.ico"
+    ],
     "windows": {
       "webviewInstallMode": {
         "type": "embedBootstrapper",
@@ -30,6 +34,14 @@
         "displayLanguageSelector": false,
         "startMenuFolder": "Alpha POS"
       }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEEyMEMwN0ZDNzg2RUYyRjQKUldUMDhtNTQvQWNNb3BTRUFHQWpULzh1bUY5Z0RPdHdZOWFQelUrTmpVQkx1TENscW82OWE5VVEK",
+      "endpoints": [
+        "https://control.78.111.91.113.nip.io/updates/tauri/stable/latest.json"
+      ]
     }
   }
 }
