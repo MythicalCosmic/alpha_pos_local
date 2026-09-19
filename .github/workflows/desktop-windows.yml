@@ -82,23 +82,31 @@ jobs:
           $p = Start-Process dist\AlphaPOS\AlphaPOS.exe -ArgumentList '--selftest', '--no-update' -Wait -PassThru -NoNewWindow
           if ($p.ExitCode -ne 0) { throw "selftest failed ($($p.ExitCode))" }
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-
-      - name: Real window - drive the panel in WebView2, measure latency
+      - name: Real window - screenshot the panel, measure latency
         shell: pwsh
         run: |
-          Push-Location desktop/ui-src
-          npm ci --no-audit --no-fund
-          Pop-Location
-          $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9222'
+          New-Item -ItemType Directory -Force ci-window-e2e | Out-Null
           $app = Start-Process dist\AlphaPOS\AlphaPOS.exe -ArgumentList '--no-update' -PassThru
           try {
-            node desktop/ui-src/e2e-window/real-window.mjs ci-window-e2e
-            if ($LASTEXITCODE -ne 0) { throw "real window check failed ($LASTEXITCODE)" }
-            # Warm, then time 200 sequential requests through the POS server.
             $client = [System.Net.Http.HttpClient]::new()
+            $deadline = (Get-Date).AddMinutes(4)
+            while ($true) {
+              try { if ($client.GetStringAsync('http://127.0.0.1:8000/healthz').Result -like 'ok*') { break } } catch { }
+              if ((Get-Date) -gt $deadline) { throw 'POS server never answered' }
+              Start-Sleep -Seconds 2
+            }
+            # pywebview sets its own WebView2 arguments, so no debugger can attach:
+            # capture the real screen instead and keep it as evidence.
+            Start-Sleep -Seconds 15
+            Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+            $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+            $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+            $bitmap.Save("$PWD\ci-window-e2e\screen.png", [System.Drawing.Imaging.ImageFormat]::Png)
+            Get-Process | Where-Object { $_.MainWindowTitle } | Select-Object ProcessName, MainWindowTitle | Format-Table -AutoSize | Out-String | Tee-Object ci-window-e2e\windows.txt
+            if (-not (Get-Process AlphaPOS | Where-Object { $_.MainWindowTitle -eq 'Alpha POS' })) { throw 'the Alpha POS window is not open' }
+            # Warm, then time 200 sequential requests through the POS server.
             1..20 | ForEach-Object { $null = $client.GetStringAsync('http://127.0.0.1:8000/healthz').Result }
             $times = 1..200 | ForEach-Object {
               $sw = [System.Diagnostics.Stopwatch]::StartNew()
