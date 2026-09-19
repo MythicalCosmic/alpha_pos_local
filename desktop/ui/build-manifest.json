@@ -1,13 +1,13 @@
 {
   "schema": 1,
   "generator": "desktop/ui-src/scripts/write-manifest.mjs",
-  "source_sha256": "174cae49683b481f035728af5102a1adc838ff805b042227d04b47ce0eac5ee4",
+  "source_sha256": "1b98ba319f1a59ae0058e74063c0ee93ac82799c405798b29dd02074e6bcf15c",
   "source_count": 51,
   "entry": {
     "html": "index.html",
-    "js": "assets/index-Bz4fyFK5.js",
+    "js": "assets/index-BG2IcQj1.js",
     "css": [
-      "assets/index-DlmIQmuu.css"
+      "assets/index-2LwMC__3.css"
     ],
     "imports": [
       "assets/ui-Xn38eYz4.js",
@@ -82,7 +82,7 @@
       ],
       "css": []
     },
-    "assets/index-Bz4fyFK5.js": {
+    "assets/index-BG2IcQj1.js": {
       "imports": [
         "assets/ui-Xn38eYz4.js",
         "assets/useQuery-D2KnF98k.js",
@@ -91,7 +91,7 @@
         "assets/sync--VBRpVMu.js"
       ],
       "css": [
-        "assets/index-DlmIQmuu.css"
+        "assets/index-2LwMC__3.css"
       ]
     },
     "assets/Modal-C29mdFi-.js": {
@@ -261,12 +261,12 @@
       "size": 1746
     },
     {
-      "path": "assets/index-Bz4fyFK5.js",
-      "size": 8678
+      "path": "assets/index-2LwMC__3.css",
+      "size": 16049
     },
     {
-      "path": "assets/index-DlmIQmuu.css",
-      "size": 15987
+      "path": "assets/index-BG2IcQj1.js",
+      "size": 8678
     },
     {
       "path": "assets/queries-Vsh2D_cG.js",

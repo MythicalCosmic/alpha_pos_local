@@ -125,10 +125,12 @@ textarea.input { height: auto; padding: 6px 10px; resize: vertical; }
 
 /* ---------- key/value ---------- */
 .kv { display: grid; }
-.kv-row { display: flex; align-items: baseline; gap: var(--s3); padding: 5px 0; border-bottom: 1px solid var(--border); min-width: 0; }
+/* A value too long for the label's line (a URL, an error) moves under the
+   label instead of breaking mid-word. */
+.kv-row { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: var(--s3); row-gap: 2px; padding: 5px 0; border-bottom: 1px solid var(--border); min-width: 0; }
 .kv-row:last-child { border-bottom: 0; }
-.kv-l { flex: 0 0 42%; color: var(--text-3); font-size: var(--fs-2); overflow-wrap: anywhere; }
-.kv-v { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 4px; justify-content: flex-end; text-align: right; overflow-wrap: anywhere; }
+.kv-l { flex: 0 1 auto; max-width: 42%; color: var(--text-3); font-size: var(--fs-2); overflow-wrap: anywhere; }
+.kv-v { flex: 1 1 auto; min-width: 0; max-width: 100%; display: flex; align-items: center; gap: 4px; justify-content: flex-end; text-align: right; overflow-wrap: anywhere; }
 .kv-v.dim { color: var(--text-3); }
 .kv-v .icon-btn { width: 22px; height: 22px; }
 .big { font-size: var(--fs-5); font-weight: 600; line-height: 1.2; }
