@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Alpha POS",
   "mainBinaryName": "AlphaPOS",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "identifier": "uz.alphapos.desktop",
   "build": {
     "frontendDist": "../dist"

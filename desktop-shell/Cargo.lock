@@ -34,7 +34,7 @@ dependencies = [
 
 [[package]]
 name = "alphapos-shell"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "alphapos-shell-core",
  "alphapos-update",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "alphapos-shell-core"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "semver",
  "serde",
@@ -60,7 +60,7 @@ dependencies = [
 
 [[package]]
 name = "alphapos-update"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "alphapos-shell-core",
  "base64 0.22.1",
