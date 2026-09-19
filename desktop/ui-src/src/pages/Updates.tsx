@@ -12,13 +12,9 @@ import { fmtBytes, fmtDateTime } from '../lib/format';
 export default function Updates() {
   const t = useT();
   const q = useUpdateStatus(POLL.updatePage);
-  const [busy, setBusy] = useState<'' | 'check' | 'install' | 'restart'>('');
+  const [busy, setBusy] = useState<'' | 'check' | 'install'>('');
   const u = q.data;
-  // The desktop app owns updates: it downloads and verifies in the background,
-  // this page shows what it staged and asks it to install.
-  const shell = u?.managed_by === 'shell';
-  const ready = shell && !!u?.staged_version;
-  const newer = !shell && !!(u?.available && u.available !== u.version);
+  const newer = !!(u?.available && u.available !== u.version);
 
   const check = async () => {
     setBusy('check');
@@ -26,11 +22,9 @@ export default function Updates() {
     setBusy('');
     store.invalidate(['update_status']);
     if (isFailure(r) || (typeof r.error === 'string' && r.error)) toast(errorText(r, t('upd.checkFailed')), 'danger');
-    else if (r.managed_by === 'shell') toast(t(r.available ? 'upd.ready' : 'upd.checkRequested'), 'info');
     else if (r.busy) toast(t('upd.checking'), 'info');
     else if (r.available && r.available !== u?.version) toast(t('upd.newAvailable'), 'info');
     else if (r.enabled !== false) toast(t('upd.upToDate'), 'ok');
-    else if (u?.managed_by === 'shell') toast(t('upd.shellMode'), 'info');
     else toast(r.reason || t('upd.disabledMode'), 'warn');
   };
 
@@ -42,14 +36,6 @@ export default function Updates() {
     store.invalidate(['update_status']);
   };
 
-  const restart = async () => {
-    setBusy('restart');
-    const r = await api('restart_to_update');
-    setBusy('');
-    if (isFailure(r)) toast(errorText(r, t('upd.restartFailed')), 'danger');
-    else toast(t('upd.restartAsked'), 'info');
-  };
-
   return (
     <div class="page">
       <p class="page-sub">{t('upd.sub')}</p>
@@ -57,8 +43,8 @@ export default function Updates() {
         <Card
           title={t('upd.current')}
           actions={u ? (
-            <Badge tone={u.active || u.pending || newer || ready ? 'warn' : u.checking ? 'info' : 'ok'}>
-              {t(u.active ? 'upd.installing' : u.pending ? 'upd.pending' : ready ? 'upd.ready' : newer ? 'upd.newAvailable' : u.checking ? 'upd.checking' : 'upd.upToDate')}
+            <Badge tone={u.active || u.pending || newer ? 'warn' : 'ok'}>
+              {t(u.active ? 'upd.installing' : u.pending ? 'upd.pending' : newer ? 'upd.newAvailable' : 'upd.upToDate')}
             </Badge>
           ) : null}
         >
@@ -73,7 +59,7 @@ export default function Updates() {
                       <div class="big mono">{d.version ? `v${d.version}` : '—'}</div>
                     </div>
                     <KeyValue>
-                      <KV label={t('upd.mode')}>{t(d.managed_by === 'shell' ? 'upd.shellMode' : !d.frozen ? 'upd.dev' : d.enabled === false ? 'upd.disabledMode' : 'upd.installed')}</KV>
+                      <KV label={t('upd.mode')}>{t(!d.frozen ? 'upd.dev' : d.enabled === false ? 'upd.disabledMode' : 'upd.installed')}</KV>
                       <KV label={t('upd.server')} mono dim={!d.update_url}>{d.update_url || t('common.none')}</KV>
                       <KV label={t('upd.availableV')} mono>{d.available ? `v${d.available}` : t('upd.upToDate')}</KV>
                     </KeyValue>
@@ -88,8 +74,7 @@ export default function Updates() {
                     </KeyValue>
                   </div>
                   {d.pending ? <div class="mt-3"><Banner tone="warn">{t('upd.pendingMsg')}</Banner></div> : null}
-                  {ready ? <div class="mt-3"><Banner tone="info">{t('upd.readyMsg', { version: d.staged_version || '' })}</Banner></div> : null}
-                  {!shell && (d.active || (d.phase && d.phase !== 'idle')) ? (
+                  {d.active || (d.phase && d.phase !== 'idle') ? (
                     <div class="mt-3" aria-label={t('upd.progress')} role="group">
                       <div class="row-between small">
                         <span class="wrap">{d.message || d.phase}</span>
@@ -105,18 +90,12 @@ export default function Updates() {
             }}
           </QueryBoundary>
           <div class="row mt-4">
-            <Button icon={<IconRefresh size={14} />} loading={busy === 'check'} disabled={!!busy || !!u?.active || !!u?.checking} onClick={() => void check()}>
+            <Button icon={<IconRefresh size={14} />} loading={busy === 'check'} disabled={!!busy || !!u?.active} onClick={() => void check()}>
               {t(busy === 'check' ? 'upd.checking' : 'upd.checkNow')}
             </Button>
-            {shell ? (
-              <Button variant="primary" loading={busy === 'restart'} disabled={!!busy || !ready} onClick={() => void restart()}>
-                {t('upd.restart')}
-              </Button>
-            ) : (
-              <Button variant="primary" icon={<IconDownload size={14} />} loading={busy === 'install'} disabled={!!busy || !!u?.active || !newer} onClick={() => void install()}>
-                {t(u?.active ? 'upd.installing' : 'upd.installNow')}
-              </Button>
-            )}
+            <Button variant="primary" icon={<IconDownload size={14} />} loading={busy === 'install'} disabled={!!busy || !!u?.active || !newer} onClick={() => void install()}>
+              {t(u?.active ? 'upd.installing' : 'upd.installNow')}
+            </Button>
           </div>
           <p class="small muted mt-3">{t('upd.auto')}</p>
         </Card>

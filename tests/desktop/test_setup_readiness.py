@@ -1,4 +1,4 @@
-"""Setup failures and readiness as the panel and the desktop shell see them."""
+"""Setup failures and readiness as the panel sees them."""
 
 from __future__ import annotations
 
@@ -84,16 +84,6 @@ def test_operator_refusals_are_not_logged_as_errors(caplog):
     refused, crashed = caplog.records
     assert (refused.levelno, refused.exc_info) == (logging.INFO, None)
     assert crashed.levelno == logging.ERROR and crashed.exc_info
-
-
-def test_shell_port_zero_is_not_reported_as_a_problem(caplog):
-    with caplog.at_level(logging.INFO, logger='desktop.control'):
-        httpd = control_server.serve(preferred_port=0)
-    try:
-        assert control_server.CONTROL_PORT == httpd.server_address[1]
-        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
-    finally:
-        httpd.server_close()
 
 
 def _initdb_recorder(monkeypatch, tmp_path, succeed_on):

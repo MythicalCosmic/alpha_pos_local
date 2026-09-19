@@ -245,7 +245,6 @@ export const FIXTURES: Record<string, Fixture> = {
   }),
   check_updates_only: ({ state }) => ({ ok: true, current: '1.1.0', available: state.scenario === 'update-pending' ? '1.1.1' : null, enabled: true }),
   check_updates_now: () => ({ ok: true, started: true }),
-  restart_to_update: () => ({ ok: true, requested: true }),
   license_status: ({ state }) => ({
     ok: true,
     license: state.scenario === 'unregistered' || state.scenario === 'empty'

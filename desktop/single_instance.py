@@ -18,9 +18,6 @@ logger = logging.getLogger('desktop.single_instance')
 # Global\\ makes it system-wide (across sessions). Version-suffixed so a future
 # protocol change can't collide with an old running build.
 _MUTEX_NAME = 'Global\\AlphaPOS_SingleInstance_v1'
-# The windowless backend started by the Tauri shell guards pgdata separately, so
-# two backends can never share one embedded cluster even if two shells raced.
-BACKEND_MUTEX_NAME = 'Global\\AlphaPOS_Backend_v1'
 _ERROR_ALREADY_EXISTS = 183
 
 # Held for the process lifetime — must NOT be garbage-collected, or the mutex is

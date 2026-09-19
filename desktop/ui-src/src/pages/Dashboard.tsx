@@ -334,24 +334,14 @@ function FiscalTile() {
 function UpdatesTile() {
   const t = useT();
   const q = useUpdateStatus();
-  const [busy, setBusy] = useState(false);
   const d = q.data;
-  const shell = d?.managed_by === 'shell';
-  const ready = shell && !!d?.staged_version;
-  const newer = !shell && !!(d?.available && d.available !== d.version);
-  const restart = async () => {
-    setBusy(true);
-    const r = await api('restart_to_update');
-    setBusy(false);
-    if (isFailure(r)) toast(errorText(r, t('upd.restartFailed')), 'danger');
-    else toast(t('upd.restartAsked'), 'info');
-  };
+  const newer = !!(d?.available && d.available !== d.version);
   return (
     <Card
       class="tile" title={t('nav.updates')}
       actions={d ? (
-        <Badge tone={d.pending ? 'warn' : ready || newer ? 'info' : 'ok'}>
-          {t(d.pending ? 'upd.pending' : ready ? 'upd.ready' : newer ? 'upd.newAvailable' : 'upd.upToDate')}
+        <Badge tone={d.pending ? 'warn' : newer ? 'info' : 'ok'}>
+          {t(d.pending ? 'upd.pending' : newer ? 'upd.newAvailable' : 'upd.upToDate')}
         </Badge>
       ) : null}
     >
@@ -359,14 +349,11 @@ function UpdatesTile() {
         {(u) => (
           <KeyValue>
             <KV label={t('upd.version')} mono>{u.version ? `v${u.version}` : '—'}</KV>
-            <KV label={t('upd.mode')}>{t(u.managed_by === 'shell' ? 'upd.shellMode' : !u.frozen ? 'upd.dev' : u.enabled === false ? 'upd.disabledMode' : 'upd.installed')}</KV>
+            <KV label={t('upd.mode')}>{t(!u.frozen ? 'upd.dev' : u.enabled === false ? 'upd.disabledMode' : 'upd.installed')}</KV>
           </KeyValue>
         )}
       </QueryBoundary>
       <div class="tile-foot">
-        {ready ? (
-          <Button size="sm" variant="primary" loading={busy} onClick={() => void restart()}>{t('upd.restart')}</Button>
-        ) : null}
         <Button size="sm" onClick={() => navigate('updates')}>{t('common.manage')}</Button>
       </div>
     </Card>

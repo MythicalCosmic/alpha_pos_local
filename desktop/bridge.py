@@ -634,27 +634,6 @@ class Api:
         else:
             os.environ.pop(key, None)
 
-    @staticmethod
-    def _shell_version():
-        import os
-        return os.environ.get('ALPHA_POS_SHELL_VERSION', '').strip()
-
-    @staticmethod
-    def _shell_update_status():
-        """What the desktop shell last reported about its own updater.
-
-        The shell downloads, verifies and installs updates; it publishes its
-        state in ``update/shell-status.json`` so this panel can show it without
-        depending on the shell's IPC.
-        """
-        import json
-        try:
-            path = config_store.DATA_DIR / 'update' / 'shell-status.json'
-            data = json.loads(path.read_text(encoding='utf-8'))
-            return data if isinstance(data, dict) else {}
-        except (OSError, ValueError):
-            return {}
-
     @_safe
     def update_status(self):
         """Full update state for the Updates page: installed version, whether
@@ -662,40 +641,13 @@ class Api:
         recorded last-check / last-update / available-version / history."""
         self._ensure_update_env()
         from desktop import updater
-        info = {'ok': True, **updater.get_status_info()}
-        shell_version = self._shell_version()
-        if shell_version:
-            # The Tauri desktop app downloads, installs and confirms updates.
-            shell = self._shell_update_status()
-            staged = str(shell.get('staged_version') or '').strip()
-            info.update(
-                managed_by='shell', shell_version=shell_version,
-                enabled=True, reason='',
-                available=staged or None,
-                # "pending" is the legacy updater's "did not confirm a clean
-                # start" warning; a staged shell update is ordinary good news.
-                pending=False,
-                staged_version=staged or None,
-                checking=bool(shell.get('checking')),
-                last_check_at=shell.get('last_check_at') or info.get('last_check_at'),
-                last_check_error=str(shell.get('last_check_error') or ''),
-                blocked_versions=list(shell.get('blocked_versions') or []),
-                last_rollback=shell.get('last_rollback'),
-            )
-        return info
+        return {'ok': True, **updater.get_status_info()}
 
     @_safe
     def check_updates_only(self):
         """Ask the server whether a newer version exists WITHOUT installing it,
         so the page can show 'up to date' or offer an install."""
         self._ensure_update_env()
-        if self._shell_version():
-            from desktop import lifecycle
-            lifecycle.STATE.request_update_check()
-            staged = str(self._shell_update_status().get('staged_version') or '').strip()
-            return {'ok': True, 'managed_by': 'shell', 'requested': True,
-                    'current': self._shell_version(), 'available': staged or None,
-                    'enabled': True}
         from desktop import updater
         return {'ok': True, **updater.check_only()}
 
@@ -708,23 +660,9 @@ class Api:
         performs a bounded atomic swap + relaunch.
         """
         self._ensure_update_env()
-        if self._shell_version():
-            return {'ok': False, 'managed_by': 'shell',
-                    'error': 'Updates are installed by the Alpha POS desktop app. Use "Restart to update".'}
         from desktop import updater
         result = updater.start_update()
         return {'ok': True, **result}
-
-    @_safe
-    def restart_to_update(self):
-        """Ask the desktop shell to install the staged update (it asks first)."""
-        if not self._shell_version():
-            return {'ok': False, 'error': 'Restart to update is only available in the Alpha POS desktop app.'}
-        if not str(self._shell_update_status().get('staged_version') or '').strip():
-            return {'ok': False, 'error': 'No update is ready yet. New versions are downloaded automatically.'}
-        from desktop import lifecycle
-        lifecycle.STATE.request_update_restart()
-        return {'ok': True, 'requested': True}
 
     @_safe
     def license_status(self):

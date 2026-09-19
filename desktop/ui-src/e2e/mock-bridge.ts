@@ -16,8 +16,6 @@ export interface MockOptions {
   /** true → every call is 403; array → only those methods. */
   forbidden?: boolean | string[];
   overrides?: Record<string, (ctx: FixtureContext) => Record<string, unknown>>;
-  /** Expose window.__TAURI_INTERNALS__ (routes backend_call through the same mock). */
-  tauri?: boolean;
   prefs?: { theme?: string; lang?: string };
 }
 
@@ -43,27 +41,6 @@ export async function installMockBridge(page: Page, options: MockOptions = {}): 
         /* ignore */
       }
     }, options.prefs);
-  }
-
-  if (options.tauri) {
-    await page.addInitScript(() => {
-      (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {
-        async invoke(cmd: string, payload?: { method: string; args: unknown[] }) {
-          const w = window as unknown as Record<string, number>;
-          if (cmd === 'restart_to_update') {
-            w.__restartCalls = (w.__restartCalls || 0) + 1;
-            return { ok: true };
-          }
-          const response = await fetch(`/api/${payload!.method}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload!.args),
-          });
-          if (response.status === 403) throw new Error('HTTP 403 forbidden');
-          return response.json();
-        },
-      };
-    });
   }
 
   await page.route('**/api/*', async (route) => {

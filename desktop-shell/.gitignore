@@ -1,4 +1,0 @@
-/target/
-/src-tauri/gen/schemas/
-# Built update guard copied in before bundling.
-/src-tauri/resources/bin/

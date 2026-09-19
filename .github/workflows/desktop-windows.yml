@@ -1,19 +1,20 @@
 name: Desktop (Windows)
 
-# Native Windows build + smoke for the Tauri shell and the windowless backend.
-# The release build is cross-compiled on Linux; this job proves the same
-# sources build, install and run on real Windows with a real WebView2 runtime.
+# Native Windows build + smoke of the desktop app (pywebview launcher,
+# embedded PostgreSQL, uvicorn). The release installer is built under Wine;
+# this job proves the same sources build and run on real Windows with a real
+# WebView2 runtime, and measures local API latency there.
 on:
   workflow_dispatch:
   push:
     branches:
-      - feature/desktop-1.1-tauri
       - 'release/desktop-*'
     paths:
       - 'desktop/**'
-      - 'desktop-shell/**'
+      - 'config/**'
+      - 'customers/**'
       - 'alpha_pos_core'
-      - 'AlphaPOSBackend.spec'
+      - 'AlphaPOS.spec'
       - 'requirements-desktop.txt'
       - 'tools/**'
       - '.github/workflows/desktop-windows.yml'
@@ -23,12 +24,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-install-smoke:
+  build-smoke:
     runs-on: windows-latest
-    timeout-minutes: 120
+    timeout-minutes: 90
     env:
       PG_ZIP_URL: https://get.enterprisedb.com/postgresql/postgresql-16.6-1-windows-x64-binaries.zip
-      INSTALL_DIR: ${{ github.workspace }}\..\install\AlphaPOS
       # Keep the smoke run offline and self-contained.
       SECRET_KEY: ci-desktop-smoke-only
       SYNC_ENABLED: 'False'
@@ -61,106 +61,55 @@ jobs:
           Expand-Archive pg.zip -DestinationPath _pg
           Remove-Item pg.zip
 
-      - name: Backend build dependencies
+      - name: Build dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-desktop.txt pyinstaller
           python -m pip install --no-deps --no-build-isolation ./alpha_pos_core
 
-      - name: Build windowless backend
+      - name: Build the desktop app
         shell: pwsh
         env:
           ALPHA_POS_PGSQL_DIR: ${{ github.workspace }}\_pg\pgsql
-          DEBUG: 'True'
-        run: python -m PyInstaller --noconfirm --clean AlphaPOSBackend.spec
+        run: |
+          python desktop/make_icon.py
+          python -m PyInstaller --noconfirm --clean AlphaPOS.spec
 
-      - name: Backend selftest
+      - name: Selftest
         shell: pwsh
         run: |
-          & dist\AlphaPOSBackend\AlphaPOSBackend.exe --selftest
-          if ($LASTEXITCODE -ne 0) { throw "backend selftest failed ($LASTEXITCODE)" }
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: desktop-shell
-
-      - name: Tauri CLI
-        shell: pwsh
-        run: cargo install tauri-cli --version "^2" --locked
-
-      - name: Shell unit tests
-        working-directory: desktop-shell
-        run: cargo test -p alphapos-shell-core -p alphapos-update
-
-      - name: Build update guard
-        shell: pwsh
-        working-directory: desktop-shell
-        run: |
-          cargo build --release -p alphapos-update --bin alphapos-update-guard
-          New-Item -ItemType Directory -Force src-tauri\resources\bin | Out-Null
-          Copy-Item target\release\alphapos-update-guard.exe src-tauri\resources\bin\
-
-      - name: Build installer
-        shell: pwsh
-        run: |
-          python tools/sync_version.py --check
-          if ($LASTEXITCODE -ne 0) { throw "version drift" }
-          Push-Location desktop-shell
-          # CI has no updater signing key (and must not): skip signed updater artifacts.
-          cargo tauri build --bundles nsis --config src-tauri/tauri.release.conf.json --config src-tauri/tauri.ci.conf.json
-          Pop-Location
-
-      - name: Install silently into a scratch folder
-        shell: pwsh
-        run: |
-          $setup = Get-ChildItem desktop-shell\target\release\bundle\nsis\*-setup.exe | Select-Object -First 1
-          New-Item -ItemType Directory -Force $env:INSTALL_DIR | Out-Null
-          $p = Start-Process $setup.FullName -ArgumentList '/S', "/D=$((Resolve-Path $env:INSTALL_DIR).Path)" -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "installer exited $($p.ExitCode)" }
-          if (-not (Test-Path "$env:INSTALL_DIR\AlphaPOS.exe")) { throw 'shell missing from install' }
-          if (-not (Test-Path "$env:INSTALL_DIR\backend\AlphaPOSBackend.exe")) { throw 'backend missing from install' }
-          if (-not (Test-Path "$env:INSTALL_DIR\bin\alphapos-update-guard.exe")) { throw 'update guard missing from install' }
-          if ((Get-Content "$env:INSTALL_DIR\version.txt").Trim() -ne (python -c "from desktop.version import __version__; print(__version__)")) { throw 'version.txt mismatch' }
-
-      - name: Headless smoke (start, serve, graceful stop)
-        shell: pwsh
-        run: |
-          $p = Start-Process "$env:INSTALL_DIR\AlphaPOS.exe" -ArgumentList '--headless-smoke' -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "headless smoke failed ($($p.ExitCode))" }
-          Start-Sleep -Seconds 2
-          if (Get-Process postgres -ErrorAction SilentlyContinue) { throw 'postgres.exe survived a graceful stop' }
-
-      - name: Job Object kills the backend tree with the shell
-        shell: pwsh
-        run: |
-          $p = Start-Process "$env:INSTALL_DIR\AlphaPOS.exe" -ArgumentList '--headless-serve', '120' -PassThru
-          $deadline = (Get-Date).AddMinutes(4)
-          while (-not (Get-Process postgres -ErrorAction SilentlyContinue)) {
-            if ((Get-Date) -gt $deadline) { throw 'backend never started postgres' }
-            Start-Sleep -Seconds 2
-          }
-          Stop-Process -Id $p.Id -Force
-          Start-Sleep -Seconds 5
-          if (Get-Process postgres, AlphaPOSBackend -ErrorAction SilentlyContinue) { throw 'backend tree survived the shell' }
+          $p = Start-Process dist\AlphaPOS\AlphaPOS.exe -ArgumentList '--selftest', '--no-update' -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0) { throw "selftest failed ($($p.ExitCode))" }
 
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
 
-      - name: Real window - drive the installed panel in WebView2
+      - name: Real window - drive the panel in WebView2, measure latency
         shell: pwsh
         run: |
           Push-Location desktop/ui-src
           npm ci --no-audit --no-fund
           Pop-Location
           $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9222'
-          $app = Start-Process "$env:INSTALL_DIR\AlphaPOS.exe" -PassThru
+          $app = Start-Process dist\AlphaPOS\AlphaPOS.exe -ArgumentList '--no-update' -PassThru
           try {
-            node desktop/ui-src/e2e-shell/real-shell.mjs ci-shell-e2e
-            if ($LASTEXITCODE -ne 0) { throw "real shell check failed ($LASTEXITCODE)" }
+            node desktop/ui-src/e2e-window/real-window.mjs ci-window-e2e
+            if ($LASTEXITCODE -ne 0) { throw "real window check failed ($LASTEXITCODE)" }
+            # Warm, then time 200 sequential requests through the POS server.
+            $client = [System.Net.Http.HttpClient]::new()
+            1..20 | ForEach-Object { $null = $client.GetStringAsync('http://127.0.0.1:8000/healthz').Result }
+            $times = 1..200 | ForEach-Object {
+              $sw = [System.Diagnostics.Stopwatch]::StartNew()
+              $null = $client.GetStringAsync('http://127.0.0.1:8000/healthz').Result
+              $sw.Elapsed.TotalMilliseconds
+            }
+            $sorted = $times | Sort-Object
+            $avg = ($times | Measure-Object -Average).Average
+            $p95 = $sorted[[int]($sorted.Count * 0.95) - 1]
+            "healthz: avg {0:N2} ms, p50 {1:N2} ms, p95 {2:N2} ms" -f $avg, $sorted[100], $p95 | Tee-Object ci-window-e2e\latency.txt
+            if ($avg -gt 10) { throw "local API too slow: avg $avg ms" }
           } finally {
             Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 5
@@ -173,13 +122,11 @@ jobs:
           New-Item -ItemType Directory -Force ci-logs | Out-Null
           if (Test-Path "$env:LOCALAPPDATA\AlphaPOS\logs") { Copy-Item "$env:LOCALAPPDATA\AlphaPOS\logs\*" ci-logs -Recurse -ErrorAction SilentlyContinue }
           if (Test-Path "$env:LOCALAPPDATA\AlphaPOS\pgdata\pg.log") { Copy-Item "$env:LOCALAPPDATA\AlphaPOS\pgdata\pg.log" ci-logs }
-          if (Test-Path ci-shell-e2e) { Copy-Item ci-shell-e2e ci-logs -Recurse -ErrorAction SilentlyContinue }
+          if (Test-Path ci-window-e2e) { Copy-Item ci-window-e2e ci-logs -Recurse -ErrorAction SilentlyContinue }
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: desktop-windows-${{ github.sha }}
-          path: |
-            ci-logs
-            desktop-shell/target/release/bundle/nsis/*-setup.exe
+          path: ci-logs
           retention-days: 7

@@ -110,14 +110,6 @@ export interface LicenseInfo {
 }
 
 export interface UpdateStatus {
-  /** 'shell' when the Tauri desktop app installs updates itself. */
-  managed_by?: 'shell';
-  /** Shell mode: a verified update that installs on "Restart to update". */
-  staged_version?: string | null;
-  /** Shell mode: the desktop app is looking for / downloading a version now. */
-  checking?: boolean;
-  blocked_versions?: string[];
-  requested?: boolean;
   version?: string;
   enabled?: boolean;
   reason?: string;

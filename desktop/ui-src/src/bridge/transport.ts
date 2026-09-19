@@ -1,5 +1,5 @@
-// Transport contract shared by the HTTP (control_server.py) and Tauri
-// (invoke('backend_call')) bridges. A transport NEVER throws: every failure is
+// Transport contract of the panel bridge (HTTP to control_server.py, or a test
+// override). A transport NEVER throws: every failure is
 // normalized into a BridgeFailure so screens can render it.
 
 export type BridgeErrorKind = 'transport' | 'timeout' | 'auth' | 'http';
@@ -25,13 +25,8 @@ export interface CallOptions {
 }
 
 export interface Transport {
-  readonly name: 'http' | 'tauri' | 'custom';
+  readonly name: 'http' | 'custom';
   call(method: string, args: unknown[], options: CallOptions): Promise<BackendResult>;
-}
-
-export interface Capabilities {
-  shell: 'tauri' | 'legacy';
-  restartToUpdate: boolean;
 }
 
 export function failure(kind: BridgeErrorKind, error: string, status?: number): BridgeFailure {

@@ -5,8 +5,7 @@ dispatches to bridge.Api methods. It runs on 127.0.0.1:CONTROL_PORT and is
 SEPARATE from the POS server (uvicorn on 8000) so the panel survives the
 operator starting/stopping the POS server with the big button.
 
-The legacy launcher shows it in a pywebview window; the Tauri shell instead
-proxies /api calls to it and polls /lifecycle (see desktop/backend_main.py).
+The launcher shows it in a pywebview window (desktop/app.py).
 
 SECURITY: the API is on a localhost TCP port, which any web page the operator
 visits could try to POST to (CSRF / DNS-rebinding against the bridge). Two
@@ -36,9 +35,6 @@ CONTROL_PORT = 8765   # preferred; serve() falls back to a free port if it's tak
 # loading the wrong server (which surfaced to the operator as "forbidden").
 _HEALTH_MARKER = 'alphapos-control-ok'
 
-# Token handed over by the Tauri shell when it spawns the backend.
-SHELL_TOKEN_ENV = 'ALPHAPOS_CONTROL_TOKEN'
-
 # Loopback host names accepted on the API (DNS-rebinding defense: evil.com ->
 # 127.0.0.1 sends a non-loopback Host and is rejected). Port is NOT pinned since
 # serve() may bind a fallback port.
@@ -49,14 +45,7 @@ def _load_or_make_token() -> str:
     """Panel API token, PERSISTED across launches. A per-launch token broke a
     panel served from a cached page (the page kept a stale token -> 403
     'forbidden'); a stable 0600-file token keeps the CSRF defense while surviving
-    cache + relaunch. Falls back to an ephemeral token if the file can't be used.
-
-    When the desktop shell starts the backend it supplies its own token in
-    ``ALPHAPOS_CONTROL_TOKEN``. It is removed from the environment immediately so
-    child processes (Postgres, ssh) never inherit it."""
-    shell_token = os.environ.pop(SHELL_TOKEN_ENV, '').strip()
-    if len(shell_token) >= 32:
-        return shell_token
+    cache + relaunch. Falls back to an ephemeral token if the file can't be used."""
     try:
         from desktop import config_store
         tf = config_store.DATA_DIR / '.control_token'
@@ -161,11 +150,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, html, 'text/html; charset=utf-8')
         if self.path == '/healthz':
             return self._send(200, _HEALTH_MARKER, 'text/plain')
-        if self.path == '/lifecycle':
-            if self.headers.get('X-Control-Token') != CONTROL_TOKEN:
-                return self._send(403, json.dumps({'ok': False, 'error': 'forbidden'}))
-            from desktop import lifecycle
-            return self._send(200, json.dumps({'ok': True, **lifecycle.STATE.snapshot()}))
         # Static panel assets — confined to the ui dir. A resolved path that
         # escapes it (.. traversal) or an unknown extension is refused.
         rel = self.path.split('?', 1)[0].lstrip('/')
@@ -184,12 +168,6 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._host_ok():
             return self._send(403, '{"error":"forbidden host"}')
-        if self.path == '/lifecycle/shutdown':
-            if self.headers.get('X-Control-Token') != CONTROL_TOKEN:
-                return self._send(403, json.dumps({'ok': False, 'error': 'forbidden'}))
-            from desktop import lifecycle
-            accepted = lifecycle.STATE.request_shutdown()
-            return self._send(200, json.dumps({'ok': True, 'accepted': accepted, **lifecycle.STATE.snapshot()}))
         if not self.path.startswith('/api/'):
             return self._send(404, '{"error":"not found"}')
         # Reject cross-site / unauthorized callers before doing any work.
@@ -256,8 +234,7 @@ def serve(host=CONTROL_HOST, preferred_port=CONTROL_PORT):
     except OSError:
         httpd = ThreadingHTTPServer((host, 0), Handler)   # race / TIME_WAIT -> free port
     CONTROL_PORT = httpd.server_address[1]
-    # preferred_port=0 (the desktop shell) asks for any free port: not a problem.
-    if preferred_port and CONTROL_PORT != preferred_port:
+    if CONTROL_PORT != preferred_port:
         logger.warning('control panel: port %s unavailable — using %s',
                        preferred_port, CONTROL_PORT)
     else:

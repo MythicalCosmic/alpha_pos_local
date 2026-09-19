@@ -153,10 +153,49 @@ def _selftest(*, require_webview=True):
     return 0
 
 
+# Microsoft Edge WebView2 runtime (stable, beta, dev, canary) client ids.
+_WEBVIEW2_CLIENTS = (
+    '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+    '{2CD8A007-E189-409D-A2C8-9AF4EF3C72AA}',
+    '{0D50BFEC-CD6A-4F9A-964C-C7416E3ACB10}',
+    '{65C35B14-6C1D-4122-AC46-7148CC9D6497}',
+)
+
+
+def _webview2_installed() -> bool:
+    """True when the WebView2 runtime is registered for this user or machine.
+
+    Without it pywebview silently renders with Internet Explorer (MSHTML),
+    which cannot run the panel: the window stays blank. Edge's --app window is
+    the better fallback then.
+    """
+    try:
+        import winreg
+    except ImportError:
+        return False
+    for client in _WEBVIEW2_CLIENTS:
+        for hive, prefix in (
+            (winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients'),
+            (winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\Microsoft\EdgeUpdate\Clients'),
+            (winreg.HKEY_CURRENT_USER, r'SOFTWARE\Microsoft\EdgeUpdate\Clients'),
+        ):
+            try:
+                with winreg.OpenKey(hive, rf'{prefix}\{client}') as key:
+                    version, _ = winreg.QueryValueEx(key, 'pv')
+            except OSError:
+                continue
+            if str(version or '').strip() not in ('', '0.0.0.0'):
+                return True
+    return False
+
+
 def _run_pywebview(url: str) -> bool:
     """Native window via pywebview/WebView2. Returns True if it ran (and the
     window has since closed), False if the backend is unavailable so the caller
     can fall back. Blocks until the window is closed."""
+    if not _webview2_installed():
+        logger.warning('WebView2 runtime not found; using the Edge app window')
+        return False
     try:
         import webview
     except Exception:  # noqa: BLE001 — not bundled / import error
@@ -166,7 +205,12 @@ def _run_pywebview(url: str) -> bool:
         webview.create_window('Alpha POS', url, width=1060, height=760,
                               min_size=(900, 640))
         # Blocks until the window closes. Raises if WebView2 can't initialize.
-        webview.start()
+        # A persistent profile keeps the panel's cached assets and preferences
+        # between launches (private mode started from an empty profile).
+        webview.start(
+            gui='edgechromium', private_mode=False,
+            storage_path=str(Path(_profile_dir()).parent / 'webview2-profile'),
+        )
         return True
     except Exception:  # noqa: BLE001 — WebView2 runtime missing / init failed
         logger.exception('pywebview window failed; falling back to Edge/browser')

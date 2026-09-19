@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { FIXTURES, initialState, type FixtureContext } from './fixtures/bridge-fixtures';
+import { initialState } from './fixtures/bridge-fixtures';
 import { installMockBridge } from './mock-bridge';
 import { openRoute, ROUTES, sharedAssertions, trackErrors, waitReady, waitReadyWithClock, type Route } from './support';
 
@@ -341,39 +341,12 @@ test.describe('pages', () => {
     await sharedAssertions(page, errors, 'big logs');
   });
 
-  test('restart to update follows the updates the desktop app has staged', async ({ browser }) => {
-    const legacy = await browser.newPage();
-    await installMockBridge(legacy, { scenario: 'update-pending' });
-    await legacy.goto('/#/updates');
-    await waitReady(legacy);
-    await expect(legacy.getByRole('button', { name: 'Install now' })).toBeVisible();
-    await expect(legacy.getByRole('button', { name: 'Restart to update' })).toHaveCount(0);
-    await legacy.close();
-
-    const shellStatus = (staged: string | null) => (ctx: FixtureContext) => ({
-      ...FIXTURES.update_status(ctx),
-      managed_by: 'shell', pending: false, available: staged, staged_version: staged,
-    });
-
-    const idle = await browser.newPage();
-    await installMockBridge(idle, { scenario: 'healthy', tauri: true, overrides: { update_status: shellStatus(null) } });
-    await idle.goto('/#/updates');
-    await waitReady(idle);
-    await expect(idle.getByRole('button', { name: 'Install now' })).toHaveCount(0);
-    await expect(idle.getByRole('button', { name: 'Restart to update' })).toBeDisabled();
-    await idle.close();
-
-    const shell = await browser.newPage();
-    const mock = await installMockBridge(shell, { scenario: 'healthy', tauri: true, overrides: { update_status: shellStatus('1.1.1') } });
-    await shell.goto('/#/updates');
-    await waitReady(shell);
-    await expect(shell.getByText('Version 1.1.1 is downloaded and verified', { exact: false })).toBeVisible();
-    const restart = shell.getByRole('button', { name: 'Restart to update' });
-    await expect(restart).toBeEnabled();
-    await restart.click();
-    await mock.waitForCall('restart_to_update');
-    await expect(shell.locator('.toast', { hasText: 'Confirm the update' })).toBeVisible();
-    await shell.close();
+  test('updates offer the signed installer, never a shell restart', async ({ page }) => {
+    await installMockBridge(page, { scenario: 'update-pending' });
+    await page.goto('/#/updates');
+    await waitReady(page);
+    await expect(page.getByRole('button', { name: 'Install now' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Restart to update' })).toHaveCount(0);
   });
 
   test('tests that need an unconfigured feature read "Not set up", not FAIL', async ({ page }) => {

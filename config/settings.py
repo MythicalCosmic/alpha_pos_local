@@ -81,10 +81,3 @@ CHANNEL_LAYERS = {
 for _handler in ('app_file', 'error_file'):
     if _handler in LOGGING['handlers']:  # noqa: F405
         LOGGING['handlers'][_handler]['encoding'] = 'utf-8'  # noqa: F405
-# Under the desktop shell stdout/stderr land in an unrotated console file. With
-# the rotating files in place the console copy is only a second, unbounded one;
-# uncaught tracebacks still reach that file without it.
-if 'app_file' in LOGGING['handlers'] and os.environ.get('ALPHA_POS_SHELL_VERSION'):  # noqa: F405
-    LOGGING['root']['handlers'] = [  # noqa: F405
-        name for name in LOGGING['root']['handlers'] if name != 'console'  # noqa: F405
-    ]

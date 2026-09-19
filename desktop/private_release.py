@@ -66,13 +66,7 @@ def installed_payload_path() -> Path | None:
     """Return the fixed installed payload path for a frozen application."""
     if not getattr(sys, 'frozen', False):
         return None
-    exe_dir = Path(sys.executable).resolve().parent
-    candidate = exe_dir / PAYLOAD_FILENAME
-    # Tauri layout: AlphaPOS.exe (shell) + backend\AlphaPOSBackend.exe. The
-    # installer drops the payload beside the shell, one level above the backend.
-    if exe_dir.name.lower() == 'backend' and not candidate.is_file():
-        return exe_dir.parent / PAYLOAD_FILENAME
-    return candidate
+    return Path(sys.executable).resolve().parent / PAYLOAD_FILENAME
 
 
 def _document_from_bytes(raw: bytes) -> dict[str, str]:
