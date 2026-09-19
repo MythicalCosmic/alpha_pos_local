@@ -146,6 +146,26 @@ jobs:
           Start-Sleep -Seconds 5
           if (Get-Process postgres, AlphaPOSBackend -ErrorAction SilentlyContinue) { throw 'backend tree survived the shell' }
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Real window - drive the installed panel in WebView2
+        shell: pwsh
+        run: |
+          Push-Location desktop/ui-src
+          npm ci --no-audit --no-fund
+          Pop-Location
+          $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9222'
+          $app = Start-Process "$env:INSTALL_DIR\AlphaPOS.exe" -PassThru
+          try {
+            node desktop/ui-src/e2e-shell/real-shell.mjs ci-shell-e2e
+            if ($LASTEXITCODE -ne 0) { throw "real shell check failed ($LASTEXITCODE)" }
+          } finally {
+            Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 5
+          }
+
       - name: Collect logs
         if: always()
         shell: pwsh
@@ -153,6 +173,7 @@ jobs:
           New-Item -ItemType Directory -Force ci-logs | Out-Null
           if (Test-Path "$env:LOCALAPPDATA\AlphaPOS\logs") { Copy-Item "$env:LOCALAPPDATA\AlphaPOS\logs\*" ci-logs -Recurse -ErrorAction SilentlyContinue }
           if (Test-Path "$env:LOCALAPPDATA\AlphaPOS\pgdata\pg.log") { Copy-Item "$env:LOCALAPPDATA\AlphaPOS\pgdata\pg.log" ci-logs }
+          if (Test-Path ci-shell-e2e) { Copy-Item ci-shell-e2e ci-logs -Recurse -ErrorAction SilentlyContinue }
 
       - uses: actions/upload-artifact@v4
         if: always()
