@@ -24,7 +24,10 @@ pub const TRUSTED_PUBLIC_KEYS: &[&str] = &[
 
 pub const SHELL_EXIT_TIMEOUT: Duration = Duration::from_secs(60);
 pub const INSTALL_TIMEOUT: Duration = Duration::from_secs(600);
-pub const HEALTH_TIMEOUT: Duration = Duration::from_secs(180);
+/// How long a freshly installed version has to reach "serving". The first
+/// launch after an update migrates the database and a slow till can need
+/// minutes; running out blocks the version for good and rolls back.
+pub const HEALTH_TIMEOUT: Duration = Duration::from_secs(420);
 
 pub fn update_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("update")

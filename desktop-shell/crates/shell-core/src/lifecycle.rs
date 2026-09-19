@@ -39,6 +39,12 @@ pub struct Snapshot {
     pub pid: u32,
     #[serde(default)]
     pub shutdown_requested: bool,
+    /// Bumped by the panel's "Check now" (the shell owns updates).
+    #[serde(default)]
+    pub update_check_seq: u64,
+    /// Bumped by the panel's "Restart to update".
+    #[serde(default)]
+    pub update_restart_seq: u64,
 }
 
 pub fn parse(body: &[u8]) -> Result<Snapshot, serde_json::Error> {
@@ -58,6 +64,14 @@ mod tests {
         assert_eq!(snap.detail, "starting POS server");
         assert_eq!(snap.pid, 4242);
         assert!(!snap.phase.is_serving());
+    }
+
+    #[test]
+    fn update_requests_default_to_zero_for_older_backends() {
+        let snap = parse(br#"{"phase": "serving", "pid": 7}"#).unwrap();
+        assert_eq!((snap.update_check_seq, snap.update_restart_seq), (0, 0));
+        let snap = parse(br#"{"phase": "serving", "pid": 7, "update_check_seq": 2, "update_restart_seq": 1}"#).unwrap();
+        assert_eq!((snap.update_check_seq, snap.update_restart_seq), (2, 1));
     }
 
     #[test]

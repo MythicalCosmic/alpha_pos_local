@@ -18,6 +18,12 @@
 !macro ALPHAPOS_KILL_UNDER_INSTDIR NAMES
   nsExec::Exec `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$root = [IO.Path]::GetFullPath('$INSTDIR').TrimEnd('\') + '\'; Get-Process -Name ${NAMES} -ErrorAction SilentlyContinue | Where-Object { $$_.Id -ne $$PID -and $$_.Path -and $$_.Path.StartsWith($$root, [StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force -ErrorAction SilentlyContinue"`
   Pop $0
+  ; PowerShell can be blocked by policy or antivirus: fall back to taskkill
+  ; for the app's own executables so files are never replaced under them.
+  ${If} $0 != 0
+    nsExec::Exec `taskkill.exe /F /T /IM AlphaPOS.exe /IM AlphaPOSBackend.exe`
+    Pop $0
+  ${EndIf}
 !macroend
 
 ; Stop embedded PostgreSQL cleanly with whichever bundled pg_ctl exists.
@@ -35,8 +41,12 @@
 
 !macro ALPHAPOS_STOP_EVERYTHING
   DetailPrint "Stopping Alpha POS…"
-  ; Launchers first so their supervisors cannot restart the database.
+  ; A clean database stop first: the 1.1 shell's job object would otherwise
+  ; take postgres.exe down hard with it and the next start runs crash recovery.
+  !insertmacro ALPHAPOS_STOP_POSTGRES
+  ; Then the launchers, so no supervisor can restart the database...
   !insertmacro ALPHAPOS_KILL_UNDER_INSTDIR "AlphaPOS,AlphaPOSBackend"
+  ; ...and stop it again in case a 1.0.x supervisor did in the meantime.
   !insertmacro ALPHAPOS_STOP_POSTGRES
   ; Anything left from the install folder (postgres, ssh, helpers).
   !insertmacro ALPHAPOS_KILL_UNDER_INSTDIR "*"

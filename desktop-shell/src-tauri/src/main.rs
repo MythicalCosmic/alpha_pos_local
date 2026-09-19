@@ -11,19 +11,22 @@ mod headless;
 #[cfg(windows)]
 mod job;
 mod migration;
+mod texts;
 mod updates;
 
 use std::path::Path;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use alphapos_shell_core::backoff::{CrashBreaker, Verdict};
 use alphapos_shell_core::lifecycle::Phase;
 use alphapos_shell_core::update_policy::{self, DownloadMode, StartupDecision};
 use serde_json::Value;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use texts::{text, Lang, Msg};
 
 const SPLASH: &str = "splash";
 const MAIN: &str = "main";
@@ -36,7 +39,37 @@ const SERVING_WAIT: Duration = Duration::from_secs(120);
 
 #[derive(Default)]
 struct Shell {
+    /// The running backend process (owned: stopping it needs `&mut`).
     backend: Mutex<Option<backend::Backend>>,
+    /// Where it listens. Panel calls clone this and never hold `backend`,
+    /// so one slow call can no longer stall every other screen.
+    connection: Mutex<Option<backend::Connection>>,
+    /// Set while quitting or installing an update: do not restart the backend.
+    stopping: AtomicBool,
+}
+
+impl Shell {
+    fn connection(&self) -> Option<backend::Connection> {
+        self.connection.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn install(&self, backend: backend::Backend) {
+        *self.connection.lock().unwrap_or_else(|e| e.into_inner()) = Some(backend.connection());
+        *self.backend.lock().unwrap_or_else(|e| e.into_inner()) = Some(backend);
+    }
+
+    fn take(&self) -> Option<backend::Backend> {
+        *self.connection.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.backend.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+}
+
+fn lang() -> Lang {
+    texts::lang(&backend::data_dir())
+}
+
+fn t(msg: Msg) -> &'static str {
+    text(lang(), msg)
 }
 
 fn focus_existing(app: &AppHandle) {
@@ -60,12 +93,12 @@ fn set_splash(app: &AppHandle, text: &str, progress: Option<u8>) {
 
 fn phase_text(phase: Phase) -> (&'static str, u8) {
     match phase {
-        Phase::Booting => ("Starting Alpha POS…", 15),
-        Phase::Database => ("Starting the database…", 35),
-        Phase::Migrating => ("Preparing the POS server…", 65),
-        Phase::Serving => ("Ready", 100),
-        Phase::Stopping => ("Stopping…", 100),
-        Phase::Error => ("Still starting — retrying…", 50),
+        Phase::Booting => (t(Msg::Starting), 15),
+        Phase::Database => (t(Msg::Database), 35),
+        Phase::Migrating => (t(Msg::Preparing), 65),
+        Phase::Serving => (t(Msg::Ready), 100),
+        Phase::Stopping => (t(Msg::Stopping), 100),
+        Phase::Error => (t(Msg::StillStarting), 50),
     }
 }
 
@@ -95,8 +128,6 @@ fn message_box(_text: &str, _question: bool) -> bool {
     true
 }
 
-const QUIT_WARNING: &str = "The POS server will stop: waiters, couriers and other devices cannot place orders \
-     until Alpha POS is running again.";
 
 /// The mutex name used by the 1.0.x launcher and Inno Setup `AppMutex`.
 #[cfg(windows)]
@@ -109,7 +140,7 @@ fn legacy_single_instance_mutex() -> windows_sys::Win32::Foundation::HANDLE {
 /// now exiting.
 fn install_staged(app: &AppHandle, data_dir: &Path) -> bool {
     let Some(staged) = updates::installable_staged(data_dir) else { return true };
-    set_splash(app, &format!("Installing update {}…", staged.version), Some(95));
+    set_splash(app, &format!("{} {}…", t(Msg::InstallingUpdate), staged.version), Some(95));
     match updates::launch_guard(data_dir, &staged) {
         Ok(()) => {
             app.exit(0);
@@ -130,7 +161,7 @@ fn run_startup_update(app: &AppHandle, data_dir: &Path, handshake: &migration::L
             if discard_staged {
                 updates::discard_staged(data_dir);
             }
-            set_splash(app, "Checking for updates…", Some(8));
+            set_splash(app, t(Msg::CheckingUpdates), Some(8));
             let Some(update) = updates::check_remote(app, &state.blocked_versions) else { return true };
             let version = update.version.clone();
             let progress = updates::start_download(data_dir.to_path_buf(), update);
@@ -147,8 +178,10 @@ fn run_startup_update(app: &AppHandle, data_dir: &Path, handshake: &migration::L
                     // "Restart to update".
                     return true;
                 }
-                let percent = total.map(|t| (downloaded.min(t) * 100 / t.max(1)) as u8).unwrap_or(0);
-                set_splash(app, &format!("Downloading update {version}…"), Some(10 + percent * 8 / 10));
+                // u64 maths: 10 + 80 % of the download, never above 90.
+                let percent = total.map(|total| downloaded.min(total) * 100 / total.max(1)).unwrap_or(0);
+                let bar = (10 + percent.min(100) * 8 / 10) as u8;
+                set_splash(app, &format!("{} {version}…", t(Msg::DownloadingUpdate)), Some(bar));
                 std::thread::sleep(Duration::from_millis(200));
             }
         }
@@ -164,11 +197,17 @@ fn background_update_checks(app: AppHandle) {
             continue;
         }
         let state = alphapos_update::UpdateState::load(&alphapos_update::state_path(&data_dir));
-        if let Some(update) = updates::check_remote(&app, &state.blocked_versions) {
-            let progress = updates::start_download(data_dir.clone(), update);
-            while !progress.done.load(Ordering::Relaxed) {
-                std::thread::sleep(Duration::from_secs(5));
+        match updates::check_remote_within(&app, &state.blocked_versions, Duration::from_secs(30)) {
+            Ok(Some(update)) => {
+                let progress = updates::start_download(data_dir.clone(), update);
+                while !progress.done.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_secs(5));
+                }
+                let outcome = progress.result.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                updates::publish_status(&data_dir, Some(outcome.unwrap_or(Ok(()))));
             }
+            Ok(None) => updates::publish_status(&data_dir, Some(Ok(()))),
+            Err(error) => updates::publish_status(&data_dir, Some(Err(error))),
         }
     }
 }
@@ -176,96 +215,230 @@ fn background_update_checks(app: AppHandle) {
 fn restart_into_update(app: &AppHandle) {
     let data_dir = backend::data_dir();
     let Some(staged) = updates::installable_staged(&data_dir) else {
-        message_box("Alpha POS is up to date. New versions are downloaded automatically.", false);
+        message_box(t(Msg::UpToDate), false);
         return;
     };
-    let question = format!("Install Alpha POS {} now?\n\n{QUIT_WARNING}\nIt restarts by itself when the update is installed.", staged.version);
+    let question = format!(
+        "{}\n\n{}",
+        t(Msg::InstallQuestion).replace("{version}", &staged.version),
+        t(Msg::QuitWarning),
+    );
     if !message_box(&question, true) {
         return;
     }
+    let shell = app.state::<Shell>();
     // Stop the backend first so the guard finds nothing running.
-    if let Some(backend) = app.state::<Shell>().backend.lock().unwrap().take() {
+    shell.stopping.store(true, Ordering::SeqCst);
+    if let Some(backend) = shell.take() {
         backend.stop();
     }
     if updates::launch_guard(&data_dir, &staged).is_ok() {
         app.exit(0);
     } else {
-        message_box("The update could not be started. Please try again later.", false);
+        // Never leave the floor without a POS server: the supervisor restarts it.
+        shell.stopping.store(false, Ordering::SeqCst);
+        message_box(t(Msg::UpdateCouldNotStart), false);
     }
+}
+
+/// Start the backend, asking the operator to retry instead of leaving a dead
+/// splash. `None` only when the operator declined a retry (the app exits).
+fn spawn_backend_with_retry(app: &AppHandle) -> Option<backend::Backend> {
+    loop {
+        match backend::Backend::spawn() {
+            Ok(backend) => return Some(backend),
+            Err(error) => {
+                let reason = match error {
+                    backend::StartError::ExitedEarly(Some(2)) => t(Msg::AlreadyRunning).to_string(),
+                    other => format!("{}\n\n{other}", t(Msg::CouldNotStart)),
+                };
+                set_splash(app, &reason, None);
+                if !message_box(&format!("{reason}\n\n{}", t(Msg::TryAgain)), true) {
+                    app.exit(1);
+                    return None;
+                }
+                set_splash(app, t(Msg::Starting), Some(5));
+            }
+        }
+    }
+}
+
+/// Keep the POS server alive after the window opened: restart a crashed
+/// backend with backoff, confirm a fresh update once it serves (however slow
+/// the first boot is), and carry out the panel's update requests.
+fn supervise(app: AppHandle, mut confirm: Option<Box<dyn FnOnce() + Send>>) {
+    let started = Instant::now();
+    let mut breaker = CrashBreaker::default();
+    let mut warned = false;
+    let mut seen_check = None;
+    let mut seen_restart = None;
+    loop {
+        std::thread::sleep(Duration::from_millis(700));
+        let shell = app.state::<Shell>();
+        if shell.stopping.load(Ordering::SeqCst) {
+            continue;
+        }
+        let exited = {
+            let mut guard = shell.backend.lock().unwrap_or_else(|e| e.into_inner());
+            match guard.as_mut() {
+                Some(backend) => backend.exited().is_some(),
+                None => true,
+            }
+        };
+        if exited {
+            // Dropping the old handle closes its job: nothing of it survives.
+            drop(shell.take());
+            let delay = match breaker.record(started.elapsed()) {
+                Verdict::Restart(delay) => delay,
+                Verdict::GiveUp => {
+                    if !warned {
+                        warned = true;
+                        let _ = std::thread::Builder::new()
+                            .name("backend-warning".into())
+                            .spawn(|| { message_box(t(Msg::BackendKeepsStopping), false); });
+                    }
+                    alphapos_shell_core::backoff::MAX_DELAY
+                }
+            };
+            std::thread::sleep(delay);
+            if shell.stopping.load(Ordering::SeqCst) {
+                continue;
+            }
+            match backend::Backend::spawn() {
+                Ok(backend) => {
+                    let url = backend.url();
+                    shell.install(backend);
+                    seen_check = None;
+                    seen_restart = None;
+                    if let (Some(window), Ok(url)) = (app.get_webview_window(MAIN), tauri::Url::parse(&url)) {
+                        let _ = window.navigate(url);
+                    }
+                }
+                Err(_) => continue,
+            }
+            continue;
+        }
+        let Some(conn) = shell.connection() else { continue };
+        let Ok(snapshot) = conn.lifecycle() else { continue };
+        if snapshot.phase.is_serving() {
+            if let Some(confirm) = confirm.take() {
+                confirm();
+            }
+            // Serving again: earlier crashes no longer count towards giving up.
+            if breaker.recent_crashes() > 0 {
+                breaker.reset();
+            }
+        }
+        // The first snapshot of a backend only records where its counters are.
+        let check = snapshot.update_check_seq;
+        if seen_check.is_some_and(|seen| check > seen) {
+            updates::check_and_stage_in_background(app.clone(), backend::data_dir());
+        }
+        seen_check = Some(check);
+        let restart = snapshot.update_restart_seq;
+        if seen_restart.is_some_and(|seen| restart > seen) {
+            let handle = app.clone();
+            let _ = std::thread::Builder::new().name("restart-to-update".into()).spawn(move || restart_into_update(&handle));
+        }
+        seen_restart = Some(restart);
+    }
+}
+
+/// Open the panel at a size that fits the screen (a 1366x768 till at 125 %).
+fn open_panel(app: &AppHandle, url: tauri::Url) -> tauri::Result<()> {
+    let window = WebviewWindowBuilder::new(app, MAIN, WebviewUrl::External(url))
+        .title("Alpha POS")
+        .inner_size(1180.0, 780.0)
+        .min_inner_size(800.0, 560.0)
+        .center()
+        .build()?;
+    if let Ok(Some(monitor)) = window.current_monitor() {
+        let size = monitor.size().to_logical::<f64>(monitor.scale_factor());
+        if size.width < 1240.0 || size.height < 840.0 {
+            let _ = window.maximize();
+        }
+    }
+    Ok(())
 }
 
 fn boot(app: AppHandle, post_update: Option<String>) {
     // A 1.0.x update helper may be waiting for this launch to confirm health.
     let handshake = migration::LegacyHandshake::detect();
     let data_dir = backend::data_dir();
-    set_splash(&app, "Starting Alpha POS…", Some(5));
+    set_splash(&app, t(Msg::Starting), Some(5));
     if !run_startup_update(&app, &data_dir, &handshake, post_update.is_some()) {
         return;
     }
+    updates::publish_status(&data_dir, None);
 
-    let mut backend = match backend::Backend::spawn() {
-        Ok(backend) => backend,
-        Err(error) => {
-            set_splash(&app, &format!("Could not start: {error}"), None);
+    let mut backend = loop {
+        let Some(mut backend) = spawn_backend_with_retry(&app) else { return };
+        let deadline = Instant::now() + SERVING_WAIT;
+        let mut exited = false;
+        loop {
+            if backend.exited().is_some() {
+                exited = true;
+                break;
+            }
+            if let Ok(snapshot) = backend.lifecycle() {
+                if snapshot.phase.is_serving() {
+                    break;
+                }
+                let (text, progress) = phase_text(snapshot.phase);
+                set_splash(&app, if snapshot.phase == Phase::Error && !snapshot.detail.is_empty() { &snapshot.detail } else { text }, Some(progress));
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        if !exited {
+            break backend;
+        }
+        let reason = t(Msg::BackendStopped);
+        set_splash(&app, reason, None);
+        if !message_box(&format!("{}\n\n{}", t(Msg::CouldNotStart), t(Msg::TryAgain)), true) {
+            app.exit(1);
             return;
         }
     };
-
-    let deadline = Instant::now() + SERVING_WAIT;
-    let mut serving = false;
-    loop {
-        if backend.exited().is_some() {
-            set_splash(&app, "The POS backend stopped unexpectedly. Please reopen Alpha POS.", None);
-            return;
-        }
-        if let Ok(snapshot) = backend.lifecycle() {
-            if snapshot.phase.is_serving() {
-                serving = true;
-                break;
-            }
-            let (text, progress) = phase_text(snapshot.phase);
-            set_splash(&app, text, Some(progress));
-        }
-        if Instant::now() >= deadline {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(300));
-    }
+    let _ = backend.exited();
 
     let url = backend.url();
-    app.state::<Shell>().backend.lock().unwrap().replace(backend);
+    app.state::<Shell>().install(backend);
 
     let Ok(url) = tauri::Url::parse(&url) else { return };
-    let built = WebviewWindowBuilder::new(&app, MAIN, WebviewUrl::External(url))
-        .title("Alpha POS")
-        .inner_size(1180.0, 780.0)
-        .min_inner_size(900.0, 640.0)
-        .center()
-        .build();
-    match built {
-        Ok(_) => {
+    match open_panel(&app, url) {
+        Ok(()) => {
             if let Some(splash) = app.get_webview_window(SPLASH) {
                 let _ = splash.close();
             }
-            if serving {
-                handshake.confirm_serving();
-                if let Some(version) = &post_update {
-                    updates::confirm_post_update(&data_dir, version);
-                }
-            }
         }
-        Err(error) => set_splash(&app, &format!("Could not open the panel: {error}"), None),
+        Err(error) => set_splash(&app, &format!("{}\n\n{error}", t(Msg::CouldNotStart)), None),
     }
+
+    // Confirm the launch (1.0.x helper) and a fresh update as soon as the
+    // backend serves, even when that takes longer than the splash waited.
+    let confirm_dir = data_dir.clone();
+    let confirm: Box<dyn FnOnce() + Send> = Box::new(move || {
+        handshake.confirm_serving();
+        if let Some(version) = &post_update {
+            updates::confirm_post_update(&confirm_dir, version);
+        }
+        updates::publish_status(&confirm_dir, None);
+    });
+    let supervisor = app.clone();
+    let _ = std::thread::Builder::new().name("supervisor".into()).spawn(move || supervise(supervisor, Some(confirm)));
 
     let checker = app.clone();
     let _ = std::thread::Builder::new().name("update-checks".into()).spawn(move || background_update_checks(checker));
 }
 
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, TRAY_OPEN, "Open Alpha POS", true, None::<&str>)?;
-    let update = MenuItem::with_id(app, TRAY_UPDATE, "Restart to update", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, TRAY_OPEN, t(Msg::TrayOpen), true, None::<&str>)?;
+    let update = MenuItem::with_id(app, TRAY_UPDATE, t(Msg::TrayUpdate), true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
-    let quit = MenuItem::with_id(app, TRAY_QUIT, "Quit Alpha POS", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, TRAY_QUIT, t(Msg::TrayQuit), true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &update, &separator, &quit])?;
 
     let mut tray = TrayIconBuilder::with_id("main")
@@ -279,7 +452,8 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 let _ = std::thread::Builder::new().name("restart-to-update".into()).spawn(move || restart_into_update(&handle));
             }
             TRAY_QUIT => {
-                if message_box(&format!("Quit Alpha POS?\n\n{QUIT_WARNING}"), true) {
+                if message_box(&format!("{}\n\n{}", t(Msg::QuitQuestion), t(Msg::QuitWarning)), true) {
+                    app.state::<Shell>().stopping.store(true, Ordering::SeqCst);
                     app.exit(0);
                 }
             }
@@ -298,13 +472,22 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 }
 
 #[tauri::command]
-async fn backend_call(shell: State<'_, Shell>, method: String, args: Option<Vec<Value>>) -> Result<Value, ()> {
+async fn backend_call(
+    shell: State<'_, Shell>,
+    method: String,
+    args: Option<Vec<Value>>,
+    timeout_ms: Option<u64>,
+) -> Result<Value, ()> {
     let args = args.unwrap_or_default();
-    let guard = shell.backend.lock().unwrap();
-    let Some(backend) = guard.as_ref() else {
+    let Some(conn) = shell.connection() else {
         return Ok(backend::error_value("backend_unavailable", "The POS backend is not running"));
     };
-    Ok(backend.call(&method, &args, backend::call_timeout(&method)))
+    let timeout = backend::call_timeout(&method, timeout_ms);
+    // Blocking HTTP runs on the blocking pool so it cannot starve the runtime.
+    let value = tauri::async_runtime::spawn_blocking(move || conn.call(&method, &args, timeout))
+        .await
+        .unwrap_or_else(|error| backend::error_value("backend_unavailable", &error.to_string()));
+    Ok(value)
 }
 
 #[tauri::command]
@@ -334,6 +517,13 @@ fn main() {
         std::process::exit(headless::run(mode));
     }
     let post_update = args.windows(2).find(|pair| pair[0] == "--post-update").map(|pair| pair[1].clone());
+
+    // Without WebView2 the window cannot be created and the app would vanish
+    // silently (the build aborts on panic): explain what to install instead.
+    if tauri::webview_version().is_err() {
+        message_box(t(Msg::WebView2Missing), false);
+        std::process::exit(1);
+    }
 
     // Held for the whole process: the 1.0.x installer (AppMutex) and any stray
     // old launcher recognise a running Alpha POS by this name.
@@ -366,6 +556,10 @@ fn main() {
                     // Hide instead of quitting: the POS keeps serving the floor.
                     api.prevent_close();
                     let _ = window.hide();
+                } else if window.label() == SPLASH && window.app_handle().get_webview_window(MAIN).is_none() {
+                    // Alt+F4 on the loader would leave nothing to reopen.
+                    api.prevent_close();
+                    let _ = window.minimize();
                 }
             }
         })
@@ -376,8 +570,9 @@ fn main() {
         // Hiding the last window must not end the app; only tray Quit exits.
         RunEvent::ExitRequested { code: None, api, .. } => api.prevent_exit(),
         RunEvent::Exit => {
-            let backend = app.state::<Shell>().backend.lock().unwrap().take();
-            if let Some(backend) = backend {
+            let shell = app.state::<Shell>();
+            shell.stopping.store(true, Ordering::SeqCst);
+            if let Some(backend) = shell.take() {
                 backend.stop();
             }
         }

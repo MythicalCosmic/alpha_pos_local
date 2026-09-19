@@ -48,8 +48,89 @@ fn new_token() -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// A shell-side failure in the shape the panel understands: `kind` drives its
+/// "unreachable" / session-expired states, `code` is for logs and support.
 pub fn error_value(code: &str, message: &str) -> Value {
-    json!({ "ok": false, "code": code, "error": message })
+    let kind = match code {
+        "auth" => "auth",
+        "timeout" => "timeout",
+        _ => "transport",
+    };
+    json!({ "ok": false, "code": code, "kind": kind, "error": message })
+}
+
+/// One shared HTTP client for every loopback call (keeps connections alive).
+fn http() -> &'static ureq::Agent {
+    static AGENT: std::sync::OnceLock<ureq::Agent> = std::sync::OnceLock::new();
+    AGENT.get_or_init(|| ureq::AgentBuilder::new().build())
+}
+
+/// Where a running backend listens. Cheap to clone, so panel calls never hold
+/// the backend lock while they wait for an answer.
+#[derive(Clone)]
+pub struct Connection {
+    port: u16,
+    token: String,
+}
+
+impl Connection {
+    pub fn url(&self) -> String {
+        format!("http://127.0.0.1:{}/", self.port)
+    }
+
+    pub fn lifecycle(&self) -> Result<lifecycle::Snapshot, String> {
+        let response = http()
+            .get(&format!("{}lifecycle", self.url()))
+            .timeout(Duration::from_secs(3))
+            .set("X-Control-Token", &self.token)
+            .call()
+            .map_err(|e| e.to_string())?;
+        let mut body = Vec::new();
+        response
+            .into_reader()
+            .take(1 << 20)
+            .read_to_end(&mut body)
+            .map_err(|e| e.to_string())?;
+        lifecycle::parse(&body).map_err(|e| e.to_string())
+    }
+
+    /// Forward one panel call to `desktop/bridge.py:Api`.
+    pub fn call(&self, method: &str, args: &[Value], timeout: Duration) -> Value {
+        let body = Value::Array(args.to_vec()).to_string();
+        match http()
+            .post(&format!("{}api/{}", self.url(), method))
+            .timeout(timeout)
+            .set("X-Control-Token", &self.token)
+            .set("Content-Type", "application/json")
+            .send_string(&body)
+        {
+            Ok(response) => response
+                .into_json::<Value>()
+                .unwrap_or_else(|e| error_value("backend_invalid_response", &e.to_string())),
+            Err(ureq::Error::Status(403, _)) => error_value("auth", "forbidden"),
+            Err(ureq::Error::Status(code, _)) => {
+                error_value("backend_http", &format!("The POS backend answered HTTP {code}"))
+            }
+            Err(ureq::Error::Transport(error)) if is_timeout(&error) => error_value(
+                "timeout",
+                &format!("No answer from the POS backend within {} s", timeout.as_secs()),
+            ),
+            Err(error) => error_value("backend_unavailable", &error.to_string()),
+        }
+    }
+
+    fn shutdown(&self) {
+        let _ = http()
+            .post(&format!("{}lifecycle/shutdown", self.url()))
+            .timeout(Duration::from_secs(3))
+            .set("X-Control-Token", &self.token)
+            .send_string("");
+    }
+}
+
+fn is_timeout(error: &ureq::Transport) -> bool {
+    let text = error.to_string().to_ascii_lowercase();
+    text.contains("timed out") || text.contains("timeout")
 }
 
 #[derive(Debug)]
@@ -74,8 +155,7 @@ impl fmt::Display for StartError {
 
 pub struct Backend {
     child: Child,
-    port: u16,
-    token: String,
+    conn: Connection,
     #[cfg(windows)]
     job: crate::job::Job,
 }
@@ -153,51 +233,27 @@ impl Backend {
 
         Ok(Backend {
             child,
-            port,
-            token,
+            conn: Connection { port, token },
             #[cfg(windows)]
             job,
         })
     }
 
     pub fn url(&self) -> String {
-        format!("http://127.0.0.1:{}/", self.port)
+        self.conn.url()
     }
 
-    fn agent(timeout: Duration) -> ureq::Agent {
-        ureq::AgentBuilder::new().timeout(timeout).build()
+    pub fn connection(&self) -> Connection {
+        self.conn.clone()
     }
 
     pub fn lifecycle(&self) -> Result<lifecycle::Snapshot, String> {
-        let response = Self::agent(Duration::from_secs(3))
-            .get(&format!("{}lifecycle", self.url()))
-            .set("X-Control-Token", &self.token)
-            .call()
-            .map_err(|e| e.to_string())?;
-        let mut body = Vec::new();
-        response
-            .into_reader()
-            .take(1 << 20)
-            .read_to_end(&mut body)
-            .map_err(|e| e.to_string())?;
-        lifecycle::parse(&body).map_err(|e| e.to_string())
+        self.conn.lifecycle()
     }
 
     /// Forward one panel call to `desktop/bridge.py:Api`.
     pub fn call(&self, method: &str, args: &[Value], timeout: Duration) -> Value {
-        let body = Value::Array(args.to_vec()).to_string();
-        match Self::agent(timeout)
-            .post(&format!("{}api/{}", self.url(), method))
-            .set("X-Control-Token", &self.token)
-            .set("Content-Type", "application/json")
-            .send_string(&body)
-        {
-            Ok(response) => response
-                .into_json::<Value>()
-                .unwrap_or_else(|e| error_value("backend_invalid_response", &e.to_string())),
-            Err(ureq::Error::Status(403, _)) => error_value("auth", "forbidden"),
-            Err(error) => error_value("backend_unavailable", &error.to_string()),
-        }
+        self.conn.call(method, args, timeout)
     }
 
     /// `Some(code)` once the process has exited.
@@ -212,10 +268,7 @@ impl Backend {
     /// Ask for a bounded graceful stop, then kill the whole job. Returns true
     /// when the backend exited on its own.
     pub fn stop(mut self) -> bool {
-        let _ = Self::agent(Duration::from_secs(3))
-            .post(&format!("{}lifecycle/shutdown", self.url()))
-            .set("X-Control-Token", &self.token)
-            .send_string("");
+        self.conn.shutdown();
         let deadline = Instant::now() + STOP_TIMEOUT;
         while Instant::now() < deadline {
             if let Ok(Some(_)) = self.child.try_wait() {
@@ -231,11 +284,43 @@ impl Backend {
     }
 }
 
-/// Per-method proxy timeouts, mirroring the panel's expectations.
-pub fn call_timeout(method: &str) -> Duration {
-    match method {
+/// Proxy timeout for one panel call. The panel sends its own per-method
+/// timeout; the proxy waits a little longer so the panel, not the proxy, is the
+/// side that decides a call took too long. Older panels send none.
+pub fn call_timeout(method: &str, requested_ms: Option<u64>) -> Duration {
+    const MARGIN: Duration = Duration::from_secs(5);
+    if let Some(ms) = requested_ms {
+        return Duration::from_millis(ms.clamp(1_000, 900_000)) + MARGIN;
+    }
+    let base = match method {
         "run_setup" | "flush_database" | "factory_reset" => Duration::from_secs(600),
         m if m.starts_with("cloud_") || m.starts_with("check_updates") => Duration::from_secs(120),
-        _ => Duration::from_secs(30),
+        // Model-backed calls may wait for migrations after an install/update.
+        _ => Duration::from_secs(180),
+    };
+    base + MARGIN
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proxy_waits_longer_than_the_panel() {
+        assert_eq!(call_timeout("start_server", Some(120_000)), Duration::from_secs(125));
+        assert_eq!(call_timeout("server_status", Some(15_000)), Duration::from_secs(20));
+        // Out-of-range requests are clamped, never zero or unbounded.
+        assert_eq!(call_timeout("x", Some(0)), Duration::from_secs(6));
+        assert_eq!(call_timeout("x", Some(u64::MAX)), Duration::from_secs(905));
+        assert!(call_timeout("license_status", None) >= Duration::from_secs(180));
+        assert_eq!(call_timeout("factory_reset", None), Duration::from_secs(605));
+    }
+
+    #[test]
+    fn shell_errors_carry_a_kind_for_the_panel() {
+        assert_eq!(error_value("auth", "forbidden")["kind"], "auth");
+        assert_eq!(error_value("timeout", "slow")["kind"], "timeout");
+        assert_eq!(error_value("backend_unavailable", "down")["kind"], "transport");
+        assert_eq!(error_value("backend_unavailable", "down")["ok"], false);
     }
 }

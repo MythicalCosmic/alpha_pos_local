@@ -95,16 +95,124 @@ pub fn startup_decision(data_dir: &Path, legacy_flag: PendingFlag, post_update: 
 /// Ask the update server within the startup budget. `None` means start the
 /// POS normally (offline, up to date, blocked or any error).
 pub fn check_remote(app: &AppHandle, blocked: &[String]) -> Option<Update> {
-    let updater = app.updater_builder().timeout(update_policy::CHECK_BUDGET).build().ok()?;
+    check_remote_within(app, blocked, update_policy::CHECK_BUDGET).ok().flatten()
+}
+
+/// Same as `check_remote` with an explicit budget; `Err` carries why the check
+/// itself failed (offline, server error) for the panel.
+pub fn check_remote_within(app: &AppHandle, blocked: &[String], budget: Duration) -> Result<Option<Update>, String> {
+    let updater = app.updater_builder().timeout(budget).build().map_err(|e| e.to_string())?;
     let update = match tauri::async_runtime::block_on(updater.check()) {
         Ok(Some(update)) => update,
-        _ => return None,
+        Ok(None) => return Ok(None),
+        Err(error) => return Err(error.to_string()),
     };
     let check = RemoteCheck::Available { version: update.version.clone() };
-    match update_policy::after_check(&check, CURRENT_VERSION, blocked) {
+    Ok(match update_policy::after_check(&check, CURRENT_VERSION, blocked) {
         AfterCheck::Download { .. } => Some(update),
         AfterCheck::StartNormally => None,
+    })
+}
+
+/// What the panel's Updates page shows, published by the shell in
+/// `DATA\update\shell-status.json` (read by `desktop/bridge.py`).
+#[derive(Serialize, Default)]
+pub struct ShellStatus {
+    pub staged_version: Option<String>,
+    pub checking: bool,
+    pub last_check_at: Option<String>,
+    pub last_check_error: String,
+    pub blocked_versions: Vec<String>,
+    pub last_rollback: Option<serde_json::Value>,
+}
+
+static STATUS_LOCK: Mutex<()> = Mutex::new(());
+static CHECKING: AtomicBool = AtomicBool::new(false);
+static LAST_CHECK: Mutex<Option<(String, String)>> = Mutex::new(None);
+
+/// Rewrite the status file from what is on disk now. `checked` records the
+/// result of a check that just finished: `Ok(())` or the error text.
+pub fn publish_status(data_dir: &Path, checked: Option<Result<(), String>>) {
+    let _guard = STATUS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(result) = checked {
+        *LAST_CHECK.lock().unwrap_or_else(|e| e.into_inner()) = Some((now_rfc3339(), result.err().unwrap_or_default()));
     }
+    let state = UpdateState::load(&state_path(data_dir));
+    let last = LAST_CHECK.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let status = ShellStatus {
+        staged_version: installable_staged(data_dir).map(|s| s.version),
+        checking: CHECKING.load(Ordering::Relaxed),
+        last_check_at: last.as_ref().map(|(at, _)| at.clone()),
+        last_check_error: last.map(|(_, error)| error).unwrap_or_default(),
+        blocked_versions: state.blocked_versions.clone(),
+        last_rollback: state.last_rollback.as_ref().and_then(|r| serde_json::to_value(r).ok()),
+    };
+    let dir = update_dir(data_dir);
+    let _ = fs::create_dir_all(&dir);
+    let tmp = dir.join("shell-status.json.tmp");
+    if let Ok(bytes) = serde_json::to_vec_pretty(&status) {
+        if fs::write(&tmp, bytes).is_ok() {
+            let _ = fs::rename(&tmp, dir.join("shell-status.json"));
+        }
+    }
+}
+
+/// "Check now" from the panel: look, download and stage in the background.
+/// Never installs; returns immediately if a check is already running.
+pub fn check_and_stage_in_background(app: AppHandle, data_dir: PathBuf) {
+    if CHECKING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    publish_status(&data_dir, None);
+    let _ = std::thread::Builder::new().name("manual-update-check".into()).spawn(move || {
+        let result = (|| -> Result<(), String> {
+            if installable_staged(&data_dir).is_some() {
+                return Ok(());
+            }
+            let state = UpdateState::load(&state_path(&data_dir));
+            let Some(update) = check_remote_within(&app, &state.blocked_versions, Duration::from_secs(30))? else {
+                return Ok(());
+            };
+            let progress = start_download(data_dir.clone(), update);
+            while !progress.done.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(500));
+            }
+            let outcome = progress.result.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            outcome.unwrap_or(Ok(()))
+        })();
+        CHECKING.store(false, Ordering::SeqCst);
+        publish_status(&data_dir, Some(result));
+    });
+}
+
+/// UTC timestamp without a date/time dependency (the panel parses RFC 3339).
+fn now_rfc3339() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    rfc3339(secs)
+}
+
+fn rfc3339(unix_secs: i64) -> String {
+    let days = unix_secs.div_euclid(86_400);
+    let secs_of_day = unix_secs.rem_euclid(86_400);
+    // Civil-from-days (Howard Hinnant), valid for the proleptic Gregorian calendar.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        secs_of_day / 3_600,
+        (secs_of_day % 3_600) / 60,
+        secs_of_day % 60,
+    )
 }
 
 #[derive(Default)]
@@ -214,5 +322,17 @@ pub fn confirm_post_update(data_dir: &Path, version: &str) {
         && find_staged(data_dir).map(|s| s.version == version).unwrap_or(false)
     {
         discard_staged(data_dir);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_utc_timestamps() {
+        assert_eq!(rfc3339(0), "1970-01-01T00:00:00Z");
+        assert_eq!(rfc3339(951_782_400), "2000-02-29T00:00:00Z");
+        assert_eq!(rfc3339(1_789_790_430), "2026-09-19T04:00:30Z");
     }
 }
