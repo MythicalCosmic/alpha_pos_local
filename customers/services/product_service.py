@@ -1,5 +1,41 @@
+import threading
+import time
+from datetime import timedelta
+
+from django.core.paginator import Paginator
+from django.utils import timezone
+
 from base.repositories import ProductRepository, CategoryRepository
 from base.helpers.response import ServiceResponse
+
+# Best sellers change slowly, but ranking them aggregates every order line of
+# the last 30 days (with refunds netted): ~150 ms on a till with a busy month.
+# Rank once every few minutes; products and prices themselves are always read
+# fresh, so a price or availability change still shows immediately.
+POPULARITY_TTL_SECONDS = 300
+_popularity_lock = threading.Lock()
+_popularity = {'at': None, 'ranks': {}}
+
+
+def popularity_ranks():
+    """{product_id: rank} of the last 30 days' best sellers (0 = best)."""
+    fresh = _popularity['at'] is not None and time.monotonic() - _popularity['at'] < POPULARITY_TTL_SECONDS
+    if fresh:
+        return _popularity['ranks']
+    with _popularity_lock:
+        if _popularity['at'] is not None and time.monotonic() - _popularity['at'] < POPULARITY_TTL_SECONDS:
+            return _popularity['ranks']
+        from base.repositories.order_item import POPULAR_WINDOW_DAYS, OrderItemRepository
+        window_start = timezone.now() - timedelta(days=POPULAR_WINDOW_DAYS)
+        rows = OrderItemRepository.get_top_products(date_from=window_start, limit=500)
+        ranks = {row['product_id']: index for index, row in enumerate(rows)}
+        _popularity.update(at=time.monotonic(), ranks=ranks)
+        return ranks
+
+
+def reset_popularity_cache():
+    with _popularity_lock:
+        _popularity.update(at=None, ranks={})
 
 
 def _serialize_product(product):
@@ -48,15 +84,20 @@ class CustomerProductService:
         if order_by not in ALLOWED_ORDER_FIELDS:
             order_by = '-created_at'
         if popular:
-            # Top-selling first (default). Composes with the category/search
-            # filters above. popular=False restores the plain order_by.
-            from base.repositories.order_item import OrderItemRepository
-            queryset = OrderItemRepository.apply_popularity_order(
-                queryset, fallback_order_by=order_by)
+            # Top-selling first (default), then the requested order. Composes
+            # with the category/search filters above. The menu is small, so
+            # sorting in Python beats a 500-branch SQL CASE on every request.
+            ranks = popularity_ranks()
+            unranked = len(ranks)
+            # Rank ids only (cheap), then load just the requested page.
+            ids = sorted(queryset.order_by(order_by).values_list('id', flat=True),
+                         key=lambda pid: ranks.get(pid, unranked))
+            paginator = Paginator(ids, per_page)
+            page_obj = paginator.get_page(page)
+            by_id = {p.id: p for p in queryset.filter(id__in=list(page_obj.object_list))}
+            page_obj.object_list = [by_id[pid] for pid in page_obj.object_list if pid in by_id]
         else:
-            queryset = queryset.order_by(order_by)
-
-        page_obj, paginator = ProductRepository.paginate(queryset, page, per_page)
+            page_obj, paginator = ProductRepository.paginate(queryset.order_by(order_by), page, per_page)
 
         products = [_serialize_product(p) for p in page_obj.object_list]
 

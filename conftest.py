@@ -17,6 +17,16 @@ def _clear_caches():
 
 
 @pytest.fixture(autouse=True)
+def _clear_popularity_ranks():
+    """The best-seller ranking is cached per process; never across tests."""
+    from customers.services.product_service import reset_popularity_cache
+
+    reset_popularity_cache()
+    yield
+    reset_popularity_cache()
+
+
+@pytest.fixture(autouse=True)
 def _terminal_device(settings):
     """Django endpoint tests run as one real, device-identified POS terminal."""
     settings.DEVICE_ID = "pytest-terminal"

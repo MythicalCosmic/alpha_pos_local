@@ -426,6 +426,36 @@ def _get_order_by_id_with_courier(order_id):
         return None
 
 
+# Every column _serialize_order_list reads (a missing one would cost a query
+# per order). The courier assignment chain is loaded in full.
+_ORDER_LIST_FIELDS = (
+    'id', 'display_id', 'order_type', 'order_origin', 'waiter_id', 'waiter_shift_id',
+    'waiter_policy_snapshot', 'phone_number', 'delivery_address', 'description',
+    'status', 'is_paid', 'payment_requested_at', 'total_amount', 'discount_percent',
+    'paid_at', 'ready_at', 'created_at', 'updated_at', 'is_deleted', 'branch_id',
+    'cashier__id', 'cashier__first_name', 'cashier__last_name',
+    'customer__id', 'customer__name', 'customer__phone_number', 'customer__is_staff',
+    'place__id', 'place__name', 'table__id', 'table__number',
+    'delivery_person__id', 'delivery_person__first_name', 'delivery_person__last_name',
+    'delivery_person__phone_number',
+    'courier_delivery',
+)
+
+
+def _order_list_prefetches():
+    """Items and payments with only the columns the list shows."""
+    from django.db.models import Prefetch
+    from base.models import OrderItem, OrderPayment
+
+    items = OrderItem.objects.select_related('product__category').only(
+        'id', 'order_id', 'product_id', 'quantity', 'detail', 'price', 'ready_at', 'is_deleted',
+        'product__id', 'product__name', 'product__category_id',
+        'product__category__id', 'product__category__name',
+    )
+    payments = OrderPayment.objects.only('id', 'order_id', 'method', 'amount')
+    return Prefetch('items', queryset=items), Prefetch('payments', queryset=payments)
+
+
 def _serialize_order_list(order):
     live_items = _live_items(order)
     return {
@@ -799,7 +829,13 @@ class CustomerOrderService:
         # ``DeliveryAssignment`` lives in this local integration app rather
         # than alpha_pos_core; join it here so /orders does not issue one query
         # per row while serializing the assigned courier and its user fallback.
-        qs = qs.select_related('courier_delivery__courier__user')
+        # The list shows a few fields of each related row. Loading whole user,
+        # customer, place and table rows made each joined row ~6 KB, and
+        # decoding that dominated the request.
+        qs = qs.select_related(None).select_related(
+            'cashier', 'delivery_person', 'place', 'table', 'customer',
+            'courier_delivery__courier__user',
+        ).only(*_ORDER_LIST_FIELDS).prefetch_related(None).prefetch_related(*_order_list_prefetches())
 
         page_obj, paginator = OrderRepository.paginate(qs, page, per_page)
         orders = [_serialize_order_list(o) for o in page_obj.object_list]
