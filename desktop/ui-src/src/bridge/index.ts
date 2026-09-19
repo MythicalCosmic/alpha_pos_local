@@ -1,4 +1,4 @@
-import { createHttpTransport, readMetaToken } from './http';
+import { createHttpTransport, isControlToken, readMetaToken } from './http';
 import { createTauriTransport, tauriRestartToUpdate, type TauriInternals } from './tauri';
 import { failure, type BackendResult, type CallOptions, type Capabilities, type Transport } from './transport';
 
@@ -24,7 +24,14 @@ export interface BridgeSelection {
   restartToUpdate: () => Promise<BackendResult>;
 }
 
-/** Transport order: explicit __ALPHA_BRIDGE__ override → Tauri → same-origin HTTP. */
+/**
+ * Transport order: explicit __ALPHA_BRIDGE__ override → same-origin HTTP → Tauri.
+ *
+ * Inside the desktop shell the page is still served by the backend's control
+ * server, so backend calls go straight to it: same origin, one thread per
+ * request, and the panel's own per-method timeouts. The shell's IPC carries the
+ * shell features (updates) and is the fallback for a page without a token.
+ */
 export function selectBridge(win: Window | undefined = typeof window === 'undefined' ? undefined : window): BridgeSelection {
   const unsupported = async () => failure('http', 'Restart to update is not available in this shell');
   const override = win?.__ALPHA_BRIDGE__;
@@ -36,17 +43,18 @@ export function selectBridge(win: Window | undefined = typeof window === 'undefi
       restartToUpdate: unsupported,
     };
   }
+  const token = override?.token;
+  const pageToken = () => token || readMetaToken(win?.document);
   const internals = win?.__TAURI_INTERNALS__;
   if (internals && typeof internals.invoke === 'function') {
     return {
-      transport: createTauriTransport(internals),
+      transport: isControlToken(pageToken()) ? createHttpTransport(pageToken) : createTauriTransport(internals),
       capabilities: { shell: 'tauri', restartToUpdate: true },
       restartToUpdate: () => tauriRestartToUpdate(internals),
     };
   }
-  const token = override?.token;
   return {
-    transport: createHttpTransport(() => token || readMetaToken()),
+    transport: createHttpTransport(pageToken),
     capabilities: { shell: 'legacy', restartToUpdate: false, ...override?.capabilities },
     restartToUpdate: unsupported,
   };

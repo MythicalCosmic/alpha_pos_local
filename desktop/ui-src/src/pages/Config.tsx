@@ -27,7 +27,6 @@ export const CFG_SECTIONS: readonly Section[] = [
   { id: 'support', title: 'cfg.support', hint: 'cfg.supportHint', fields: [['SUPPORT_TUNNEL_ENABLED', ['False', 'True']], ['SUPPORT_TUNNEL_HOST', 'text'], ['SUPPORT_TUNNEL_PORT', 'text'], ['SUPPORT_TUNNEL_USER', 'text'], ['SUPPORT_TUNNEL_REMOTE_DB_PORT', 'text'], ['SUPPORT_TUNNEL_REMOTE_API_PORT', 'text'], ['SUPPORT_TUNNEL_PRIVATE_KEY_B64', 'secret'], ['SUPPORT_TUNNEL_KNOWN_HOST', 'text']] },
   { id: 'licensing', title: 'cfg.licensing', fields: [['LICENSE_CONTROL_CENTER_URL', 'text'], ['ALPHA_POS_UPDATE_URL', 'text']] },
   { id: 'telegram', title: 'cfg.telegram', fields: [['ORDER_AUDIT_TELEGRAM_CHAT_IDS', 'text'], ['TELEGRAM_WEBHOOK_SECRET', 'secret']] },
-  { id: 'ai', title: 'cfg.ai', fields: [['AI_PROVIDER', ['claude', 'gemini']], ['ANTHROPIC_API_KEY', 'secret'], ['ANTHROPIC_MODEL', 'text'], ['GEMINI_API_KEY', 'secret'], ['GEMINI_MODEL', 'text']] },
   { id: 'fiscal', title: 'nav.fiscal', hint: 'cfg.fiscalHint', fields: [['FISCALIZATION_MODE', ['off', 'mock', 'sandbox', 'live']], ['FISCAL_PROVIDER', ['mock', 'multikassa']], ['FISCAL_TIN', 'text'], ['FISCAL_PROVIDER_URL', 'text'], ['FISCAL_VAT_PERCENT', 'text'], ['FISCAL_MERCHANT_ID', 'text'], ['FISCAL_SECRET', 'secret']] },
 ];
 
@@ -74,7 +73,9 @@ export default function Config() {
   const save = async () => {
     if (!initial || !dirty || busy) return;
     setBusy('save');
-    const r = await api('save_config', [draft]);
+    // Only what the operator changed: untouched keys (staff Telegram recipients,
+    // the support tunnel) must not be rewritten or restarted by an unrelated save.
+    const r = await api('save_config', [Object.fromEntries(changed.map((key) => [key, norm(draft[key])]))]);
     setBusy('');
     if (isFailure(r)) {
       toast(errorText(r, t('common.saveFailed')), 'danger');
@@ -98,7 +99,8 @@ export default function Config() {
       const blob = new Blob([lines.join('\n') + '\n'], { type: 'text/plain' });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
-      a.download = r.filename || 'alpha-pos.env';
+      // The backend suggests a .json name; this file is .env text.
+      a.download = (r.filename || 'alpha-pos').replace(/\.json$/i, '') + '.env';
       a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 4000);
     } catch {

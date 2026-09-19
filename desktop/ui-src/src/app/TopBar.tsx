@@ -64,11 +64,11 @@ function AuditChip() {
   const { data } = useOrderAuditStatus();
   if (!data || data.ok === false) return null;
   const active = data.enabled !== false && data.auto_send !== false;
-  const tone: Tone = data.delivery_state === 'error' ? 'danger'
-    : data.delivery_state === 'configuration_required' ? 'warn'
-    : active ? 'ok' : 'muted';
-  const label = t(active ? 'obs.telegramOnShort' : 'obs.telegramOffShort');
-  return <Chip to="dashboard" tone={tone} label={label} name={t('chip.auditLabel')} title={data.last_auto_send_error || data.last_error || undefined} />;
+  const unconfigured = data.delivery_state === 'configuration_required' || data.telegram_configured === false;
+  const failing = data.delivery_state === 'error' && !unconfigured;
+  const tone: Tone = failing ? 'danger' : unconfigured ? 'muted' : active ? 'ok' : 'muted';
+  const label = t(active && !unconfigured ? 'obs.telegramOnShort' : 'obs.telegramOffShort');
+  return <Chip to="dashboard" tone={tone} label={label} name={t('chip.auditLabel')} title={failing ? data.last_auto_send_error || data.last_error || undefined : undefined} />;
 }
 
 function UpdateChip() {

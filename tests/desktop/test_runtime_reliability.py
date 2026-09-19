@@ -1221,7 +1221,7 @@ def test_postgres_bootstrap_failure_retries_without_starting_unsafe_backend(monk
 
     monkeypatch.setattr(
         control_server._API.server, 'ensure_django',
-        lambda: (_ for _ in ()).throw(
+        lambda **_kwargs: (_ for _ in ()).throw(
             pg_embedded.EmbeddedPostgresError('unsafe database state'),
         ),
     )
@@ -1242,8 +1242,9 @@ def test_transient_bootstrap_failure_recovers_without_app_restart(monkeypatch):
 
     attempts = []
 
-    def ensure_django():
-        attempts.append('django')
+    def ensure_django(*, supervisor=False):
+        # The boot worker is the supervisor: it retries even inside the cool-off.
+        attempts.append('django' if supervisor else 'panel')
         if len(attempts) == 1:
             raise pg_embedded.EmbeddedPostgresError('temporary sharing violation')
 
@@ -2244,7 +2245,7 @@ UI_BUDGETS = {
     'initial_js': 70_000,
     'initial_css': 25_000,
     'page_chunk': 30_000,
-    'locale_chunk': 20_000,
+    'locale_chunk': 24_000,
     'total_js': 150_000,
     'total_non_png': 400_000,
     'single_file': 100_000,

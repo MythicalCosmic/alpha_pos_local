@@ -143,11 +143,6 @@ const CONFIG = {
   ALPHA_POS_UPDATE_URL: 'https://updates.alphapos.uz/desktop',
   ORDER_AUDIT_TELEGRAM_CHAT_IDS: '-1001234567890',
   TELEGRAM_WEBHOOK_SECRET: '••••••••',
-  AI_PROVIDER: 'claude',
-  ANTHROPIC_API_KEY: '',
-  ANTHROPIC_MODEL: '',
-  GEMINI_API_KEY: '',
-  GEMINI_MODEL: '',
   FISCALIZATION_MODE: 'mock',
   FISCAL_PROVIDER: 'mock',
   FISCAL_TIN: '309876543',
@@ -156,7 +151,7 @@ const CONFIG = {
   FISCAL_MERCHANT_ID: '',
   FISCAL_SECRET: '',
 };
-const SECRET_KEYS = ['ANTHROPIC_API_KEY', 'CLOUD_SYNC_TOKEN', 'FISCAL_SECRET', 'GEMINI_API_KEY', 'SUPPORT_TUNNEL_PRIVATE_KEY_B64', 'TELEGRAM_WEBHOOK_SECRET'];
+const SECRET_KEYS = ['CLOUD_SYNC_TOKEN', 'FISCAL_SECRET', 'SUPPORT_TUNNEL_PRIVATE_KEY_B64', 'TELEGRAM_WEBHOOK_SECRET'];
 
 export const FIXTURES: Record<string, Fixture> = {
   get_ui_prefs: ({ state }) => ({ ok: true, prefs: state.prefs }),
@@ -250,6 +245,7 @@ export const FIXTURES: Record<string, Fixture> = {
   }),
   check_updates_only: ({ state }) => ({ ok: true, current: '1.1.0', available: state.scenario === 'update-pending' ? '1.1.1' : null, enabled: true }),
   check_updates_now: () => ({ ok: true, started: true }),
+  restart_to_update: () => ({ ok: true, requested: true }),
   license_status: ({ state }) => ({
     ok: true,
     license: state.scenario === 'unregistered' || state.scenario === 'empty'

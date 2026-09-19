@@ -52,21 +52,41 @@ describe('tauri transport', () => {
   it('invokes backend_call and maps failures', async () => {
     const invoke = vi.fn(async (_cmd: string, args?: Record<string, unknown>) => ({ ok: true, echo: args }));
     const transport = createTauriTransport({ invoke });
-    expect(await transport.call('server_status', [], { timeoutMs: 1000 })).toMatchObject({ ok: true, echo: { method: 'server_status', args: [] } });
+    expect(await transport.call('server_status', [], { timeoutMs: 1000 })).toMatchObject({ ok: true, echo: { method: 'server_status', args: [], timeoutMs: 1000 } });
     const forbidden = createTauriTransport({ invoke: async () => { throw 'HTTP 403 forbidden'; } });
     expect(await forbidden.call('x', [], { timeoutMs: 1000 })).toMatchObject({ ok: false, kind: 'auth' });
     const broken = createTauriTransport({ invoke: async () => { throw new Error('pipe closed'); } });
     expect(await broken.call('x', [], { timeoutMs: 1000 })).toMatchObject({ ok: false, kind: 'transport', error: 'pipe closed' });
   });
+
+  it('gives the shell proxy failures a kind the store understands', async () => {
+    const reply = (value: unknown) => createTauriTransport({ invoke: async () => value }).call('x', [], { timeoutMs: 1000 });
+    expect(await reply({ ok: false, code: 'backend_unavailable', error: 'down' })).toMatchObject({ ok: false, kind: 'transport', error: 'down' });
+    expect(await reply({ ok: false, code: 'timeout', error: 'slow' })).toMatchObject({ ok: false, kind: 'timeout' });
+    expect(await reply({ ok: false, code: 'auth', error: 'forbidden' })).toMatchObject({ ok: false, kind: 'auth', status: 403 });
+    // A normal backend refusal is not a transport problem.
+    expect(await reply({ ok: false, error: 'Sync not enabled' })).toEqual({ ok: false, error: 'Sync not enabled' });
+  });
 });
 
 describe('bridge selection', () => {
-  it('prefers __ALPHA_BRIDGE__ override, then Tauri, then HTTP', () => {
+  const pageWithToken = (content: string) => ({
+    querySelector: () => ({ getAttribute: () => content }),
+  }) as unknown as Document;
+
+  it('prefers __ALPHA_BRIDGE__ override, then same-origin HTTP, then Tauri', () => {
     const call = vi.fn();
     expect(selectBridge({ __ALPHA_BRIDGE__: { call } } as unknown as Window).transport.name).toBe('custom');
-    const tauri = selectBridge({ __TAURI_INTERNALS__: { invoke: vi.fn() } } as unknown as Window);
+    // In the shell the page comes from the control server with a real token:
+    // backend calls skip the shell proxy, shell features stay available.
+    const shell = selectBridge({ __TAURI_INTERNALS__: { invoke: vi.fn() }, document: pageWithToken('a'.repeat(64)) } as unknown as Window);
+    expect(shell.transport.name).toBe('http');
+    expect(shell.capabilities).toEqual({ shell: 'tauri', restartToUpdate: true });
+    // No token on the page (unfilled placeholder): fall back to the shell proxy.
+    const tauri = selectBridge({ __TAURI_INTERNALS__: { invoke: vi.fn() }, document: pageWithToken('{{CONTROL_TOKEN}}') } as unknown as Window);
     expect(tauri.transport.name).toBe('tauri');
     expect(tauri.capabilities).toEqual({ shell: 'tauri', restartToUpdate: true });
+    expect(selectBridge({ __TAURI_INTERNALS__: { invoke: vi.fn() } } as unknown as Window).transport.name).toBe('tauri');
     const http = selectBridge({} as Window);
     expect(http.transport.name).toBe('http');
     expect(http.capabilities.restartToUpdate).toBe(false);

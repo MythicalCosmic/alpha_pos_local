@@ -18,7 +18,7 @@ export const UNREACHABLE_AFTER = 2;
 export function serverProblem(data: ServerStatus | undefined): string {
   if (!data) return '';
   return String(
-    data.environment?.error || data.database?.error || data.last_error || '',
+    data.setup_error || data.environment?.error || data.database?.error || data.last_error || '',
   ).trim();
 }
 

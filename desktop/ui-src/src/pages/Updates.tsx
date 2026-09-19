@@ -1,5 +1,4 @@
 import { useState } from 'preact/hooks';
-import { capabilities, restartToUpdate } from '../bridge';
 import { api, errorText, isFailure } from '../bridge/methods';
 import { IconDownload, IconRefresh } from '../components/icons';
 import { QueryBoundary } from '../components/QueryBoundary';
@@ -12,11 +11,14 @@ import { fmtBytes, fmtDateTime } from '../lib/format';
 
 export default function Updates() {
   const t = useT();
-  const caps = capabilities();
   const q = useUpdateStatus(POLL.updatePage);
   const [busy, setBusy] = useState<'' | 'check' | 'install' | 'restart'>('');
   const u = q.data;
-  const newer = !!(u?.available && u.available !== u.version);
+  // The desktop app owns updates: it downloads and verifies in the background,
+  // this page shows what it staged and asks it to install.
+  const shell = u?.managed_by === 'shell';
+  const ready = shell && !!u?.staged_version;
+  const newer = !shell && !!(u?.available && u.available !== u.version);
 
   const check = async () => {
     setBusy('check');
@@ -24,6 +26,7 @@ export default function Updates() {
     setBusy('');
     store.invalidate(['update_status']);
     if (isFailure(r) || (typeof r.error === 'string' && r.error)) toast(errorText(r, t('upd.checkFailed')), 'danger');
+    else if (r.managed_by === 'shell') toast(t(r.available ? 'upd.ready' : 'upd.checkRequested'), 'info');
     else if (r.busy) toast(t('upd.checking'), 'info');
     else if (r.available && r.available !== u?.version) toast(t('upd.newAvailable'), 'info');
     else if (r.enabled !== false) toast(t('upd.upToDate'), 'ok');
@@ -41,9 +44,10 @@ export default function Updates() {
 
   const restart = async () => {
     setBusy('restart');
-    const r = await restartToUpdate();
+    const r = await api('restart_to_update');
     setBusy('');
     if (isFailure(r)) toast(errorText(r, t('upd.restartFailed')), 'danger');
+    else toast(t('upd.restartAsked'), 'info');
   };
 
   return (
@@ -53,8 +57,8 @@ export default function Updates() {
         <Card
           title={t('upd.current')}
           actions={u ? (
-            <Badge tone={u.active || u.pending || newer ? 'warn' : 'ok'}>
-              {t(u.active ? 'upd.installing' : u.pending ? 'upd.pending' : newer ? 'upd.newAvailable' : 'upd.upToDate')}
+            <Badge tone={u.active || u.pending || newer || ready ? 'warn' : u.checking ? 'info' : 'ok'}>
+              {t(u.active ? 'upd.installing' : u.pending ? 'upd.pending' : ready ? 'upd.ready' : newer ? 'upd.newAvailable' : u.checking ? 'upd.checking' : 'upd.upToDate')}
             </Badge>
           ) : null}
         >
@@ -84,7 +88,8 @@ export default function Updates() {
                     </KeyValue>
                   </div>
                   {d.pending ? <div class="mt-3"><Banner tone="warn">{t('upd.pendingMsg')}</Banner></div> : null}
-                  {!caps.restartToUpdate && (d.active || (d.phase && d.phase !== 'idle')) ? (
+                  {ready ? <div class="mt-3"><Banner tone="info">{t('upd.readyMsg', { version: d.staged_version || '' })}</Banner></div> : null}
+                  {!shell && (d.active || (d.phase && d.phase !== 'idle')) ? (
                     <div class="mt-3" aria-label={t('upd.progress')} role="group">
                       <div class="row-between small">
                         <span class="wrap">{d.message || d.phase}</span>
@@ -100,14 +105,14 @@ export default function Updates() {
             }}
           </QueryBoundary>
           <div class="row mt-4">
-            <Button icon={<IconRefresh size={14} />} loading={busy === 'check'} disabled={!!busy || !!u?.active} onClick={() => void check()}>
+            <Button icon={<IconRefresh size={14} />} loading={busy === 'check'} disabled={!!busy || !!u?.active || !!u?.checking} onClick={() => void check()}>
               {t(busy === 'check' ? 'upd.checking' : 'upd.checkNow')}
             </Button>
-            {caps.restartToUpdate ? (
-              <Button variant="primary" loading={busy === 'restart'} disabled={!!busy || !(u?.pending || newer)} onClick={() => void restart()}>
+            {shell ? (
+              <Button variant="primary" loading={busy === 'restart'} disabled={!!busy || !ready} onClick={() => void restart()}>
                 {t('upd.restart')}
               </Button>
-            ) : u?.managed_by === 'shell' ? null : (
+            ) : (
               <Button variant="primary" icon={<IconDownload size={14} />} loading={busy === 'install'} disabled={!!busy || !!u?.active || !newer} onClick={() => void install()}>
                 {t(u?.active ? 'upd.installing' : 'upd.installNow')}
               </Button>

@@ -1,6 +1,5 @@
 import type { ComponentType } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
-import { capabilities, restartToUpdate } from '../bridge';
 import { api, errorText, isFailure } from '../bridge/methods';
 import { IconEye, IconPower, IconRefresh } from '../components/icons';
 import { QueryBoundary } from '../components/QueryBoundary';
@@ -73,17 +72,32 @@ export default function Dashboard() {
 let observabilityModule: ComponentType | null = null;
 
 function LazyObservability() {
+  const t = useT();
   const [Section, setSection] = useState<ComponentType | null>(() => observabilityModule);
+  const [attempt, setAttempt] = useState(0);
+  const [failed, setFailed] = useState(false);
   useEffect(() => {
     if (Section) return undefined;
     let live = true;
-    void import('./dashboard/Observability').then((m) => {
+    setFailed(false);
+    import('./dashboard/Observability').then((m) => {
       observabilityModule = m.default;
       if (live) setSection(() => m.default);
+    }).catch(() => {
+      // The chunk can be missing for a moment while an update swaps the files.
+      if (live) setFailed(true);
     });
     return () => { live = false; };
-  }, []);
+  }, [attempt]);
   if (Section) return <Section />;
+  if (failed) {
+    return (
+      <Card>
+        <Banner tone="warn">{t('common.failed')}</Banner>
+        <div class="mt-3"><Button size="sm" onClick={() => setAttempt((n) => n + 1)}>{t('common.retry')}</Button></div>
+      </Card>
+    );
+  }
   return (
     <div class="grid-2">
       <Card><Skeleton lines={5} /></Card>
@@ -112,6 +126,7 @@ function ServerCard() {
   const { phase, server } = useBackend();
   const action = powerAction(phase);
   const sub = PHASE_SUB[phase];
+  // A setup that keeps failing is a problem even while the panel still says "booting".
   const problem = phase === 'running' ? '' : serverProblem(server);
   const warning = server?.database?.warning || '';
   const port = server?.port;
@@ -195,6 +210,7 @@ function SyncTile() {
               <KV label={t('dash.lastPush')}><RelativeTime iso={sync?.last_sync} /></KV>
               <KV label={t('dash.lastPull')}><RelativeTime iso={sync?.last_pull_at} /></KV>
             </KeyValue>
+            {sync && !sync.enabled ? <p class="small muted">{t('sync.offHint')}</p> : null}
             {pill.replayPending ? <p class="small text-warn">{t('sync.replayPending')}</p> : null}
             {sync?.last_pull_error ? <p class="small text-danger wrap">{sync.last_pull_error}</p> : null}
             {sync?.last_error && sync.last_error !== sync.last_pull_error ? <p class="small text-danger wrap">{sync.last_error}</p> : null}
@@ -202,7 +218,15 @@ function SyncTile() {
         )}
       </QueryBoundary>
       <div class="tile-foot">
-        <Button size="sm" icon={<IconRefresh size={14} />} loading={busy} onClick={() => void runSyncNow(t)}>{t('dash.syncNow')}</Button>
+        <Button
+          size="sm"
+          icon={<IconRefresh size={14} />}
+          loading={busy}
+          disabled={!sync?.enabled}
+          onClick={() => void runSyncNow(t)}
+        >
+          {t('dash.syncNow')}
+        </Button>
       </div>
     </Card>
   );
@@ -223,7 +247,7 @@ function HeartbeatTile() {
     setBusy(true);
     try {
       const r = await api('license_heartbeat_now');
-      toast(isFailure(r) ? errorText(r, t('dash.heartbeatFailed')) : t('dash.heartbeatOk'), isFailure(r) ? 'danger' : 'ok');
+      toast(isFailure(r) ? errorText(r, t('dash.heartbeatFailed')) : t('dash.heartbeatOk'), !isFailure(r) ? 'ok' : r.status === 304 ? 'warn' : 'danger');
     } finally {
       setBusy(false);
       store.invalidate(['license_status', 'server_status']);
@@ -310,20 +334,26 @@ function FiscalTile() {
 function UpdatesTile() {
   const t = useT();
   const q = useUpdateStatus();
-  const caps = capabilities();
   const [busy, setBusy] = useState(false);
   const d = q.data;
-  const newer = !!(d?.available && d.available !== d.version);
+  const shell = d?.managed_by === 'shell';
+  const ready = shell && !!d?.staged_version;
+  const newer = !shell && !!(d?.available && d.available !== d.version);
   const restart = async () => {
     setBusy(true);
-    const r = await restartToUpdate();
+    const r = await api('restart_to_update');
     setBusy(false);
     if (isFailure(r)) toast(errorText(r, t('upd.restartFailed')), 'danger');
+    else toast(t('upd.restartAsked'), 'info');
   };
   return (
     <Card
       class="tile" title={t('nav.updates')}
-      actions={d ? <Badge tone={d.pending ? 'warn' : newer ? 'info' : 'ok'}>{t(d.pending ? 'upd.pending' : newer ? 'upd.newAvailable' : 'upd.upToDate')}</Badge> : null}
+      actions={d ? (
+        <Badge tone={d.pending ? 'warn' : ready || newer ? 'info' : 'ok'}>
+          {t(d.pending ? 'upd.pending' : ready ? 'upd.ready' : newer ? 'upd.newAvailable' : 'upd.upToDate')}
+        </Badge>
+      ) : null}
     >
       <QueryBoundary q={q}>
         {(u) => (
@@ -334,7 +364,7 @@ function UpdatesTile() {
         )}
       </QueryBoundary>
       <div class="tile-foot">
-        {caps.restartToUpdate && d?.pending ? (
+        {ready ? (
           <Button size="sm" variant="primary" loading={busy} onClick={() => void restart()}>{t('upd.restart')}</Button>
         ) : null}
         <Button size="sm" onClick={() => navigate('updates')}>{t('common.manage')}</Button>

@@ -48,9 +48,11 @@ function TunnelCard() {
   const q = useTunnelStatus();
   const [busy, setBusy] = useState(false);
   const d = q.data;
-  const tone: Tone = d?.ready ? 'ok' : d?.state === 'error' ? 'danger' : d?.enabled ? 'warn' : 'muted';
-  const label = t(d?.ready ? 'obs.tunnelReady' : d?.enabled ? 'obs.tunnelWaiting' : 'common.offline');
-  const error = d?.configuration_error || d?.last_error || (d?.enabled && !d.ready ? d.last_probe_error : '');
+  // A tunnel that is switched off is not a problem: the backend still reports
+  // "host is not valid" for the blank default, which must not read as an error.
+  const tone: Tone = !d?.enabled ? 'muted' : d.ready ? 'ok' : d.state === 'error' ? 'danger' : 'warn';
+  const label = t(!d?.enabled ? 'common.offline' : d.ready ? 'obs.tunnelReady' : 'obs.tunnelWaiting');
+  const error = d?.enabled ? d.configuration_error || d.last_error || (!d.ready ? d.last_probe_error : '') : '';
   const toggle = async (on: boolean) => {
     if (busy) return;
     setBusy(true);
@@ -119,10 +121,12 @@ function OrderAuditCard() {
   const q = useOrderAuditStatus();
   const [busy, setBusy] = useState<'' | 'collect' | 'send' | 'now'>('');
   const d = q.data;
-  const error = d?.delivery_state === 'error' || d?.delivery_state === 'configuration_required';
+  // "Not set up yet" is the state of every new install, not a fault.
+  const unconfigured = d?.delivery_state === 'configuration_required' || d?.telegram_configured === false;
+  const error = d?.delivery_state === 'error' && !unconfigured;
   const active = d?.enabled !== false && d?.auto_send !== false;
-  const tone: Tone = error ? 'danger' : active ? 'ok' : 'muted';
-  const label = t(error ? 'obs.needsAttention' : active ? 'obs.telegramActive' : 'obs.paused');
+  const tone: Tone = error ? 'danger' : unconfigured ? 'muted' : active ? 'ok' : 'muted';
+  const label = t(error ? 'obs.needsAttention' : unconfigured ? 'obs.notSetUp' : active ? 'obs.telegramActive' : 'obs.paused');
 
   const toggle = async (field: 'enabled' | 'auto_send', on: boolean) => {
     if (busy) return;
@@ -175,8 +179,8 @@ function OrderAuditCard() {
               <KV label={t('obs.telegramChats')} mono>{s.telegram_chat_count || 0}</KV>
               <KV label={t('obs.formats')} mono>{(s.formats || ['JSONL', 'JSONL.GZ']).join(' + ')}</KV>
             </KeyValue>
-            {s.last_auto_send_error || s.last_error ? <p class="small text-danger wrap mt-2">{s.last_auto_send_error || s.last_error}</p> : null}
-            {!s.telegram_configured ? <p class="small text-warn mt-2">{t('obs.telegramConfigure')}</p> : null}
+            {error && (s.last_auto_send_error || s.last_error) ? <p class="small text-danger wrap mt-2">{s.last_auto_send_error || s.last_error}</p> : null}
+            {unconfigured ? <p class="small muted mt-2">{t('obs.telegramConfigure')}</p> : null}
             <p class="small muted mt-2">{t('obs.auditHint')}</p>
           </>
         )}

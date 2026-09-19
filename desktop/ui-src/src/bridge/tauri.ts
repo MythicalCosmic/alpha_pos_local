@@ -4,6 +4,15 @@ export interface TauriInternals {
   invoke(command: string, args?: Record<string, unknown>): Promise<unknown>;
 }
 
+/** The shell reports its own proxy failures as `{ok:false, code}`; give them a kind. */
+function withKind(result: BackendResult): BackendResult {
+  if (result.ok !== false || result.kind) return result;
+  if (result.code === 'auth') return { ...result, ...failure('auth', 'Panel session expired', 403) };
+  if (result.code === 'timeout') return { ...result, kind: 'timeout' };
+  if (result.code === 'backend_unavailable' || result.code === 'backend_invalid_response') return { ...result, kind: 'transport' };
+  return result;
+}
+
 function classify(error: unknown): BackendResult {
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : JSON.stringify(error);
   if (/\b403\b|forbidden|unauthori[sz]ed/i.test(message || '')) return failure('auth', 'Panel session expired', 403);
@@ -27,8 +36,8 @@ export function createTauriTransport(internals: TauriInternals): Transport {
         const onAbort = () => done(failure('transport', 'Request cancelled'));
         const timer = setTimeout(() => done(failure('timeout', `Timed out after ${Math.round(timeoutMs / 1000)}s`)), timeoutMs);
         signal?.addEventListener('abort', onAbort, { once: true });
-        internals.invoke('backend_call', { method, args }).then(
-          (value) => done(normalizeResult(value)),
+        internals.invoke('backend_call', { method, args, timeoutMs }).then(
+          (value) => done(withKind(normalizeResult(value))),
           (error) => done(classify(error)),
         );
       });

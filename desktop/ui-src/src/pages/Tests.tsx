@@ -31,20 +31,22 @@ const CLOUD_TESTS: readonly TestDef[] = [
 ];
 const ALL_TESTS = [...LOCAL_TESTS, ...CLOUD_TESTS];
 
-type Result = 'running' | { ok: boolean; ms: number; error?: string };
+/** `skipped`: the feature is not set up on this till (not a failure). */
+type Result = 'running' | { ok: boolean; skipped?: boolean; ms: number; error?: string };
 
 function TestTile({ test, result, onRun, disabled }: { test: TestDef; result: Result | undefined; onRun: () => void; disabled: boolean }) {
   const t = useT();
   const running = result === 'running';
   const done = result && result !== 'running' ? result : null;
+  const failed = !!done && !done.ok && !done.skipped;
   return (
-    <Card class="tile" title={t(test.name)} tone={done && !done.ok ? 'danger' : undefined}>
+    <Card class="tile" title={t(test.name)} tone={failed ? 'danger' : undefined}>
       <p class="small muted">{t(test.desc)}</p>
-      {done?.error ? <p class="small text-danger wrap">{done.error}</p> : null}
+      {done?.error ? <p class={failed ? 'small text-danger wrap' : 'small muted wrap'}>{done.error}</p> : null}
       <div class="tile-foot">
         <span class="row small grow" style={{ flex: '1 1 auto' }}>
           {running ? <Spinner /> : null}
-          {done ? (
+          {done?.skipped ? <span class="muted row">{t('obs.notSetUp')}</span> : done ? (
             <span class={done.ok ? 'text-ok row' : 'text-danger row'}>
               {done.ok ? <IconCheck size={13} /> : <IconWarn size={13} />}
               {done.ok ? 'OK' : t('tests.failed')} · {done.ms} ms
@@ -78,7 +80,8 @@ export default function Tests() {
     if (!alive.current) return;
     const ms = Math.round(performance.now() - started);
     const ok = !isFailure(res);
-    setResults((r) => ({ ...r, [test.id]: { ok, ms, error: ok ? undefined : errorText(res, '') || undefined } }));
+    const skipped = !ok && res.not_configured === true;
+    setResults((r) => ({ ...r, [test.id]: { ok, skipped, ms, error: ok ? undefined : errorText(res, '') || undefined } }));
   };
 
   const runAll = async () => {
@@ -91,9 +94,15 @@ export default function Tests() {
     if (alive.current && token === runToken.current) setRunningAll(false);
   };
 
+  // One test at a time: "Run all" and a single tile share the same services.
+  const anyRunning = Object.values(results).some((r) => r === 'running');
   const passed = ALL_TESTS.filter((x) => {
     const r = results[x.id];
     return r && r !== 'running' && r.ok;
+  }).length;
+  const skippedCount = ALL_TESTS.filter((x) => {
+    const r = results[x.id];
+    return r && r !== 'running' && r.skipped;
   }).length;
 
   return (
@@ -101,20 +110,20 @@ export default function Tests() {
       <div class="row-between">
         <p class="page-sub">{t('tests.sub')}</p>
         <div class="row" style={{ marginBottom: '16px' }}>
-          {passed > 0 ? <span class="small text-ok mono">{passed} / {ALL_TESTS.length} {t('tests.passed')}</span> : null}
-          <Button variant="primary" icon={<IconFlask size={14} />} loading={runningAll} onClick={() => void runAll()}>{t('common.runAll')}</Button>
+          {passed > 0 ? <span class="small text-ok mono">{passed} / {ALL_TESTS.length - skippedCount} {t('tests.passed')}</span> : null}
+          <Button variant="primary" icon={<IconFlask size={14} />} loading={runningAll} disabled={anyRunning && !runningAll} onClick={() => void runAll()}>{t('common.runAll')}</Button>
         </div>
       </div>
 
       <h2 class="section-title">{t('tests.local')}</h2>
       <div class="test-grid">
-        {LOCAL_TESTS.map((x) => <TestTile key={x.id} test={x} result={results[x.id]} disabled={runningAll} onRun={() => void run(x)} />)}
+        {LOCAL_TESTS.map((x) => <TestTile key={x.id} test={x} result={results[x.id]} disabled={runningAll || anyRunning} onRun={() => void run(x)} />)}
       </div>
 
       <h2 class="section-title">{t('tests.cloud')}</h2>
       <p class="page-sub">{t('tests.cloudHint')}</p>
       <div class="test-grid">
-        {CLOUD_TESTS.map((x) => <TestTile key={x.id} test={x} result={results[x.id]} disabled={runningAll} onRun={() => void run(x)} />)}
+        {CLOUD_TESTS.map((x) => <TestTile key={x.id} test={x} result={results[x.id]} disabled={runningAll || anyRunning} onRun={() => void run(x)} />)}
       </div>
 
       <RecoveryPanel />

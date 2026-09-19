@@ -10,7 +10,8 @@ export const BUDGETS = {
   initialJs: 70_000,
   initialCss: 25_000,
   pageChunk: 30_000,
-  localeChunk: 20_000,
+  // Cyrillic is two bytes per letter in UTF-8; ru is the largest locale.
+  localeChunk: 24_000,
   totalJs: 150_000,
   totalNonPng: 400_000,
   singleFile: 100_000,

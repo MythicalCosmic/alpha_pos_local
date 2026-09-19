@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { initialState } from './fixtures/bridge-fixtures';
+import { FIXTURES, initialState, type FixtureContext } from './fixtures/bridge-fixtures';
 import { installMockBridge } from './mock-bridge';
 import { openRoute, ROUTES, sharedAssertions, trackErrors, waitReady, waitReadyWithClock, type Route } from './support';
 
@@ -255,7 +255,9 @@ test.describe('unsaved changes', () => {
     await save.click();
     await expect(page.locator('.toast', { hasText: 'Configuration saved' })).toBeVisible();
     const saved = mock.calls.find((c) => c.method === 'save_config');
-    expect((saved?.args[0] as Record<string, string>).PORT).toBe('8123');
+    // Only the changed key crosses the bridge: an unrelated save must never
+    // rewrite staff Telegram recipients or restart the support tunnel.
+    expect(saved?.args[0]).toEqual({ PORT: '8123' });
     await expect(save).toBeDisabled();
   });
 
@@ -339,7 +341,7 @@ test.describe('pages', () => {
     await sharedAssertions(page, errors, 'big logs');
   });
 
-  test('restart to update appears only with the Tauri capability', async ({ browser }) => {
+  test('restart to update follows the updates the desktop app has staged', async ({ browser }) => {
     const legacy = await browser.newPage();
     await installMockBridge(legacy, { scenario: 'update-pending' });
     await legacy.goto('/#/updates');
@@ -348,17 +350,48 @@ test.describe('pages', () => {
     await expect(legacy.getByRole('button', { name: 'Restart to update' })).toHaveCount(0);
     await legacy.close();
 
+    const shellStatus = (staged: string | null) => (ctx: FixtureContext) => ({
+      ...FIXTURES.update_status(ctx),
+      managed_by: 'shell', pending: false, available: staged, staged_version: staged,
+    });
+
+    const idle = await browser.newPage();
+    await installMockBridge(idle, { scenario: 'healthy', tauri: true, overrides: { update_status: shellStatus(null) } });
+    await idle.goto('/#/updates');
+    await waitReady(idle);
+    await expect(idle.getByRole('button', { name: 'Install now' })).toHaveCount(0);
+    await expect(idle.getByRole('button', { name: 'Restart to update' })).toBeDisabled();
+    await idle.close();
+
     const shell = await browser.newPage();
-    const mock = await installMockBridge(shell, { scenario: 'update-pending', tauri: true });
+    const mock = await installMockBridge(shell, { scenario: 'healthy', tauri: true, overrides: { update_status: shellStatus('1.1.1') } });
     await shell.goto('/#/updates');
     await waitReady(shell);
-    await expect(shell.getByRole('button', { name: 'Install now' })).toHaveCount(0);
+    await expect(shell.getByText('Version 1.1.1 is downloaded and verified', { exact: false })).toBeVisible();
     const restart = shell.getByRole('button', { name: 'Restart to update' });
     await expect(restart).toBeEnabled();
     await restart.click();
-    await expect.poll(() => shell.evaluate(() => (window as unknown as { __restartCalls?: number }).__restartCalls ?? 0)).toBe(1);
-    expect(mock.count('update_status')).toBeGreaterThan(0);
+    await mock.waitForCall('restart_to_update');
+    await expect(shell.locator('.toast', { hasText: 'Confirm the update' })).toBeVisible();
     await shell.close();
+  });
+
+  test('tests that need an unconfigured feature read "Not set up", not FAIL', async ({ page }) => {
+    await installMockBridge(page, {
+      scenario: 'healthy',
+      overrides: {
+        telegram_test: () => ({ ok: false, error: 'Not configured', not_configured: true }),
+        send_fake_notification: () => ({ ok: false, error: 'chat not found' }),
+      },
+    });
+    await page.goto('/#/tests');
+    await waitReady(page);
+    const tile = (name: string) => page.locator('.card', { has: page.getByRole('heading', { name }) });
+    await tile('Telegram bot').getByRole('button', { name: 'Run' }).click();
+    await expect(tile('Telegram bot').getByText('Not set up')).toBeVisible();
+    await expect(tile('Telegram bot').locator('.text-danger')).toHaveCount(0);
+    await tile('Fake notification').getByRole('button', { name: 'Run' }).click();
+    await expect(tile('Fake notification').locator('.text-danger').first()).toBeVisible();
   });
 
   test('fiscal mode switch is optimistic and rolls back on failure', async ({ page }) => {

@@ -55,7 +55,7 @@ export default function License() {
     setBusy('beat');
     const r = await api('license_heartbeat_now');
     setBusy('');
-    toast(isFailure(r) ? errorText(r, t('dash.heartbeatFailed')) : t('dash.heartbeatOk'), isFailure(r) ? 'danger' : 'ok');
+    toast(isFailure(r) ? errorText(r, t('dash.heartbeatFailed')) : t('dash.heartbeatOk'), !isFailure(r) ? 'ok' : r.status === 304 ? 'warn' : 'danger');
     refreshLicense();
   };
 

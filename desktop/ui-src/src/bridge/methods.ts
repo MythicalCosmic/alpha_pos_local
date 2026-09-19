@@ -33,6 +33,7 @@ export const METHODS = {
   update_status: DEFAULT_TIMEOUT,
   check_updates_only: CLOUD,
   check_updates_now: CLOUD,
+  restart_to_update: 30 * S,
   license_status: DEFAULT_TIMEOUT,
   sync_status: DEFAULT_TIMEOUT,
   send_mock_sync: 60 * S,

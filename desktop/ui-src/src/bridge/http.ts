@@ -6,6 +6,11 @@ export function readMetaToken(doc: Document | undefined = typeof document === 'u
   return value;
 }
 
+/** True when the page was served by the control server, which fills in the token. */
+export function isControlToken(value: string | undefined | null): value is string {
+  return !!value && !value.includes('{{');
+}
+
 type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 
 /** Same-origin POST /api/<method> with the per-install control token. */
