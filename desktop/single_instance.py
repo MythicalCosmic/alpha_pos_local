@@ -11,6 +11,7 @@ owner self-heals on the next launch.
 from __future__ import annotations
 
 import logging
+import time
 
 logger = logging.getLogger('desktop.single_instance')
 
@@ -27,17 +28,45 @@ _ERROR_ALREADY_EXISTS = 183
 _handles = {}
 
 
-def acquire(name: str = _MUTEX_NAME) -> bool:
+def acquire(name: str = _MUTEX_NAME, *, wait_seconds: float = 0.0) -> bool:
     """Return True if THIS process is the sole instance, False if another already
-    holds the lock. Non-Windows / any failure -> True (fail open, never block)."""
+    holds the lock. Non-Windows / any failure -> True (fail open, never block).
+
+    ``wait_seconds`` lets a relaunch outlive the previous process, which needs a
+    bounded time to stop its database after the window is gone.
+    """
     try:
         import ctypes
-        kernel32 = ctypes.windll.kernel32
-        handle = kernel32.CreateMutexW(None, False, name)
-        if not handle:
-            return True  # couldn't create the mutex object — don't block the app
-        _handles[name] = handle
-        return kernel32.GetLastError() != _ERROR_ALREADY_EXISTS
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel32.CreateMutexW.restype = wintypes.HANDLE
+        kernel32.CreateMutexW.argtypes = (wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR)
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
     except Exception:  # noqa: BLE001 — not Windows / ctypes unavailable
         logger.debug('single-instance mutex unavailable; allowing launch', exc_info=True)
         return True
+    deadline = time.monotonic() + max(0.0, float(wait_seconds or 0.0))
+    waited = False
+    while True:
+        try:
+            ctypes.set_last_error(0)
+            handle = kernel32.CreateMutexW(None, False, name)
+            if not handle:
+                return True  # couldn't create the mutex object — don't block the app
+            if ctypes.get_last_error() != _ERROR_ALREADY_EXISTS:
+                _handles[name] = handle
+                if waited:
+                    logger.info('single-instance lock %s became free', name)
+                return True
+            # Another process owns it. Drop our handle: keeping it would keep the
+            # named object alive after the owner exits, so no retry could succeed.
+            kernel32.CloseHandle(handle)
+        except Exception:  # noqa: BLE001
+            logger.debug('single-instance mutex check failed; allowing launch', exc_info=True)
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        if not waited:
+            logger.info('single-instance lock %s is held; waiting for the previous process', name)
+            waited = True
+        time.sleep(0.25)

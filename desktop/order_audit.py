@@ -2023,6 +2023,12 @@ def _auto_sender_worker() -> None:
                 continue
             last_attempt = time.monotonic()
             try:
+                # A till whose owner never set up the evidence chat is not
+                # failing: status already reports "configuration_required", so
+                # do not record a delivery error for it on every cycle.
+                token, chat_ids = _telegram_delivery_configuration()
+                if not token or not chat_ids:
+                    continue
                 _deliver_pending_once()
             except Exception as exc:  # noqa: BLE001
                 _COLLECTOR.set_auto_send_error(exc)

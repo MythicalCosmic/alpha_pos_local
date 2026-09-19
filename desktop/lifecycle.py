@@ -39,6 +39,10 @@ class Lifecycle:
         self._updated_at = _utc_now()
         self._shutdown_handler = None
         self._shutdown_started = False
+        # Requests for the desktop shell, which owns updates. Counters instead
+        # of flags: the shell acts once per new value and nothing needs a reset.
+        self._update_check_seq = 0
+        self._update_restart_seq = 0
 
     def set(self, phase, detail=''):
         if phase not in PHASES:
@@ -62,7 +66,21 @@ class Lifecycle:
                 'updated_at': self._updated_at,
                 'pid': os.getpid(),
                 'shutdown_requested': self._shutdown_started,
+                'update_check_seq': self._update_check_seq,
+                'update_restart_seq': self._update_restart_seq,
             }
+
+    def request_update_check(self):
+        """Ask the shell to look for a new version now (it downloads and stages)."""
+        with self._lock:
+            self._update_check_seq += 1
+            return self._update_check_seq
+
+    def request_update_restart(self):
+        """Ask the shell to offer "restart to update" (it confirms with the operator)."""
+        with self._lock:
+            self._update_restart_seq += 1
+            return self._update_restart_seq
 
     def set_shutdown_handler(self, handler):
         with self._lock:

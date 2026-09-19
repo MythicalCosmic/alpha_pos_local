@@ -12,12 +12,26 @@ from desktop.server_manager import ServerManager
 logger = logging.getLogger('desktop.bridge')
 
 
+def _is_operator_error(exc) -> bool:
+    """A refusal written for the operator ("not configured", "enable it first").
+
+    The desktop modules raise RuntimeError (and subclasses such as ConfigError
+    or LocalTelegramAuditError) for those. They are answers, not faults: they
+    must not fill error.log with tracebacks every time someone presses a test
+    button on an unconfigured till.
+    """
+    return isinstance(exc, RuntimeError) and not isinstance(exc, (NotImplementedError, RecursionError))
+
+
 def _safe(fn):
     def wrapper(self, *a, **k):
         try:
             return fn(self, *a, **k)
         except Exception as exc:  # noqa: BLE001
-            logger.exception('bridge %s failed', fn.__name__)
+            if _is_operator_error(exc):
+                logger.info('bridge %s refused: %s', fn.__name__, exc)
+            else:
+                logger.exception('bridge %s failed', fn.__name__)
             return {'ok': False, 'error': str(exc)}
     wrapper.__name__ = fn.__name__
     return wrapper
@@ -39,6 +53,20 @@ def _sync_response(result, *, operation):
         if not detail and result.get('errors'):
             detail = '; '.join(str(item) for item in result['errors'])
         response['error'] = detail or f'{operation} failed'
+        if detail == _SYNC_DISABLED:
+            # Sync switched off on purpose is a state, not a failure.
+            response['not_configured'] = True
+    return response
+
+
+_SYNC_DISABLED = 'Sync not enabled'
+_TELEGRAM_UNCONFIGURED = 'Not configured'
+
+
+def _telegram_response(ok, err):
+    response = {'ok': bool(ok), 'error': err}
+    if not ok and err == _TELEGRAM_UNCONFIGURED:
+        response['not_configured'] = True
     return response
 
 
@@ -117,6 +145,14 @@ class Api:
                 masked[k] = '••••••••'
         return {'ok': True, 'config': masked, 'secret_keys': sorted(config_store.SECRET_KEYS)}
 
+    # Settings the running server picks up without a restart (see save_config).
+    _LIVE_CONFIG_KEYS = frozenset({
+        'FISCALIZATION_MODE', 'CLOUD_SYNC_URL', 'CLOUD_SYNC_TOKEN', 'BRANCH_ID',
+        'DEPLOYMENT_MODE', 'LICENSE_CONTROL_CENTER_URL', 'SYNC_ENABLED',
+        'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_IDS',
+    })
+    _LIVE_CONFIG_PREFIXES = ('SUPPORT_TUNNEL_', 'LOCAL_TELEGRAM_')
+
     @_safe
     def save_config(self, values):
         # Don't overwrite a secret with the mask placeholder.
@@ -127,8 +163,15 @@ class Api:
                 clean[k] = current.get(k, '')
             else:
                 clean[k] = v
+        # The panel may post the whole form. Only keys whose value really changed
+        # may restart a worker or reach the database: an untouched blank
+        # TELEGRAM_CHAT_IDS used to wipe the staff recipients on every save.
+        changed = {
+            k for k, v in clean.items()
+            if str('' if v is None else v) != str(current.get(k, ''))
+        }
         config_store.write_config(clean)
-        if any(str(key).startswith('SUPPORT_TUNNEL_') for key in clean):
+        if any(str(key).startswith('SUPPORT_TUNNEL_') for key in changed):
             try:
                 from desktop import support_tunnel
                 support_tunnel.restart()
@@ -136,44 +179,54 @@ class Api:
                 logger.exception('live support tunnel config apply failed')
         try:
             self.server.ensure_django()
-            if any(str(key).startswith('LOCAL_TELEGRAM_') for key in clean):
+            if any(str(key).startswith('LOCAL_TELEGRAM_') for key in changed):
                 from desktop import local_telegram_audit
                 local_telegram_audit.start_background_notifier()
                 local_telegram_audit.wake()
             # Fiscal mode is a live cache toggle — applies without a restart.
             from fiscalization.config import FiscalConfig
             mode = clean.get('FISCALIZATION_MODE')
-            if mode:
+            if mode and 'FISCALIZATION_MODE' in changed:
                 FiscalConfig.set_mode(mode)
             # Telegram token + chat ids go into the DB-backed NotificationSettings
             # (the canonical source TelegramAPI reads) so messages deliver
-            # immediately — no restart, unlike the .env-only settings.
-            token = clean.get('TELEGRAM_BOT_TOKEN')
-            chat_raw = clean.get('TELEGRAM_CHAT_IDS')
-            if (token and token != '••••••••') or chat_raw is not None:
+            # immediately — no restart, unlike the .env-only settings. A blank
+            # value means "unchanged": recipients are cleared from their own
+            # screen, never as a side effect of saving other settings.
+            token = str(clean.get('TELEGRAM_BOT_TOKEN') or '').strip()
+            chat_ids = [c.strip() for c in str(clean.get('TELEGRAM_CHAT_IDS') or '')
+                        .replace(' ', ',').split(',') if c.strip()]
+            apply_token = 'TELEGRAM_BOT_TOKEN' in changed and token and token != '••••••••'
+            apply_chats = 'TELEGRAM_CHAT_IDS' in changed and chat_ids
+            if apply_token or apply_chats:
                 from notifications.models import NotificationSettings
                 ns = NotificationSettings.load()
-                if token and token != '••••••••':
-                    ns.bot_token = token.strip()
-                if chat_raw is not None:
-                    ns.chat_ids = [c.strip() for c in str(chat_raw)
-                                   .replace(' ', ',').split(',') if c.strip()]
+                if apply_token:
+                    ns.bot_token = token
+                if apply_chats:
+                    ns.chat_ids = chat_ids
                 ns.save()
             # Sync settings are read from `settings` at call time, so apply them
             # to the live settings object — no app restart needed to test sync.
             from django.conf import settings as _dj
             for key in ('CLOUD_SYNC_URL', 'CLOUD_SYNC_TOKEN', 'BRANCH_ID',
                         'DEPLOYMENT_MODE', 'LICENSE_CONTROL_CENTER_URL'):
-                if key in clean and clean[key] is not None:
+                if key in changed and clean[key] is not None:
                     setattr(_dj, key, clean[key])
-            if 'SYNC_ENABLED' in clean:
+            if 'SYNC_ENABLED' in changed:
                 from base.services.sync.config import SyncConfig
                 en = str(clean['SYNC_ENABLED']).lower() in ('true', '1', 'yes')
                 _dj.SYNC_ENABLED = en
                 SyncConfig.enable() if en else SyncConfig.disable()
         except Exception:  # noqa: BLE001
             logger.exception('live config apply failed')
-        return {'ok': True, 'restart_required': self.server.is_running()}
+        needs_restart = any(
+            key not in self._LIVE_CONFIG_KEYS
+            and not str(key).startswith(self._LIVE_CONFIG_PREFIXES)
+            for key in changed
+        )
+        return {'ok': True, 'changed': sorted(changed),
+                'restart_required': needs_restart and self.server.is_running()}
 
     # -- config export / import (backup + clone an install) -----------------
     @_safe
@@ -581,19 +634,54 @@ class Api:
         else:
             os.environ.pop(key, None)
 
+    @staticmethod
+    def _shell_version():
+        import os
+        return os.environ.get('ALPHA_POS_SHELL_VERSION', '').strip()
+
+    @staticmethod
+    def _shell_update_status():
+        """What the desktop shell last reported about its own updater.
+
+        The shell downloads, verifies and installs updates; it publishes its
+        state in ``update/shell-status.json`` so this panel can show it without
+        depending on the shell's IPC.
+        """
+        import json
+        try:
+            path = config_store.DATA_DIR / 'update' / 'shell-status.json'
+            data = json.loads(path.read_text(encoding='utf-8'))
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
     @_safe
     def update_status(self):
         """Full update state for the Updates page: installed version, whether
         updates are enabled, the configured server, pending state, and the
         recorded last-check / last-update / available-version / history."""
         self._ensure_update_env()
-        import os
         from desktop import updater
         info = {'ok': True, **updater.get_status_info()}
-        shell_version = os.environ.get('ALPHA_POS_SHELL_VERSION', '').strip()
+        shell_version = self._shell_version()
         if shell_version:
             # The Tauri desktop app downloads, installs and confirms updates.
-            info.update(managed_by='shell', shell_version=shell_version)
+            shell = self._shell_update_status()
+            staged = str(shell.get('staged_version') or '').strip()
+            info.update(
+                managed_by='shell', shell_version=shell_version,
+                enabled=True, reason='',
+                available=staged or None,
+                # "pending" is the legacy updater's "did not confirm a clean
+                # start" warning; a staged shell update is ordinary good news.
+                pending=False,
+                staged_version=staged or None,
+                checking=bool(shell.get('checking')),
+                last_check_at=shell.get('last_check_at') or info.get('last_check_at'),
+                last_check_error=str(shell.get('last_check_error') or ''),
+                blocked_versions=list(shell.get('blocked_versions') or []),
+                last_rollback=shell.get('last_rollback'),
+            )
         return info
 
     @_safe
@@ -601,6 +689,13 @@ class Api:
         """Ask the server whether a newer version exists WITHOUT installing it,
         so the page can show 'up to date' or offer an install."""
         self._ensure_update_env()
+        if self._shell_version():
+            from desktop import lifecycle
+            lifecycle.STATE.request_update_check()
+            staged = str(self._shell_update_status().get('staged_version') or '').strip()
+            return {'ok': True, 'managed_by': 'shell', 'requested': True,
+                    'current': self._shell_version(), 'available': staged or None,
+                    'enabled': True}
         from desktop import updater
         return {'ok': True, **updater.check_only()}
 
@@ -613,9 +708,23 @@ class Api:
         performs a bounded atomic swap + relaunch.
         """
         self._ensure_update_env()
+        if self._shell_version():
+            return {'ok': False, 'managed_by': 'shell',
+                    'error': 'Updates are installed by the Alpha POS desktop app. Use "Restart to update".'}
         from desktop import updater
         result = updater.start_update()
         return {'ok': True, **result}
+
+    @_safe
+    def restart_to_update(self):
+        """Ask the desktop shell to install the staged update (it asks first)."""
+        if not self._shell_version():
+            return {'ok': False, 'error': 'Restart to update is only available in the Alpha POS desktop app.'}
+        if not str(self._shell_update_status().get('staged_version') or '').strip():
+            return {'ok': False, 'error': 'No update is ready yet. New versions are downloaded automatically.'}
+        from desktop import lifecycle
+        lifecycle.STATE.request_update_restart()
+        return {'ok': True, 'requested': True}
 
     @_safe
     def license_status(self):
@@ -842,6 +951,8 @@ class Api:
                 push_response.get('error') or pull_response.get('error')
                 or 'Cloud sync failed'
             )
+            if push_response.get('not_configured') or pull_response.get('not_configured'):
+                response['not_configured'] = True
         return _attach_shift_close_status(response, close_status)
 
     @_safe
@@ -1029,7 +1140,7 @@ class Api:
         from base.notifications.telegram import TelegramAPI
         # send_message returns (ok, error) — a REAL send to api.telegram.org.
         ok, err = TelegramAPI.send_message('✅ Alpha POS test message from the control panel.')
-        return {'ok': bool(ok), 'error': err}
+        return _telegram_response(ok, err)
 
     @_safe
     def send_fake_notification(self):
@@ -1038,7 +1149,7 @@ class Api:
         text = ('🧾 <b>TEST notification</b>\n\nOrder #TEST paid: 60 000 soʼm\n'
                 'This is a fake notification from the control panel.')
         ok, err = TelegramAPI.send_message(text)
-        return {'ok': bool(ok), 'error': err}
+        return _telegram_response(ok, err)
 
     @_safe
     def get_telegram(self):
@@ -1221,7 +1332,15 @@ class Api:
         self.server.ensure_django()
         from licensing.services.heartbeat import do_heartbeat
         body, status = do_heartbeat()
-        return {'ok': status == 200, 'status': status, 'data': body}
+        result = {'ok': status == 200, 'status': status, 'data': body}
+        if status != 200:
+            message = str((body or {}).get('message') or '') if isinstance(body, dict) else ''
+            # 304 = nothing to send: this till was never registered.
+            result['error'] = (
+                'This till has no licence yet. Register it on the Licence page first.'
+                if status == 304 else (message or f'The control center answered {status}.')
+            )
+        return result
 
     @_safe
     def license_activate_offline(self, email='', org='', expires=''):

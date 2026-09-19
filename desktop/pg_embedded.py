@@ -287,8 +287,44 @@ def detect_stranded_sqlite() -> dict:
 def _run(bin_dir: Path, exe: str, *args, **kw) -> subprocess.CompletedProcess:
     kw.setdefault('creationflags', _NO_WINDOW)   # no console window for the child
     kw.setdefault('timeout', 15)
+    if exe == 'psql.exe':
+        # psql answers in the client encoding, and Python would otherwise decode
+        # it with the Windows ANSI code page. A profile such as
+        # C:\Users\Администратор then never matched SHOW data_directory and the
+        # database was refused as "belonging to another cluster".
+        kw.setdefault('env', {**os.environ, 'PGCLIENTENCODING': 'UTF8'})
     return subprocess.run([str(bin_dir / exe), *args], capture_output=True,
-                          text=True, **kw)
+                          text=True, encoding='utf-8', errors='replace', **kw)
+
+
+# Tried in order for a brand-new cluster. The first is what every existing till
+# used. A Windows locale PostgreSQL cannot map (or one whose name it cannot
+# parse) makes it fail; ICU then gives the same Unicode-aware sorting and
+# case-insensitive search on any Windows, and plain C is the last resort.
+_INITDB_LOCALE_ATTEMPTS = (
+    ('system locale', ()),
+    ('ICU', ('--locale=C', '--locale-provider=icu', '--icu-locale=und')),
+    ('C locale', ('--locale=C',)),
+)
+
+
+def _initialise_cluster(bin_dir: Path, data: Path) -> None:
+    failure = ''
+    for label, locale_args in _INITDB_LOCALE_ATTEMPTS:
+        initialized = _run(
+            bin_dir, 'initdb.exe', '-D', str(data), '-U', 'postgres',
+            '-A', 'trust', '-E', 'UTF8', *locale_args, timeout=120,
+        )
+        if initialized.returncode == 0 and (data / 'PG_VERSION').is_file():
+            if locale_args:
+                logger.warning('embedded Postgres initialised with the %s fallback', label)
+            return
+        failure = (initialized.stderr or initialized.stdout or 'initdb failed').strip()[-1500:]
+        logger.warning('initdb with the %s failed: %s', label, failure.splitlines()[-1] if failure else '')
+        # initdb removes what it created; never touch a directory it did not empty.
+        if data.exists() and any(data.iterdir()):
+            break
+    raise EmbeddedPostgresError('Could not initialize embedded PostgreSQL: ' + failure)
 
 
 def _wait_ready(bin_dir: Path, timeout: float = 15.0) -> bool:
@@ -311,9 +347,14 @@ def _pid_alive(pid: int) -> bool:
     """True if PID is a RUNNING postgres.exe — so we never delete a live lock.
     Uncertain -> True (safe default: don't remove a possibly-live postmaster.pid)."""
     try:
+        # Localised tasklist output is in the OEM code page; a byte the ANSI
+        # codec cannot decode must not turn a dead pid into "alive".
+        tasklist = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'tasklist.exe'
         out = subprocess.run(
-            ['tasklist', '/FI', f'PID eq {pid}', '/FI', 'IMAGENAME eq postgres.exe', '/NH'],
-            capture_output=True, text=True, creationflags=_NO_WINDOW, timeout=5)
+            [str(tasklist) if tasklist.is_file() else 'tasklist',
+             '/FI', f'PID eq {pid}', '/FI', 'IMAGENAME eq postgres.exe', '/NH'],
+            capture_output=True, text=True, errors='replace',
+            creationflags=_NO_WINDOW, timeout=5)
         return 'postgres.exe' in (out.stdout or '').lower()
     except Exception:  # noqa: BLE001
         return True
@@ -484,16 +525,7 @@ def _start_locked() -> bool:
         was_initialised = (data / 'PG_VERSION').exists()
         if not was_initialised:
             logger.info('initialising embedded Postgres at %s', data)
-            initialized = _run(
-                bin_dir, 'initdb.exe', '-D', str(data), '-U', 'postgres',
-                '-A', 'trust', '-E', 'UTF8', timeout=60,
-            )
-            if initialized.returncode != 0 or not (data / 'PG_VERSION').is_file():
-                raise EmbeddedPostgresError(
-                    'Could not initialize embedded PostgreSQL: '
-                    + ((initialized.stderr or initialized.stdout or 'initdb failed')
-                       .strip()[-1500:])
-                )
+            _initialise_cluster(bin_dir, data)
             with open(data / 'postgresql.conf', 'a', encoding='utf-8') as f:
                 f.write(f'\nport = {PG_PORT}\nlisten_addresses = \'127.0.0.1\'\n')
         # start if not already running. IMPORTANT: do NOT capture pg_ctl's

@@ -422,16 +422,27 @@ def _boot_worker(*, shutdown_event=None, check_updates=None):
     # for the rest of the day: retry this idempotent boundary with bounded
     # backoff, while keeping the already-painted diagnostics panel responsive.
     backoff = 3
+    last_failure = None
     while not shutdown_event.is_set():
         try:
             from desktop import pg_embedded, support_tunnel
-            control_server._API.server.ensure_django()
+            control_server._API.server.ensure_django(supervisor=True)
             break
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                'boot: database/Django bootstrap failed; retrying in %ss',
-                backoff,
-            )
+        except Exception as exc:  # noqa: BLE001
+            # The full traceback once per distinct failure; a database that
+            # stays down must not write the same stack every minute all day.
+            failure = f'{exc.__class__.__name__}: {exc}'
+            if failure != last_failure:
+                logger.exception(
+                    'boot: database/Django bootstrap failed; retrying in %ss',
+                    backoff,
+                )
+                last_failure = failure
+            else:
+                logger.warning(
+                    'boot: database/Django bootstrap still failing; retrying in %ss',
+                    backoff,
+                )
             if shutdown_event.wait(backoff):
                 return
             backoff = min(backoff * 2, 60)

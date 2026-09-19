@@ -22,6 +22,8 @@ logger = logging.getLogger('desktop.backend')
 SHUTDOWN_BUDGET_SECONDS = 25.0
 # Hard stop if a shutdown step wedges; the shell kills the job at 35 s anyway.
 SHUTDOWN_HARD_EXIT_SECONDS = 32.0
+# The shell maps this to "Alpha POS is already running" instead of a crash.
+EXIT_ALREADY_RUNNING = 2
 
 
 def parse_args(argv):
@@ -42,6 +44,9 @@ def _track_boot_phase(stop_event, *, interval=0.5):
             lifecycle.STATE.set('serving')
         elif getattr(server, '_setup_ready', False):
             lifecycle.STATE.set('migrating', 'starting POS server')
+        elif getattr(server, '_setup_error', ''):
+            # Setup keeps failing; the supervisor is still retrying.
+            lifecycle.STATE.set('error', server._setup_error)
         elif getattr(server, '_django_ready', False):
             lifecycle.STATE.set('migrating')
         elif lifecycle.STATE.snapshot()['phase'] != 'serving':
@@ -60,9 +65,15 @@ def main(argv=None):
         return app.main_selftest(require_webview=False)
 
     from desktop import single_instance
-    if not single_instance.acquire(single_instance.BACKEND_MUTEX_NAME):
-        logger.error('another Alpha POS backend already owns the data directory; exiting')
-        return 2
+    # A quick relaunch can overlap the previous backend, which has up to
+    # SHUTDOWN_HARD_EXIT_SECONDS to stop its database. Wait for it instead of
+    # failing the new window with "backend exited (code 2)".
+    if not single_instance.acquire(
+        single_instance.BACKEND_MUTEX_NAME,
+        wait_seconds=SHUTDOWN_HARD_EXIT_SECONDS + 8,
+    ):
+        logger.error('another Alpha POS backend still owns the data directory; exiting')
+        return EXIT_ALREADY_RUNNING
 
     from desktop import control_server, lifecycle, shutdown
     from desktop.version import __version__

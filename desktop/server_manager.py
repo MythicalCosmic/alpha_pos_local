@@ -64,6 +64,39 @@ def _setup_signature_and_schema_current():
     return f'{version}:{migration_hash}', schema_current
 
 
+# An offline till fails its cloud sync, pull and licence heartbeat roughly once a
+# minute, all day. The state is already shown on the dashboard; the log keeps the
+# first failure of a streak and a reminder every 30th one instead of thousands
+# of identical warnings that read as "so many errors" on the Logs page.
+_REPEAT_FAILURE_LOG_EVERY = 30
+
+
+def _streak_log_level(failures: int) -> int:
+    if failures <= 1 or failures % _REPEAT_FAILURE_LOG_EVERY == 0:
+        return logging.WARNING
+    return logging.DEBUG
+
+
+# A failing setup (the database cannot start, a migration breaks) is retried by
+# the boot supervisor on its own schedule. Panel calls must not each re-run it:
+# every attempt takes seconds and they queue on the setup lock.
+SETUP_RETRY_COOL_OFF_SECONDS = 15.0
+
+
+class SetupUnavailable(RuntimeError):
+    """The database/schema is not ready; carries a message for the operator."""
+
+
+def _operator_setup_message(exc) -> str:
+    """One readable line instead of a multi-line PostgreSQL log excerpt."""
+    lines = [line.strip() for line in str(exc).splitlines() if line.strip()]
+    reason = lines[0] if lines else exc.__class__.__name__
+    return (
+        'Alpha POS could not prepare its database and keeps retrying. '
+        f'Details are on the Logs page. ({reason[:240]})'
+    )
+
+
 class ServerManager:
     def __init__(self):
         self._server = None
@@ -82,6 +115,8 @@ class ServerManager:
         # bootstrap steps to complete.
         self._setup_lock = threading.RLock()
         self._setup_ready = False
+        self._setup_error = ''
+        self._setup_failed_at = None
         self._lifecycle_lock = threading.RLock()
         self._worker_lock = threading.RLock()
         self._desired_running = True
@@ -237,7 +272,8 @@ class ServerManager:
                         last_status=status, last_error=error,
                         next_run_in_s=delay,
                     )
-                    logger.warning(
+                    logger.log(
+                        _streak_log_level(failures),
                         'heartbeat failed (status=%s, failures=%s); retry in %ss: %s',
                         status, failures, delay, error,
                     )
@@ -249,8 +285,10 @@ class ServerManager:
                     last_status='exception', last_error=str(exc)[:300],
                     next_run_in_s=delay,
                 )
-                logger.exception(
+                logger.log(
+                    _streak_log_level(failures),
                     'heartbeat iteration failed; retrying in %ss', delay,
+                    exc_info=failures == 1,
                 )
 
     # -- Automatic background sync ------------------------------------------
@@ -395,7 +433,8 @@ class ServerManager:
                                 last_status='failed', last_error=error,
                                 next_run_in_s=delay,
                             )
-                            logger.warning(
+                            logger.log(
+                                _streak_log_level(failures),
                                 'background sync failed (%s consecutive); '
                                 'retry in %ss: %s', failures, delay, error,
                             )
@@ -420,7 +459,11 @@ class ServerManager:
                     last_status='exception', last_error=str(exc)[:300],
                     next_run_in_s=delay,
                 )
-                logger.exception('sync iteration failed; retrying in %ss', delay)
+                logger.log(
+                    _streak_log_level(failures),
+                    'sync iteration failed; retrying in %ss', delay,
+                    exc_info=failures == 1,
+                )
 
     def _pull_loop(self, stop_event=None):
         """Pull changes and refresh presence independently of upload backlog."""
@@ -484,7 +527,8 @@ class ServerManager:
                                 last_status='failed', last_error=error,
                                 next_run_in_s=delay,
                             )
-                            logger.warning(
+                            logger.log(
+                                _streak_log_level(failures),
                                 'background pull failed (%s consecutive); '
                                 'retry in %ss: %s', failures, delay, error,
                             )
@@ -509,7 +553,11 @@ class ServerManager:
                     last_status='exception', last_error=str(exc)[:300],
                     next_run_in_s=delay,
                 )
-                logger.exception('pull iteration failed; retrying in %ss', delay)
+                logger.log(
+                    _streak_log_level(failures),
+                    'pull iteration failed; retrying in %ss', delay,
+                    exc_info=failures == 1,
+                )
 
     def ensure_background_workers(self):
         """Watchdog entrypoint used by the launcher supervisor."""
@@ -549,19 +597,33 @@ class ServerManager:
             django.setup()
             self._django_ready = True
 
-    def ensure_django(self, log=lambda m: None):
+    def ensure_django(self, log=lambda m: None, *, supervisor=False):
         """Return only when Django and the installed schema are ready.
 
         A fast UI poll and the boot worker can arrive concurrently on an
         upgraded install. Exactly one performs the required setup while every
         other model-touching caller waits on the same lock. A failed setup does
         not publish readiness, so the boot watchdog can retry safely.
+
+        Only the boot supervisor (``supervisor=True``) retries a setup that just
+        failed; everyone else gets the recorded reason until the cool-off ends.
         """
         with self._setup_lock:
             if self._setup_ready:
                 return
+            failed_at = self._setup_failed_at
+            if (not supervisor and failed_at is not None
+                    and time.monotonic() - failed_at < SETUP_RETRY_COOL_OFF_SECONDS):
+                raise SetupUnavailable(self._setup_error)
             self._setup_ready = False
-            self._run_first_time_install(log=log)
+            try:
+                self._run_first_time_install(log=log)
+            except Exception as exc:
+                self._setup_failed_at = time.monotonic()
+                self._setup_error = _operator_setup_message(exc)
+                raise
+            self._setup_failed_at = None
+            self._setup_error = ''
             self._setup_ready = True
 
     @staticmethod
@@ -581,12 +643,18 @@ class ServerManager:
         stderr = io.StringIO()
         options['stdout'] = stdout
         options['stderr'] = stderr
+        failed = True
         try:
-            return call_command(command, *args, **options)
+            result = call_command(command, *args, **options)
+            failed = False
+            return result
         finally:
+            # Django commands also print ordinary progress and banners to
+            # stderr (bootstrap_admin's "first admin created" box). That is
+            # only a warning when the command itself failed.
             for stream_name, stream, logger_method in (
                 ('stdout', stdout, logger.info),
-                ('stderr', stderr, logger.warning),
+                ('stderr', stderr, logger.warning if failed else logger.info),
             ):
                 for line in stream.getvalue().splitlines():
                     if not line.strip():
@@ -925,7 +993,12 @@ class ServerManager:
             'url': self.url(),
             'lan_ip': self.lan_ip(),
             'port': self.port,
-            'django_ready': self._django_ready,
+            # "Ready" for the panel means model-backed calls answer at once:
+            # Django loaded AND migrations/seed finished. Reporting the first
+            # half alone opened the panel mid-migration with timeouts on every
+            # card after an install or update.
+            'django_ready': bool(self._django_ready and self._setup_ready),
+            'setup_error': self._setup_error,
             'started_at': getattr(self, '_started_at', None) if self.is_running() else None,
             'last_error': self._last_error,
             'workers': workers,

@@ -188,7 +188,7 @@ def test_backend_args_parse():
 def test_boot_worker_can_skip_the_legacy_updater(monkeypatch):
     from desktop import app, control_server
     calls = []
-    monkeypatch.setattr(control_server._API.server, 'ensure_django', lambda: None)
+    monkeypatch.setattr(control_server._API.server, 'ensure_django', lambda **kwargs: None)
     monkeypatch.setattr('desktop.support_tunnel.start', lambda: None)
     monkeypatch.setattr(app.atexit, 'register', lambda *a, **k: None)
     monkeypatch.setattr(app.threading, 'Thread', lambda **kw: type('T', (), {'start': lambda self: calls.append(kw['name'])})())

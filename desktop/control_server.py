@@ -256,7 +256,8 @@ def serve(host=CONTROL_HOST, preferred_port=CONTROL_PORT):
     except OSError:
         httpd = ThreadingHTTPServer((host, 0), Handler)   # race / TIME_WAIT -> free port
     CONTROL_PORT = httpd.server_address[1]
-    if CONTROL_PORT != preferred_port:
+    # preferred_port=0 (the desktop shell) asks for any free port: not a problem.
+    if preferred_port and CONTROL_PORT != preferred_port:
         logger.warning('control panel: port %s unavailable — using %s',
                        preferred_port, CONTROL_PORT)
     else:
