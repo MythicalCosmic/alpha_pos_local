@@ -6,7 +6,7 @@ import logging
 
 import pytest
 
-from desktop import bridge, control_server, server_manager
+from desktop import bridge, server_manager
 from desktop.server_manager import ServerManager, SetupUnavailable
 
 
@@ -195,3 +195,23 @@ def test_single_instance_without_a_wait_reports_the_running_copy(monkeypatch):
     assert single_instance.acquire('Global\\Test') is False
     assert kernel.closed == [1001]
     assert single_instance._handles == {}
+
+
+@pytest.mark.parametrize('reported', [
+    r'R:\1.0.47\Müller\AlphaPOS\pgdata',            # exact
+    r'R:\1.0.47\Mller\AlphaPOS\pgdata',             # non-ASCII byte dropped by the server
+    'R:\\1.0.47\\M\ufffdller\\AlphaPOS\\pgdata',   # replaced while decoding
+])
+def test_our_cluster_is_recognised_under_a_non_ascii_profile(reported):
+    from desktop import pg_embedded
+
+    assert pg_embedded._same_data_directory(reported, r'R:\1.0.47\Müller\AlphaPOS\pgdata')
+
+
+def test_cyrillic_profile_is_recognised_and_a_foreign_cluster_is_not():
+    from desktop import pg_embedded
+
+    ours = r'C:\Users\Администратор\AppData\Local\AlphaPOS\pgdata'
+    assert pg_embedded._same_data_directory(r'C:\Users\\AppData\Local\AlphaPOS\pgdata', ours)
+    assert not pg_embedded._same_data_directory(r'C:\Program Files\PostgreSQL\16\data', ours)
+    assert not pg_embedded._same_data_directory(r'C:\Users\Other\AppData\Local\AlphaPOS\pgdata', ours)

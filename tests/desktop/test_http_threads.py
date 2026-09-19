@@ -74,7 +74,7 @@ def test_request_body_and_headers_reach_the_environ():
         return [b'']
 
     headers = [
-        (b'content-type', b'application/json'), (b'content-length', b'11'),
+        (b'content-type', b'application/json'), (b'content-length', b'12'),
         (b'x-device-id', b'till-1'), (b'accept', b'a'), (b'accept', b'b'),
         (b'user-agent', b'Caf\xe9'),
     ]
@@ -88,7 +88,7 @@ def test_request_body_and_headers_reach_the_environ():
     assert captured['PATH_INFO'] == '/api/orders'
     assert captured['QUERY_STRING'] == 'page=2'
     assert captured['CONTENT_TYPE'] == 'application/json'
-    assert captured['CONTENT_LENGTH'] == '11'
+    assert captured['CONTENT_LENGTH'] == '12'
     assert captured['HTTP_X_DEVICE_ID'] == 'till-1'
     assert captured['HTTP_ACCEPT'] == 'a,b'
     assert captured['HTTP_USER_AGENT'] == 'Caf\xe9'
@@ -141,9 +141,50 @@ def test_requests_run_in_parallel():
     assert asyncio.run(run_two()) == [b'/a', b'/b']
 
 
+def test_async_to_sync_in_a_view_runs_on_the_server_loop():
+    """Realtime publishes (async_to_sync -> channel layer) must use the serving
+    loop: the in-memory channel layer is not safe across event loops/threads."""
+    from asgiref.sync import async_to_sync
+
+    seen = {}
+
+    async def publish():
+        seen['loop'] = asyncio.get_running_loop()
+
+    def wsgi(environ, start_response):
+        async_to_sync(publish)()
+        seen['thread'] = threading.current_thread().name
+        start_response('200 OK', [])
+        return [b'']
+
+    app = ThreadedWSGI(wsgi, workers=1)
+
+    async def serve():
+        seen['server_loop'] = asyncio.get_running_loop()
+        inbox = [{'type': 'http.request', 'body': b'', 'more_body': False}]
+
+        async def receive():
+            return inbox.pop(0) if inbox else {'type': 'http.disconnect'}
+
+        async def send(message):
+            pass
+
+        await app(_scope(), receive, send)
+
+    asyncio.run(serve())
+    assert seen['thread'].startswith('pos-http')
+    assert seen['loop'] is seen['server_loop']
+
+
 def test_only_http_is_served():
     with pytest.raises(ValueError):
         asyncio.run(ThreadedWSGI(lambda e, s: [], workers=1)({'type': 'websocket'}, None, None))
+
+
+def test_a_chunked_body_without_content_length_still_reaches_the_view():
+    environ = build_environ(_scope(method='POST', headers=[(b'content-type', b'application/json')]), b'{"a": 1}')
+    assert environ['CONTENT_LENGTH'] == '8'
+    assert environ['wsgi.input'].read() == b'{"a": 1}'
 
 
 def test_root_path_is_split_from_the_path():

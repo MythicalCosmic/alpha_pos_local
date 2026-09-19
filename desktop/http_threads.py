@@ -13,16 +13,21 @@ application on a bounded thread pool:
   project default), so the number of connections is bounded by the pool;
 - the response is iterated and closed in the same worker thread, so Django's
   ``request_finished`` handling (connection health checks) runs where the
-  connection lives.
+  connection lives;
+- work is handed to the pool through asgiref's ``sync_to_async``, so
+  ``async_to_sync`` inside a view (realtime publishes to the in-memory channel
+  layer) runs on the server's event loop, never on a private loop in the
+  worker thread: the channel layer is only ever touched from one loop.
 """
 from __future__ import annotations
 
-import asyncio
 import io
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
-DEFAULT_WORKERS = 16
+from asgiref.sync import sync_to_async
+
+DEFAULT_WORKERS = 32
 
 
 def _persistent_connections():
@@ -71,6 +76,9 @@ def build_environ(scope, body: bytes) -> dict:
         else:
             key = 'HTTP_' + name.upper().replace('-', '_')
         environ[key] = f'{environ[key]},{value}' if key in environ else value
+    # The whole body is buffered, so its real length is known even when the
+    # client sent it chunked (no Content-Length header).
+    environ['CONTENT_LENGTH'] = str(len(body))
     return environ
 
 
@@ -117,7 +125,7 @@ class ThreadedWSGI:
             if not message.get('more_body', False):
                 break
         environ = build_environ(scope, bytes(body))
-        loop = asyncio.get_running_loop()
-        status, headers, content = await loop.run_in_executor(self.executor, self._run, environ)
+        run = sync_to_async(self._run, thread_sensitive=False, executor=self.executor)
+        status, headers, content = await run(environ)
         await send({'type': 'http.response.start', 'status': status, 'headers': headers})
         await send({'type': 'http.response.body', 'body': content, 'more_body': False})

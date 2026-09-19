@@ -202,6 +202,9 @@ def _run_pywebview(url: str) -> bool:
         logger.info('pywebview not available; falling back')
         return False
     try:
+        # Config -> Export saves a file: without this pywebview silently
+        # cancels every download. Windows then shows a normal "Save as" dialog.
+        webview.settings['ALLOW_DOWNLOADS'] = True
         webview.create_window('Alpha POS', url, width=1060, height=760,
                               min_size=(900, 640))
         # Blocks until the window closes. Raises if WebView2 can't initialize.

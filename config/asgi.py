@@ -19,7 +19,7 @@ from desktop.http_threads import ThreadedWSGI  # noqa: E402
 # request onto one thread and reconnect to PostgreSQL each time.
 http_app = ThreadedWSGI(
     get_wsgi_application(),
-    workers=int(os.environ.get('ALPHA_POS_HTTP_THREADS', '16') or 16),
+    workers=int(os.environ.get('ALPHA_POS_HTTP_THREADS', '32') or 32),
 )
 
 from channels.auth import AuthMiddlewareStack  # noqa: E402

@@ -443,7 +443,8 @@ _ORDER_LIST_FIELDS = (
 
 
 def _order_list_prefetches():
-    """Items and payments with only the columns the list shows."""
+    """Items and payments with only the columns the list shows, in the order
+    they were entered (the joins would otherwise let PostgreSQL shuffle them)."""
     from django.db.models import Prefetch
     from base.models import OrderItem, OrderPayment
 
@@ -451,8 +452,8 @@ def _order_list_prefetches():
         'id', 'order_id', 'product_id', 'quantity', 'detail', 'price', 'ready_at', 'is_deleted',
         'product__id', 'product__name', 'product__category_id',
         'product__category__id', 'product__category__name',
-    )
-    payments = OrderPayment.objects.only('id', 'order_id', 'method', 'amount')
+    ).order_by('id')
+    payments = OrderPayment.objects.only('id', 'order_id', 'method', 'amount').order_by('id')
     return Prefetch('items', queryset=items), Prefetch('payments', queryset=payments)
 
 

@@ -73,3 +73,27 @@ def test_no_webview2_means_no_blank_ie_window(monkeypatch):
     monkeypatch.setattr(app, '_webview2_installed', lambda: False)
     monkeypatch.setitem(sys.modules, 'webview', None)  # importing it would fail loudly
     assert app._run_pywebview('http://127.0.0.1:8765/') is False
+
+
+def test_native_window_allows_downloads_and_keeps_its_profile(monkeypatch):
+    import sys
+    import types
+
+    from desktop import app
+
+    calls = {}
+    fake = types.SimpleNamespace(
+        settings={'ALLOW_DOWNLOADS': False},
+        create_window=lambda *a, **k: calls.setdefault('window', (a, k)),
+        start=lambda **k: calls.setdefault('start', k),
+    )
+    monkeypatch.setattr(app, '_webview2_installed', lambda: True)
+    monkeypatch.setattr(app, '_profile_dir', lambda: '/data/AlphaPOS/edge-profile')
+    monkeypatch.setitem(sys.modules, 'webview', fake)
+
+    assert app._run_pywebview('http://127.0.0.1:8765/') is True
+    # Config -> Export is a download; pywebview cancels downloads by default.
+    assert fake.settings['ALLOW_DOWNLOADS'] is True
+    assert calls['start']['gui'] == 'edgechromium'
+    assert calls['start']['private_mode'] is False
+    assert calls['start']['storage_path'].endswith('webview2-profile')

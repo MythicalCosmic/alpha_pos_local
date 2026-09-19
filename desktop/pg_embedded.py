@@ -397,6 +397,26 @@ def _connected_data_directory(bin_dir: Path) -> Path:
     return Path(value).resolve()
 
 
+def _ascii_fold(path) -> str:
+    return ''.join(ch for ch in os.path.normcase(str(path)) if ord(ch) < 128)
+
+
+def _same_data_directory(reported: Path, canonical: Path) -> bool:
+    """True when the server on PG_PORT reports our canonical data directory.
+
+    PostgreSQL on Windows holds the data path in the ANSI code page and SHOW
+    data_directory does not return those bytes faithfully: a profile such as
+    C:\\Users\\Müller or C:\\Users\\Администратор comes back with the non-ASCII
+    letters dropped or replaced. An exact match would then refuse our own
+    database forever. The check only exists to catch a different PostgreSQL on
+    port 5433 (a system install lives under Program Files), so letters outside
+    ASCII are ignored when the exact comparison fails.
+    """
+    if os.path.normcase(str(reported)) == os.path.normcase(str(canonical)):
+        return True
+    return _ascii_fold(reported) == _ascii_fold(canonical)
+
+
 def _log_pg_failure(data: Path) -> None:
     """Surface the REAL Postgres error (tail of pg.log) on a failed start, instead
     of the old silent timeout that left Django dying with 'role does not exist'."""
@@ -569,7 +589,7 @@ def _start_locked() -> bool:
             )
         _started = True
         connected_data = _connected_data_directory(bin_dir)
-        if os.path.normcase(str(connected_data)) != os.path.normcase(str(data.resolve())):
+        if not _same_data_directory(connected_data, data.resolve()):
             raise EmbeddedPostgresError(
                 f'Port {PG_PORT} belongs to PostgreSQL data directory '
                 f'{connected_data}, not canonical {data.resolve()}; refusing to modify it.'

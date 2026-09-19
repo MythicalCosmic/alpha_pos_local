@@ -662,7 +662,7 @@ def _wipe_data() -> list:
         ENV_FILE, SECRET_FILE, FERNET_FILE, DEVICE_FILE, STATE_FILE, CREDS_FILE,
         DATA_DIR / '.control_token',
         DATA_DIR / 'logs', DATA_DIR / 'staticfiles', DATA_DIR / 'private_media',
-        DATA_DIR / 'edge-profile', DATA_DIR / 'order_audit',
+        DATA_DIR / 'edge-profile', DATA_DIR / 'webview2-profile', DATA_DIR / 'order_audit',
         DATA_DIR / 'local_telegram_audit',
         DATA_DIR / 'support_tunnel',
     ]

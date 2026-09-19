@@ -72,6 +72,21 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"
 
+[InstallDelete]
+; Leftovers of the 1.1 test build (Tauri shell) on PCs that had it installed.
+; Its uninstaller would stop and delete this install, so it must not survive.
+Type: filesandordirs; Name: "{app}\backend"
+Type: filesandordirs; Name: "{app}\bin"
+Type: files; Name: "{app}\uninstall.exe"
+Type: files; Name: "{app}\version.txt"
+Type: filesandordirs; Name: "{localappdata}\uz.alphapos.desktop"
+Type: filesandordirs; Name: "{localappdata}\AlphaPOS\update\lkg"
+
+[Registry]
+; The 1.1 test build's "Alpha POS" entry in Apps & features (this installer's
+; own entry is {#AppId}_is1 and is not touched).
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Uninstall\Alpha POS"; Flags: deletekey
+
 [Files]
 ; The whole PyInstaller one-folder output (exe + compiled bytecode + DLLs).
 Source: "..\dist\AlphaPOS\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
